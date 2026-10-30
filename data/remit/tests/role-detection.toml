@@ -1,0 +1,263 @@
+# Role-detection test cases (M004 -> M010 unit tests). Spec: docs/research/remit.md section 6.
+#
+# Each case gives the GENERIC evidence the adapter extracts for one strip (`input`) and the expected outcome.
+# Expectations are deliberately coarse so the weights can be tuned without rewriting the table:
+#   role        winning role of the scorer (bus: monitor|comms|fx|foh_group|aux_feed|unknown;
+#               input: foh|monitor|comms|unrouted; main: main|aux_feed)
+#   confidence  band of the winner's probability: high (>= 0.85), medium (0.60..0.85), low (< 0.60); omitted = any
+#   effective   role the remit uses before the user confirms anything (section 6.5)
+#   usable      effective role is writable under the default policy (foh/foh_group/fx/main)
+#   name_hit    a monitor/comms vocabulary token was found in the name (bus cases; omitted = not checked)
+#
+# Bus evidence fields:
+#   name, active_senders (sends on and > -90 dB, or on in subgroup mode), pre_fraction, group_fraction (of active
+#   sends), feeds_main (direct|indirect|none), outputs (subset of physical|computer|recorder: kinds of outputs the
+#   bus is patched to), talkback_dest, fx_insert (none|time|other; time = reverb/delay/modulation model),
+#   feeds_matrix, re_input_to_monitor (bus output is re-input on a strip that feeds a monitor/comms bus).
+# Input evidence: name, talkback_source, reaches_main (direct|indirect|none), reaches_monitor.
+# Main evidence: name.
+
+format = "wing-mix-remit-tests/1"
+
+# ===================== fixtures/PUBLIC.snap (wing-simulator; real WING scene, fw 1.13.9) ========================
+# Evidence extracted by the WING adapter rules in remit.md appendix A.4. Bus n's output legs are BUS 2n-1/2n.
+
+[[bus]]
+id = "public-bus1-vox-verb"
+input = { name = "VOX VERB", active_senders = 6, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "indirect", outputs = [], talkback_dest = false, fx_insert = "time", feeds_matrix = false, re_input_to_monitor = true }
+expect = { role = "fx", confidence = "high", effective = "fx", usable = true, name_hit = false }
+
+[[bus]]
+id = "public-bus2-vox-dly"
+input = { name = "VOX DLY", active_senders = 1, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "indirect", outputs = [], talkback_dest = false, fx_insert = "time", feeds_matrix = false, re_input_to_monitor = true }
+expect = { role = "fx", confidence = "high", effective = "fx", usable = true, name_hit = false }
+
+[[bus]]
+id = "public-bus3-inst-vrb"
+input = { name = "INST VRB", active_senders = 2, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "indirect", outputs = [], talkback_dest = false, fx_insert = "time", feeds_matrix = false, re_input_to_monitor = true }
+expect = { role = "fx", confidence = "high", effective = "fx", usable = true }
+
+[[bus]]
+id = "public-bus4-drum-vrb"
+input = { name = "DRUM VRB", active_senders = 8, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "indirect", outputs = [], talkback_dest = false, fx_insert = "time", feeds_matrix = false, re_input_to_monitor = true }
+expect = { role = "fx", confidence = "high", effective = "fx", usable = true }
+
+[[bus]]
+id = "public-bus5-vox-group"
+input = { name = "VOX", active_senders = 7, pre_fraction = 0.0, group_fraction = 1.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "other", feeds_matrix = false, re_input_to_monitor = true }
+expect = { role = "foh_group", confidence = "high", effective = "foh_group", usable = true }
+
+[[bus]]
+id = "public-bus6-drums-foh-indirect"
+input = { name = "DRUMS FOH", active_senders = 8, pre_fraction = 0.0, group_fraction = 1.0, feeds_main = "indirect", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = true }
+expect = { role = "foh_group", confidence = "high", effective = "foh_group", usable = true }
+
+[[bus]]
+id = "public-bus7-band-bus"
+input = { name = "BAND BUS", active_senders = 11, pre_fraction = 0.0, group_fraction = 1.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "foh_group", confidence = "high", effective = "foh_group", usable = true }
+
+[[bus]]
+id = "public-bus8-vox1-iem"
+input = { name = "VOX 1 IEM", active_senders = 19, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = true, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "public-bus12-keys-iem-mixed-taps"
+input = { name = "KEYS IEM", active_senders = 11, pre_fraction = 0.82, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = true, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "public-bus14-drums-iem-group-word"
+input = { name = "DRUMS IEM", active_senders = 26, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = true, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "public-bus16-comms"
+input = { name = "COMMS", active_senders = 4, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "comms", confidence = "high", effective = "comms", usable = false, name_hit = true }
+
+# ===================== synthetic buses ==========================================================================
+
+[[bus]]
+id = "iem-keyword"
+input = { name = "IEM 1", active_senders = 12, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "iem-glued-digits"
+input = { name = "IEM3", active_senders = 8, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "wedge-mono"
+input = { name = "Wedge 3", active_senders = 5, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "other", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "sidefill-phrase"
+input = { name = "SIDE FILL L", active_senders = 9, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "in-ear-phrase"
+input = { name = "Sarah in-ear", active_senders = 9, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "unnamed-pre-physical"
+input = { name = "", active_senders = 10, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = false }
+
+[[bus]]
+id = "generic-mix-name-pre"
+input = { name = "Mix 4", active_senders = 10, pre_fraction = 0.9, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = false }
+
+[[bus]]
+id = "person-name-pre"
+input = { name = "SIMON", active_senders = 10, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "high", effective = "monitor", usable = false, name_hit = false }
+
+[[bus]]
+id = "group-word-but-monitor-routing"
+input = { name = "VOX", active_senders = 14, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", effective = "monitor", usable = false, name_hit = false }
+
+[[bus]]
+id = "monitor-name-but-feeds-main"
+# Repurposed bus: the name says monitor, the routing says FOH. Name hit protects until the user decides.
+input = { name = "MON 5", active_senders = 6, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { effective = "monitor", usable = false, name_hit = true }
+
+[[bus]]
+id = "mono-is-not-mon"
+input = { name = "MONO", active_senders = 6, pre_fraction = 0.0, group_fraction = 1.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "foh_group", effective = "foh_group", usable = true, name_hit = false }
+
+[[bus]]
+id = "unnamed-fx-return"
+input = { name = "", active_senders = 6, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "time", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "fx", confidence = "high", effective = "fx", usable = true }
+
+[[bus]]
+id = "reverb-not-yet-routed"
+# FX bus being built: right name, no senders, no path to main yet. Permissive roles need a main path to be
+# auto-accepted, so it stays unknown until confirmed (or until it is routed).
+input = { name = "REVERB", active_senders = 0, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "none", outputs = [], talkback_dest = false, fx_insert = "time", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "fx", effective = "unknown", usable = false }
+
+[[bus]]
+id = "drum-group-subgroup-mode"
+input = { name = "DRUMS", active_senders = 9, pre_fraction = 0.0, group_fraction = 1.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "foh_group", confidence = "high", effective = "foh_group", usable = true }
+
+[[bus]]
+id = "post-fed-unnamed-feeds-main"
+# Post-fader sends into a bus that feeds main, no FX: group or dry parallel bus. The scorer cannot tell fx from
+# foh_group (low winner confidence) but both are permissive with identical rules, so it is auto-accepted on
+# P(fx)+P(foh_group). Effective is whichever of the two wins; only `usable` is asserted.
+input = { name = "", active_senders = 6, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { confidence = "low", usable = true }
+
+[[bus]]
+id = "parallel-comp-named"
+input = { name = "NY COMP", active_senders = 5, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "direct", outputs = [], talkback_dest = false, fx_insert = "other", feeds_matrix = false, re_input_to_monitor = false }
+expect = { usable = true }
+
+[[bus]]
+id = "comms-crew"
+input = { name = "PROD TB", active_senders = 3, pre_fraction = 1.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = true, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "comms", confidence = "high", effective = "comms", usable = false, name_hit = true }
+
+[[bus]]
+id = "stream-feed"
+input = { name = "STREAM", active_senders = 20, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "none", outputs = ["computer"], talkback_dest = false, fx_insert = "other", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "aux_feed", effective = "aux_feed", usable = false, name_hit = false }
+
+[[bus]]
+id = "aux-fed-subs"
+# Aux-fed subwoofers: post-fader, own physical output, not in main. PA feed, never the assistant's.
+input = { name = "SUBS", active_senders = 6, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "aux_feed", effective = "aux_feed", usable = false }
+
+[[bus]]
+id = "front-fill-phrase"
+input = { name = "FRONT FILL", active_senders = 4, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "none", outputs = ["physical"], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "aux_feed", effective = "aux_feed", usable = false, name_hit = false }
+
+[[bus]]
+id = "talkback-only-unnamed"
+# Only evidence: talkback is routed to it. Weak monitor (low confidence) -> protected, asks for confirmation.
+input = { name = "", active_senders = 0, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "none", outputs = [], talkback_dest = true, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "monitor", confidence = "low", effective = "monitor", usable = false }
+
+[[bus]]
+id = "unused-bus"
+input = { name = "", active_senders = 0, pre_fraction = 0.0, group_fraction = 0.0, feeds_main = "none", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { role = "unknown", effective = "unknown", usable = false }
+
+[[bus]]
+id = "half-pre-unnamed"
+input = { name = "", active_senders = 8, pre_fraction = 0.5, group_fraction = 0.0, feeds_main = "none", outputs = [], talkback_dest = false, fx_insert = "none", feeds_matrix = false, re_input_to_monitor = false }
+expect = { effective = "unknown", usable = false }
+
+# ===================== input strips (rule-based, section 6.3) ===================================================
+
+[[input]]
+id = "public-ch1-kick-via-groups"
+input = { name = "KICK", talkback_source = false, reaches_main = "indirect", reaches_monitor = true }
+expect = { role = "foh", effective = "foh", usable = true }
+
+[[input]]
+id = "public-ch40-talkback"
+input = { name = "TALKBACK", talkback_source = true, reaches_main = "direct", reaches_monitor = true }
+expect = { role = "comms", effective = "comms", usable = false }
+
+[[input]]
+id = "public-ch31-drum-talk"
+input = { name = "DRUM TALK", talkback_source = false, reaches_main = "none", reaches_monitor = true }
+expect = { role = "comms", effective = "comms", usable = false }
+
+[[input]]
+id = "public-ch32-click-on-main"
+# Click is assigned to main 1 (fader at -oo) and to every IEM. Name decides.
+input = { name = "CLICK", talkback_source = false, reaches_main = "direct", reaches_monitor = true }
+expect = { role = "monitor", effective = "monitor", usable = false }
+
+[[input]]
+id = "public-aux5-group-link-to-iem"
+input = { name = "VOX B. LINK", talkback_source = false, reaches_main = "none", reaches_monitor = true }
+expect = { role = "monitor", effective = "monitor", usable = false }
+
+[[input]]
+id = "public-ch33-fx-return-channel"
+input = { name = "VOX VERB", talkback_source = false, reaches_main = "indirect", reaches_monitor = true }
+expect = { role = "foh", effective = "foh", usable = true }
+
+[[input]]
+id = "unnamed-talkback-source"
+input = { name = "", talkback_source = true, reaches_main = "none", reaches_monitor = true }
+expect = { role = "comms", effective = "comms", usable = false }
+
+[[input]]
+id = "unrouted"
+input = { name = "SPARE", talkback_source = false, reaches_main = "none", reaches_monitor = false }
+expect = { role = "unrouted", effective = "unrouted", usable = false }
+
+# ===================== mains (name only, section 6.4) ===========================================================
+
+[[main]]
+id = "public-main1-to-foh"
+input = { name = "TO FOH" }
+expect = { role = "main", effective = "main", usable = true }
+
+[[main]]
+id = "public-main4-stream"
+input = { name = "STREAM" }
+expect = { role = "aux_feed", effective = "aux_feed", usable = false }
+
+[[main]]
+id = "unnamed-main"
+input = { name = "" }
+expect = { role = "main", effective = "main", usable = true }
