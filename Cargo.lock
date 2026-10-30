@@ -812,9 +812,19 @@ dependencies = [
  "mix-core",
  "mix-surface",
  "mix-testsim",
+ "mix-wing-map",
  "wing-blocks",
  "wing-model",
  "wing-proto",
+]
+
+[[package]]
+name = "mix-wing-map"
+version = "0.1.0"
+dependencies = [
+ "mix-core",
+ "mix-surface",
+ "wing-model",
 ]
 
 [[package]]

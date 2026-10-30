@@ -4,6 +4,7 @@ members = [
     "crates/mix-core",
     "crates/mix-surface",
     "crates/mix-wing",
+    "crates/mix-wing-map",
     "crates/mix-sim",
     "crates/mix-testsim",
     "crates/mix-analysis",
