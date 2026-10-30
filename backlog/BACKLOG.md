@@ -80,3 +80,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M062 | Solo-based per-strip measurement (stereo-tap setups) | M052, M039 | opus |
 | M063 | E2E follow-up fixes (RTA origin, guard edges, PANIC vs engineer) | M052 | sonnet |
 | M064 | Mix slots: store console states per reference, instant A/B/C/D recall | M062 | opus |
+| M065 | Bus role detection (multi-hop, FX buses) + bulk remit editing | M061 | opus |
