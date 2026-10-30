@@ -1,0 +1,12 @@
+[package]
+name = "mix-testsim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Test support: headless wing-sim daemon on private ports fed through a DriverSim shm ring"
+
+# Use as a [dev-dependencies] entry only. Deliberately does not depend on mix-wing (so mix-wing's tests can use it).
+[dependencies]
+mix-sim = { path = "../mix-sim" }
+wing-shm.workspace = true

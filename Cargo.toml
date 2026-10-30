@@ -5,6 +5,7 @@ members = [
     "crates/mix-surface",
     "crates/mix-wing",
     "crates/mix-sim",
+    "crates/mix-testsim",
     "crates/mix-analysis",
     "crates/mix-capture",
     "crates/mix-fixtures",
@@ -36,6 +37,8 @@ wing-blocks = { git = "https://github.com/floatingdino/wing-simulator", rev = "9
 wing-engine = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 # The daemon's library (`wing_sim::audio::{prepare, Console}`): mix-sim drives the same console in-process.
 wing-sim = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+# Shared-memory ring + `sim::DriverSim` (mix-testsim: a stand-in for the HAL driver in live-daemon tests).
+wing-shm = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -56,6 +59,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # wing-blocks = { path = "../wing-simulator/crates/wing-blocks" }
 # wing-engine = { path = "../wing-simulator/crates/wing-engine" }
 # wing-sim = { path = "../wing-simulator/apps/wing-sim" }
+# wing-shm = { path = "../wing-simulator/crates/wing-shm" }
 
 # Offline closed-loop tests render the real wing-simulator DSP; unoptimised it is far too slow.
 [profile.dev.package.wing-blocks]
