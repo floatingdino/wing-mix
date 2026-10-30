@@ -162,10 +162,12 @@ fn solo_only_autopilot_sweeps_strips_and_restores_solo_exactly() {
     });
     let sw = sweeps(&r);
     assert!(sw.iter().filter(|s| s.2).count() >= 3, "{sw:?}");
-    // most valuable first: the lead vocal or a low-end source
+    // most valuable first: the lead vocal, a low-end source, or (M067: the meters show the degraded scene's hats
+    // loud, so they carry most of the mix's air/brilliance excess) the hats
     let first = &sw[0].1;
     assert!(
-        ["input.12", "input.13", "input.1", "input.2", "input.7"].contains(&first.as_str()),
+        ["input.12", "input.13", "input.1", "input.2", "input.7", "input.3"]
+            .contains(&first.as_str()),
         "{sw:?}"
     );
     // every sweep restored the solo state exactly and left nothing soloed
