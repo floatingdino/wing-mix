@@ -20,5 +20,5 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
   crates as git deps. Closed-loop testing via in-process wing-engine (mix-sim). LLM only via Claude Code CLI.
 - If agents are lost (new session), resume each in-flight task from its branch + Log with a fresh agent.
 - 2026-10-30: mix-core analysis types (bands/features/profile) owned by M020; surface/unit types by M010 (separate files).
-- 2026-10-30: NOT YET PUSHED. Local commit cce6d6c accidentally tracked fixtures/Media/peaks + RPP (199 MB); untracked in a later commit but still in history. Rewriting needs user OK (filter-branch was denied). Do not push main until resolved.
+- 2026-10-30: main history rewritten (user approved) to drop fixture peaks/RPP, pushed to origin. Branches task/M011, M012, M016, M023, M040 are based on the OLD history (which contains the files): merge them with `git merge --squash task/<ID>` (never a normal merge), then verify `git ls-tree -r --name-only HEAD | grep fixtures/` shows only README.md before pushing. Push main after each merge.
 - 2026-10-30: M031 (diagnosis) and M025 (source ID) held back to cap concurrency at 5; dispatch next.
