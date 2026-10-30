@@ -134,7 +134,11 @@ fn crc8(data: &[u8]) -> u8 {
     for &b in data {
         c ^= b;
         for _ in 0..8 {
-            c = if c & 0x80 != 0 { (c << 1) ^ 0x07 } else { c << 1 };
+            c = if c & 0x80 != 0 {
+                (c << 1) ^ 0x07
+            } else {
+                c << 1
+            };
         }
     }
     c
@@ -145,7 +149,11 @@ fn crc16(data: &[u8]) -> u16 {
     for &b in data {
         c ^= (b as u16) << 8;
         for _ in 0..8 {
-            c = if c & 0x8000 != 0 { (c << 1) ^ 0x8005 } else { c << 1 };
+            c = if c & 0x8000 != 0 {
+                (c << 1) ^ 0x8005
+            } else {
+                c << 1
+            };
         }
     }
     c
@@ -164,17 +172,20 @@ pub fn flac_verbatim(samples: &[f32], channels: u16, sr: u32) -> Vec<u8> {
     out.extend_from_slice(&(BLOCK as u16).to_be_bytes());
     out.extend_from_slice(&(BLOCK as u16).to_be_bytes());
     out.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // frame sizes unknown
-    let packed: u64 = ((sr as u64) << 44)
-        | (((channels - 1) as u64) << 41)
-        | (15u64 << 36)
-        | frames as u64;
+    let packed: u64 =
+        ((sr as u64) << 44) | (((channels - 1) as u64) << 41) | (15u64 << 36) | frames as u64;
     out.extend_from_slice(&packed.to_be_bytes());
     out.extend_from_slice(&[0u8; 16]); // md5 unknown
     for (n, start) in (0..frames).step_by(BLOCK).enumerate() {
         let len = BLOCK.min(frames - start);
         let mut f = vec![0xFF, 0xF8, 0x70, ((channels - 1) << 4) as u8 | 0b1000];
         let mut utf = [0u8; 4];
-        f.extend_from_slice(char::from_u32(n as u32).unwrap().encode_utf8(&mut utf).as_bytes());
+        f.extend_from_slice(
+            char::from_u32(n as u32)
+                .unwrap()
+                .encode_utf8(&mut utf)
+                .as_bytes(),
+        );
         f.extend_from_slice(&((len - 1) as u16).to_be_bytes());
         f.push(crc8(&f));
         for c in 0..ch {

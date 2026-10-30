@@ -13,7 +13,7 @@ use mix_core::SectionRef;
 
 /// Segments closer than this (RMS dB over the ERB bands, plus loudness LU) are the same cluster.
 pub const CLUSTER_THRESHOLD_DB: f32 = 3.0;
-/// A trailing segment shorter than this is merged into its predecessor.
+/// Segments shorter than this are merged into a neighbour.
 pub const MIN_SEGMENT_S: f64 = 4.0;
 
 #[derive(Clone)]
@@ -34,10 +34,23 @@ pub fn detect_sections(a: &OfflineAnalysis) -> Vec<SectionRef> {
         );
     }
     bounds.push(a.duration_s);
-    // Merge a short tail into the previous segment.
-    while bounds.len() > 2 && bounds[bounds.len() - 1] - bounds[bounds.len() - 2] < MIN_SEGMENT_S {
-        let end = bounds.pop().unwrap();
-        *bounds.last_mut().unwrap() = end;
+    // Drop boundaries that leave a segment shorter than MIN_SEGMENT_S (shortest first; the boundary next to the
+    // shorter neighbour goes, so the short piece joins its more similar-length neighbour).
+    while bounds.len() > 2 {
+        let (i, len) = (0..bounds.len() - 1)
+            .map(|i| (i, bounds[i + 1] - bounds[i]))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        if len >= MIN_SEGMENT_S {
+            break;
+        }
+        let last = i == bounds.len() - 2;
+        let rm = if last || (i > 0 && bounds[i] - bounds[i - 1] < bounds[i + 2] - bounds[i + 1]) {
+            i
+        } else {
+            i + 1
+        };
+        bounds.remove(rm);
     }
     // Millisecond resolution keeps the JSON text of the times exactly round-trippable.
     let ms = |x: f64| (x * 1000.0).round() / 1000.0;
@@ -139,7 +152,10 @@ fn label(sums: &[SegSummary], cluster: &[usize]) -> Vec<String> {
     let n_clusters = cluster.iter().max().map_or(0, |m| m + 1);
     let members = |c: usize| cluster.iter().filter(|&&x| x == c).count();
     let mean_loud = |c: usize| {
-        let v: Vec<f32> = (0..n).filter(|&i| cluster[i] == c).map(|i| sums[i].loud).collect();
+        let v: Vec<f32> = (0..n)
+            .filter(|&i| cluster[i] == c)
+            .map(|i| sums[i].loud)
+            .collect();
         v.iter().sum::<f32>() / v.len() as f32
     };
     let chorus = (0..n_clusters)

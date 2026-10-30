@@ -24,7 +24,12 @@ fn stereo_test_signal(frames: usize, sr: u32) -> Vec<f32> {
 #[test]
 fn wav_16_24_float_stereo_and_mono() {
     let st = stereo_test_signal(8000, 44100);
-    let q = |s: &[f32]| q16(s).iter().map(|&x| x as f32 / 32768.0).collect::<Vec<_>>();
+    let q = |s: &[f32]| {
+        q16(s)
+            .iter()
+            .map(|&x| x as f32 / 32768.0)
+            .collect::<Vec<_>>()
+    };
     let d = decode_bytes(wav_i16(&st, 2, 44100), Some("wav")).unwrap();
     check_exact(&d, &q(&st), 2, 44100, 1e-6);
     let d = decode_bytes(wav_i24(&st, 2, 48000), Some("wav")).unwrap();
@@ -62,14 +67,26 @@ fn resample_44k1_to_48k_keeps_length_and_level() {
     let d = decode_bytes(wav_f32(&src, 1, 44100), None).unwrap();
     let r = resample(&d, 48000).unwrap();
     assert_eq!(r.sample_rate, 48000);
-    assert!((r.frames() as i64 - 96000).abs() <= 2, "frames {}", r.frames());
+    assert!(
+        (r.frames() as i64 - 96000).abs() <= 2,
+        "frames {}",
+        r.frames()
+    );
     let rms = |v: &[f32]| (v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32).sqrt();
     let mid = &r.samples[4800..r.samples.len() - 4800];
-    assert!((rms(mid) - 0.5 / 2f32.sqrt()).abs() < 0.005, "rms {}", rms(mid));
+    assert!(
+        (rms(mid) - 0.5 / 2f32.sqrt()).abs() < 0.005,
+        "rms {}",
+        rms(mid)
+    );
     // Frequency preserved: 1 kHz = 2000 zero crossings per second.
     let zc = mid.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
     let secs = mid.len() as f32 / 48000.0;
-    assert!((zc as f32 / secs - 1000.0).abs() < 5.0, "f = {}", zc as f32 / secs);
+    assert!(
+        (zc as f32 / secs - 1000.0).abs() < 5.0,
+        "f = {}",
+        zc as f32 / secs
+    );
     // Same rate is a no-op.
     assert_eq!(resample(&r, 48000).unwrap(), r);
 }

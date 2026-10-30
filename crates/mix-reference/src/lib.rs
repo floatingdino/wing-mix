@@ -17,7 +17,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use mix_analysis::{
-    analyse_buffer, AnalyserConfig, OfflineAnalysis, OfflineOptions, ProfileBuilder, ANALYSIS_VERSION,
+    analyse_buffer, AnalyserConfig, OfflineAnalysis, OfflineOptions, ProfileBuilder,
+    ANALYSIS_VERSION,
 };
 use mix_core::{
     AnalysisParams, ProfileSource, SectionRef, StemTargets, TargetProfile, PROFILE_SCHEMA_VERSION,
@@ -115,7 +116,13 @@ pub fn cache_key(blake3: &str, opts: &ProfileOptions) -> String {
         let id: String = p
             .id()
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '@' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '@' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         k.push_str(&format!("-{id}"));
     }
@@ -171,25 +178,29 @@ pub fn ingest_bytes(
 
 /// [`ingest_bytes`] for a file path.
 pub fn ingest_file(path: &Path) -> Result<Ingested, ReferenceError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| ReferenceError::Io(format!("{}: {e}", path.display())))?;
-    let name = path
-        .file_name()
-        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let bytes =
+        std::fs::read(path).map_err(|e| ReferenceError::Io(format!("{}: {e}", path.display())))?;
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     ingest_bytes(bytes, &name, path.extension().and_then(|e| e.to_str()))
 }
 
 fn integrated_lufs(a: &DecodedAudio) -> Result<Option<f64>, ReferenceError> {
     let err = |e: ebur128::Error| ReferenceError::Analysis(format!("loudness: {e}"));
-    let mut m = ebur128::EbuR128::new(a.channels as u32, a.sample_rate, ebur128::Mode::I)
-        .map_err(err)?;
+    let mut m =
+        ebur128::EbuR128::new(a.channels as u32, a.sample_rate, ebur128::Mode::I).map_err(err)?;
     m.add_frames_f32(&a.samples).map_err(err)?;
     let l = m.loudness_global().map_err(err)?;
     Ok(l.is_finite().then_some(l))
 }
 
 /// Builds the [`TargetProfile`] from an ingested reference.
-pub fn build_profile(ing: &Ingested, opts: &ProfileOptions) -> Result<TargetProfile, ReferenceError> {
+pub fn build_profile(
+    ing: &Ingested,
+    opts: &ProfileOptions,
+) -> Result<TargetProfile, ReferenceError> {
     let focus = match opts.section {
         None => None,
         Some(i) => Some(ing.sections.get(i).ok_or_else(|| {
@@ -230,11 +241,12 @@ pub fn profile_file(
     opts: &ProfileOptions,
     cache: Option<&ProfileCache>,
 ) -> Result<TargetProfile, ReferenceError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| ReferenceError::Io(format!("{}: {e}", path.display())))?;
-    let name = path
-        .file_name()
-        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let bytes =
+        std::fs::read(path).map_err(|e| ReferenceError::Io(format!("{}: {e}", path.display())))?;
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_owned);
     profile_bytes(bytes, &name, ext.as_deref(), opts, cache)
 }

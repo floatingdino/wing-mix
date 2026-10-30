@@ -1699,8 +1699,11 @@ dependencies = [
 name = "wing-mix-cli"
 version = "0.1.0"
 dependencies = [
+ "hound",
  "mix-capture",
+ "mix-core",
  "mix-fixtures",
+ "mix-reference",
 ]
 
 [[package]]

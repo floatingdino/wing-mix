@@ -106,7 +106,8 @@ pub fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>) -> Result<DecodedAudio, R
 
 /// Reads and decodes a file.
 pub fn decode_file(path: &Path) -> Result<DecodedAudio, ReferenceError> {
-    let bytes = std::fs::read(path).map_err(|e| ReferenceError::Io(format!("{}: {e}", path.display())))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| ReferenceError::Io(format!("{}: {e}", path.display())))?;
     decode_bytes(bytes, path.extension().and_then(|e| e.to_str()))
 }
 

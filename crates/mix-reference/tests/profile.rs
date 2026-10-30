@@ -51,7 +51,9 @@ fn sections_profile_json_and_section_pick() {
     let p = mix_reference::build_profile(&ing, &ProfileOptions::default()).unwrap();
     assert!(p.section.is_none());
     assert_eq!(p.sections.len(), 4);
-    assert!(matches!(&p.source, ProfileSource::Reference { file_name, sample_rate_in: 44100, .. } if file_name == "song.wav"));
+    assert!(
+        matches!(&p.source, ProfileSource::Reference { file_name, sample_rate_in: 44100, .. } if file_name == "song.wav")
+    );
     let json = profile_to_json(&p).unwrap();
     let back = profile_from_json(&json).unwrap();
     assert_eq!(back, p);
@@ -73,7 +75,10 @@ fn sections_profile_json_and_section_pick() {
         c.tonal.tilt_db_per_oct.p50 != p.tonal.tilt_db_per_oct.p50
             || c.transients.onset_rate_hz.p50 != p.transients.onset_rate_hz.p50
     );
-    assert!(c.transients.onset_rate_hz.p50 > 1.0, "chorus has 2 Hz kicks");
+    assert!(
+        c.transients.onset_rate_hz.p50 > 1.0,
+        "chorus has 2 Hz kicks"
+    );
     // out of range
     assert!(mix_reference::build_profile(
         &ing,
@@ -105,8 +110,19 @@ fn cache_hits_skip_analysis_and_key_on_content_and_options() {
     assert_eq!(files.len(), 1);
 
     // hit: provider not called again; file name is the caller's, the rest identical
-    let p2 = profile_bytes(bytes.clone(), "renamed.wav", Some("wav"), &opts, Some(&cache)).unwrap();
-    assert_eq!(stems.0.load(Ordering::SeqCst), 1, "cache hit must not re-run");
+    let p2 = profile_bytes(
+        bytes.clone(),
+        "renamed.wav",
+        Some("wav"),
+        &opts,
+        Some(&cache),
+    )
+    .unwrap();
+    assert_eq!(
+        stems.0.load(Ordering::SeqCst),
+        1,
+        "cache hit must not re-run"
+    );
     let mut p2n = p2.clone();
     if let ProfileSource::Reference { file_name, .. } = &mut p2n.source {
         assert_eq!(file_name, "renamed.wav");
@@ -179,5 +195,8 @@ fn fixture_mixdown_profile() {
     let p = mix_reference::build_profile(&ing, &ProfileOptions::default()).unwrap();
     p.validate().unwrap();
     assert!(profile_from_json(&profile_to_json(&p).unwrap()).unwrap() == p);
-    assert!(p.tonal.erb_side_rel_db.is_empty(), "mono source has no side curve");
+    assert!(
+        p.tonal.erb_side_rel_db.is_empty(),
+        "mono source has no side curve"
+    );
 }
