@@ -685,7 +685,9 @@ version = "0.1.0"
 dependencies = [
  "mix-analysis",
  "mix-core",
+ "mix-fixtures",
  "mix-knowledge",
+ "mix-reference",
  "mix-surface",
  "serde",
  "serde_json",

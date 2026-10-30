@@ -7,7 +7,7 @@
 //! globally squashed or wide mix is one problem, not six.
 
 use mix_core::bands::{BROAD6_EDGES_HZ, BROAD6_NAMES, LOW_MONO_HZ, N_BROAD};
-use mix_core::features::Stat;
+use mix_core::features::{Stat, Window};
 
 use super::problem::{BandRef, Contributor, Evidence, ProblemKind, Scope, Subject};
 use super::{mean_at, power_sum_db, window_loudness, Ctx, Draft};
@@ -276,11 +276,19 @@ fn dynamics(cx: &mut Ctx<'_>) {
         psr_t.p50,
         crest_tol.max(psr_t.half_spread()),
     );
-    let mut checks: Vec<(Evidence, String, &'static str)> = vec![(
-        psr,
-        "dynamics.crest_db".into(),
-        "peak-to-short-term-loudness ratio (PSR)",
-    )];
+    // PSR and band crest are 3 s measures; in a Session snapshot they describe only the last 3 s against a
+    // whole-session peak, so Session windows use PLR/LRA instead.
+    let session = matches!(main.window, Window::Session);
+    let mut checks: Vec<(Evidence, String, &'static str)> = Vec::new();
+    if session {
+        cx.note("Session window: PSR and band-crest checks skipped (3 s measures); PLR/LRA used");
+    } else {
+        checks.push((
+            psr,
+            "dynamics.crest_db".into(),
+            "peak-to-short-term-loudness ratio (PSR)",
+        ));
+    }
     // PLR and LRA exist on Session windows only.
     if let Some(plr) = main.loudness.plr_db {
         let tol = rule_threshold(cx, "mix_bus_too_dynamic", "plr_db").unwrap_or(3.0);
@@ -343,7 +351,7 @@ fn dynamics(cx: &mut Ctx<'_>) {
     }
 
     // Per-band crest residuals (one band compressed differently from the rest: multiband/dynamic EQ).
-    for (i, e) in devs {
+    for (i, e) in devs.into_iter().filter(|_| !session) {
         let resid = Evidence::new(
             "crest_db",
             "db",
@@ -538,7 +546,11 @@ fn stereo(cx: &mut Ctx<'_>) {
                 .terms(terms)
                 .explain(explanation),
         );
-        for (i, e) in devs {
+        // Residuals need a measurable image: bands clamped at the mono floor carry no per-band information.
+        for (i, e) in devs
+            .into_iter()
+            .filter(|(_, e)| e.measured.unwrap_or(floor) > floor)
+        {
             let resid = Evidence::new(
                 "width_dev_db",
                 "db",

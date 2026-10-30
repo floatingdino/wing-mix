@@ -14,3 +14,5 @@ serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+mix-fixtures = { path = "../mix-fixtures" }
+mix-reference = { path = "../mix-reference" }

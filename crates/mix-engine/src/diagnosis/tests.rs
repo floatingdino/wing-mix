@@ -203,6 +203,14 @@ fn session_window_checks_plr_and_lra() {
     f.loudness.plr_db = Some(p.loudness.plr_db - 5.0);
     let d = run(&f, &p, &[]);
     only(&d, "squashed:mix:plr_db");
+
+    // PSR/band crest are 3 s measures: ignored on Session snapshots.
+    let mut f = synth::features_matching(&p, Window::Session);
+    f.loudness.psr_db += 15.0;
+    f.dynamics.crest_db[0] -= 10.0;
+    let d = run(&f, &p, &[]);
+    assert!(d.problems.is_empty(), "{}", dump(&d));
+    assert!(d.notes.iter().any(|n| n.contains("Session window")));
 }
 
 #[test]
