@@ -511,9 +511,15 @@ fn check_remit(
             Verdict::Allowed => {}
         }
         // the plan-time value and the session baseline (the gate measures envelopes and session limits from it)
-        let start_v = start.get(&ch.param).and_then(Value::as_f64);
+        // (a slot this candidate switches to another model starts afresh: its params have no baseline)
+        let remapped = scratch.is_some();
+        let start_v = start
+            .get(&ch.param)
+            .and_then(Value::as_f64)
+            .filter(|_| !remapped);
         let base = start_v.map(|v| cfg.baseline_of(&ch.param, v));
         let to = match (&d.envelope, &from) {
+            (Some(_), Some(_)) if remapped => ch.to.clone(),
             (Some(env), Some(f)) => {
                 let anchor = base.map_or_else(|| f.clone(), Value::Float);
                 match clamp_envelope(spec, &anchor, &ch.to, env) {
@@ -935,8 +941,14 @@ fn merge_moves(
                 .iter()
                 .filter(|b| !prev.action.changes.iter().any(|a| a.param == b.param))
                 .count();
-            // the merged move must still fit one actuator batch
-            shared && prev.action.changes.len() + new <= max_changes
+            // the merged move must still fit one actuator batch, and a model switch re-maps its slot's params
+            // (never fold another move's view of that slot into it)
+            let switches =
+                |mv: &PlannedMove| mv.action.changes.iter().any(|c| c.param.leaf() == "model");
+            shared
+                && prev.action.changes.len() + new <= max_changes
+                && !switches(prev)
+                && !switches(m)
         });
         let Some(i) = target else {
             out.push((ph, m.clone(), false));

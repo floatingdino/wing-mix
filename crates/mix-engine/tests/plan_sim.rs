@@ -335,8 +335,12 @@ fn plan_reduces_target_distance_on_degraded_fixture() {
     let s = shared();
     let (d0, pred, d1, l0, l1) = plan_and_apply(&s.fx, &s.degraded, "seed 7");
     assert!(d1 < 0.5 * d0, "distance {d0:.3} -> {d1:.3}");
+    // M036: the plan now switches the vocal compressor on (compression opportunity); the proxy over-reads the
+    // compressed vocal's peaks (main PLR +0.5..1 dB, growing as later moves raise the vocal), so the open-loop
+    // prediction is pessimistic by up to ~0.2 on this fixture (without the compressor it is within 0.05). The
+    // closed loop re-measures after every move; a plan must never be optimistic by more than the old tolerance.
     assert!(
-        (pred - d1).abs() < 0.1,
+        d1 <= pred + 0.1 && (pred - d1).abs() < 0.25,
         "predicted {pred:.3} vs actual {d1:.3}"
     );
     assert!(l1 < 0.6 * l0, "problem load {l0:.2} -> {l1:.2}");
@@ -376,10 +380,20 @@ fn plan_moves_follow_the_ground_truth() {
         "bass {:+.1}",
         net("input.7/fader")
     );
+    // M036: the open-loop plan no longer raises the snare (it compresses it, kb snare_comp, and the Drums stem's
+    // tonal deficits rank below the balance moves); the vocal compressor and the overheads' placement are new
+    eprintln!("snare fader {:+.1}", net("input.2/fader"));
     assert!(
-        net("input.2/fader") >= 2.0,
-        "snare {:+.1}",
-        net("input.2/fader")
+        plan.changes()
+            .iter()
+            .any(|c| c.param.as_str() == "input.13/dyn/on" && c.to == Value::Bool(true)),
+        "vocal compressor"
+    );
+    assert!(
+        net("input.5/pan") <= -20.0 && net("input.6/pan") >= 20.0,
+        "overheads spread {:+.0} / {:+.0}",
+        net("input.5/pan"),
+        net("input.6/pan")
     );
     assert!(
         plan.changes()

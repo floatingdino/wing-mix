@@ -100,6 +100,13 @@ pub struct FeedbackConfig {
     pub reject_harmonic: bool,
     #[serde(default = "default_harmonic_window_db")]
     pub harmonic_window_db: f64,
+    /// M036: bands more than this far below the frame's loudest band are ignored (besides `floor_db`).
+    #[serde(default = "default_relative_floor_db")]
+    pub relative_floor_db: f64,
+}
+
+fn default_relative_floor_db() -> f64 {
+    30.0
 }
 
 fn default_level_rise_share() -> f64 {
@@ -188,6 +195,7 @@ impl Default for SafetyConfig {
                 recent_rise_db: default_recent_rise_db(),
                 reject_harmonic: true,
                 harmonic_window_db: default_harmonic_window_db(),
+                relative_floor_db: default_relative_floor_db(),
             },
             watchdog: WatchdogConfig {
                 require_analysis: true,
@@ -395,8 +403,11 @@ impl Detector {
             return None;
         }
         let mut best: Option<Hit> = None;
+        // M036: a band far below the frame's loudest is not audible feedback yet (music has quiet low-level bands
+        // whose prominence wanders); feedback that matters climbs through the mix
+        let top = last.1.iter().cloned().fold(f32::MIN, f32::max) as f64;
         for b in 0..last.1.len() {
-            if (last.1[b] as f64) < cfg.floor_db {
+            if (last.1[b] as f64) < cfg.floor_db.max(top - cfg.relative_floor_db) {
                 continue;
             }
             let prom = prominence(&last.1, b);

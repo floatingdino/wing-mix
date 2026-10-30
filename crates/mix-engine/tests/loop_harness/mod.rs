@@ -407,10 +407,12 @@ impl Rig {
         self.act_log
             .iter()
             .filter(|(_, e)| match e {
+                // a discrete change (model switch) waits for the strip to be inaudible on the live meters: a
+                // runtime condition like the holds, not a limit a plan can respect
                 ActuatorEvent::Refused {
-                    reason: Refusal::Remit { reason, .. },
+                    reason: Refusal::Remit { reason, detail, .. },
                     ..
-                } => *reason == Reason::Safety,
+                } => *reason == Reason::Safety && !detail.contains("discrete change"),
                 ActuatorEvent::Aborted {
                     reason: AbortReason::Remit { reason, detail, .. },
                     ..
