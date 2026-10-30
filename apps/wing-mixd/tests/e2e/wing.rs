@@ -88,6 +88,9 @@ pub struct Opts {
     pub drills: bool,
     /// Use the PUBLIC.snap-derived scene (else factory defaults).
     pub public_scene: bool,
+    /// M062: route one user signal per strip to USB (per-strip taps); `false`: only main + monitor A (solo), the
+    /// one-stereo-stream setup where the daemon measures strips through solo sweeps.
+    pub strip_taps: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -129,6 +132,9 @@ pub struct RunResult {
     pub suggested: usize,
     pub suggest_writes: usize,
     pub inspections: usize,
+    /// M062: solo sweeps (`strip_measured` events) and how the strips were covered at the end.
+    pub sweeps: usize,
+    pub coverage: String,
     pub solo_restored_exact: usize,
     pub solo_ok: bool,
     pub solo_detail: String,
@@ -299,7 +305,11 @@ pub fn run(
     if let Some(s) = &snap_s {
         extra.extend(["--scene", s.as_str()]);
     }
-    let strips: Vec<u8> = ex.tracks.iter().map(|t| t.channel).collect();
+    let strips: Vec<u8> = if o.strip_taps {
+        ex.tracks.iter().map(|t| t.channel).collect()
+    } else {
+        Vec::new()
+    };
     let lanes: Vec<usize> = (1..=4 + strips.len()).collect();
     let console = Arc::new(SimConsole::start_with(feed, &lanes, &extra)?);
     assert!(console.addr().port() != 2222 && console.addr().port() != 2223);
@@ -693,6 +703,11 @@ pub fn run(
     // Solo: every inspection restored exactly (daemon events + what the observer saw), and at the end.
     let evs = d.events();
     r.inspections = evs.iter().filter(|e| ev_type(&e.v) == "soloed").count();
+    r.sweeps = evs
+        .iter()
+        .filter(|e| ev_type(&e.v) == "strip_measured")
+        .count();
+    r.coverage = snap["session"]["strips"].to_string();
     r.solo_restored_exact = evs
         .iter()
         .filter(|e| ev_type(&e.v) == "solo_restored" && e.v["exact"] == true)
@@ -702,14 +717,24 @@ pub fn run(
         .filter(|e| ev_type(&e.v) == "solo_restored")
         .map(|e| e.at)
         .collect();
+    let soloed: Vec<Instant> = evs
+        .iter()
+        .filter(|e| ev_type(&e.v) == "soloed")
+        .map(|e| e.at)
+        .collect();
     let log = obs.solo_log();
     let mut bad = Vec::new();
     for t in &restored {
-        if let Some((_, st)) = log
+        // the observer's settled view after the restore: the last state it saw before the next inspection soloes
+        // again (M062: sweeps are >= 2 s apart; under a burst of ramp writes the observer's solo notifications can
+        // trail the daemon's event by more than the 400 ms M052 allowed), at most 2 s later
+        let next = soloed
             .iter()
-            .rev()
-            .find(|(at, _)| *at <= *t + Duration::from_millis(400))
-        {
+            .find(|&&s| s > *t)
+            .map_or(*t + Duration::from_secs(2), |&s| {
+                (s - Duration::from_millis(50)).min(*t + Duration::from_secs(2))
+            });
+        if let Some((_, st)) = log.iter().rev().find(|(at, _)| *at <= next) {
             if st != &solo0 {
                 bad.push(format!("{st:?}"));
             }
@@ -725,6 +750,13 @@ pub fn run(
         log.len(),
         if solo_end == solo0 { "= start" } else { "DIFFERS" }
     );
+    if !bad.is_empty() {
+        r.solo_detail += &format!(
+            "; {} restores the observer saw differently: {:?}",
+            bad.len(),
+            bad.iter().take(3).collect::<Vec<_>>()
+        );
+    }
     r.refusals = evs
         .iter()
         .filter(|e| ev_type(&e.v) == "refused" && e.v.to_string().contains("safety"))

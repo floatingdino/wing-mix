@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::plan::PlanConfig;
 
+pub use super::strips::StripConfig;
+
 /// What the controller is allowed to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,6 +101,8 @@ pub struct ControlConfig {
     /// A soloed strip quieter than this (LUFS) is not playing: its move is skipped.
     pub inspect_silent_lufs: f32,
     pub section: SectionConfig,
+    /// M062: strips without a tap: solo sweeps, measured-strip book, priors.
+    pub strips: StripConfig,
     pub plan: PlanConfig,
 }
 
@@ -150,6 +154,7 @@ impl ControlConfig {
                 spectral_jump_db: 5.0,
                 floor_lufs: -50.0,
             },
+            strips: StripConfig::default(),
             plan,
         }
     }

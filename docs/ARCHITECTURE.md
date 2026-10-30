@@ -90,6 +90,12 @@ prior solo state). Move values with eased ramps at per-kind max rates (e.g. fade
 in log space), one parameter or a small connected batch (e.g. EQ band freq+gain+Q) at a time, wait for analysis to
 settle, re-measure, keep or revert. Every move is journaled and undoable; STOP reverts nothing but freezes, PANIC
 reverts the session.
+Without a tap per strip (one stereo stream of the main + the solo bus: M062, `mix_engine::control::strips`) the
+loop works like an engineer at a desk: between batches it solos the most valuable unmeasured or stale strip (lead
+vocal and low end first, strips implicated by mix-level problems or planned moves first), dwells, measures it on the
+solo bus and restores the solo exactly (rate-limited, never during a section change or while the engineer solos);
+strips not yet measured, or on a console that cannot solo, stand in as knowledge-base estimates that only allow
+fader balance judged on the measured main.
 
 ## Closed-loop verification without hardware
 `mix-sim` drives the real wing-simulator DSP offline (multitrack fixtures + scene → render), so the full loop

@@ -316,10 +316,62 @@ fn target_referenced(p: &Problem) -> bool {
             | Phase
             | Depth
     );
-    kind && matches!(
+    // M062: a source-level intent counts once its progress is followed through the faders (`measured` set)
+    kind && (matches!(
         p.scope.subject,
         Subject::Stem { .. } | Subject::Strip { .. }
-    ) && p.evidence.measured.is_some()
+    ) || (p.kind == Level && matches!(p.scope.subject, Subject::Source { .. })))
+        && p.evidence.measured.is_some()
+}
+
+/// M062: progress of the description's source-level intents (`intent.<source|family>.level_dev_lu`) through the
+/// faders: the mean fader change (dB) of the matching strips since the session baseline (`baseline`, else the
+/// value in `start` (the plan's starting state), else no change). Only the open-loop path reads it: a closed-loop
+/// level check that measures the source consumes the intent first.
+pub fn fader_intent_progress(
+    target: &TargetProfile,
+    strips: &[StripTap],
+    state: &ConsoleState,
+    start: Option<&ConsoleState>,
+    baseline: &BTreeMap<ParamId, f64>,
+    kb: &KnowledgeBase,
+) -> BTreeMap<String, f32> {
+    let mut out = BTreeMap::new();
+    for d in &target.applied_deltas {
+        let Some((scope, feature)) = crate::diagnosis::intent::parse_intent_path(&d.target_path)
+        else {
+            continue;
+        };
+        if scope == "mix" || feature != "level_dev_lu" || out.contains_key(&d.target_path) {
+            continue;
+        }
+        let changes: Vec<f64> = strips
+            .iter()
+            .filter(|t| {
+                !t.fx_return
+                    && t.source.as_deref().is_some_and(|src| {
+                        src == scope || kb.source(src).is_some_and(|x| x.family.as_str() == scope)
+                    })
+            })
+            .filter_map(|t| {
+                let id = ParamId::of(&t.strip, "fader");
+                let now = state.get(&id)?.as_f64()?;
+                let from = baseline
+                    .get(&id)
+                    .copied()
+                    .or_else(|| start?.get(&id)?.as_f64())
+                    .unwrap_or(now);
+                Some(now - from)
+            })
+            .collect();
+        if !changes.is_empty() {
+            out.insert(
+                d.target_path.clone(),
+                (changes.iter().sum::<f64>() / changes.len() as f64) as f32,
+            );
+        }
+    }
+    out
 }
 
 /// A sources.toml problem whose action is a gate/expander (bleed on toms, snare).
@@ -658,6 +710,17 @@ fn check_remit(
     Ok(Checked { cand: c, confirm })
 }
 
+/// M062: a candidate touching an [estimated](StripTap::estimated) strip may only move its fader (a prior has no
+/// spectrum or dynamics worth processing against, only a share of the main).
+fn estimated_ok(c: &Candidate, estimated: &BTreeSet<StripId>) -> bool {
+    estimated.is_empty()
+        || c.changes.iter().all(|x| {
+            x.param
+                .strip()
+                .is_none_or(|s| !estimated.contains(&s) || x.param.as_str().ends_with("/fader"))
+        })
+}
+
 fn strip_mid_of(t: &StripTap) -> [f64; N_ERB] {
     let l = window_loudness(&t.features) as f64 + t.gain_to_main_db as f64;
     std::array::from_fn(|b| 10f64.powf((t.features.spectrum.erb_mid_rel_db[b] as f64 + l) / 10.0))
@@ -692,6 +755,13 @@ pub fn plan_with(
         .iter()
         .map(|s| (s.strip.clone(), s.source.clone()))
         .collect();
+    // M062: strips standing in as priors (no measurement yet) may only have their fader moved
+    let estimated: BTreeSet<StripId> = input
+        .strips
+        .iter()
+        .filter(|s| s.estimated)
+        .map(|s| s.strip.clone())
+        .collect();
     let stems: Vec<mix_core::profile::StemKind> = input
         .target
         .stems
@@ -699,11 +769,22 @@ pub fn plan_with(
         .map(|s| s.stems.keys().copied().collect())
         .unwrap_or_default();
     let w = cfg.target_weight;
-    let run = |pred: &Prediction| -> Result<Diagnosis, PlanError> {
+    let run = |pred: &Prediction, st: &ConsoleState| -> Result<Diagnosis, PlanError> {
         let mut taps = pred.strips.clone();
         taps.extend(fx.iter().cloned());
+        // M062: description level intents on sources are followed through the faders
+        let progress = fader_intent_progress(
+            input.target,
+            &taps,
+            st,
+            Some(input.state),
+            &cfg.session_baseline,
+            kb,
+        );
         diagnose(
-            &DiagnosisInput::new(&pred.main, input.target).with_strips(&taps),
+            &DiagnosisInput::new(&pred.main, input.target)
+                .with_strips(&taps)
+                .with_intent_progress(&progress),
             kb,
             &cfg.diagnosis,
         )
@@ -712,7 +793,7 @@ pub fn plan_with(
 
     let mut state = input.state.clone();
     let mut pred = model.predict(&state);
-    let mut diag = run(&pred)?;
+    let mut diag = run(&pred, &state)?;
     let before = score_of(&diag, w, Some(input.state));
     let mut cur = before.clone();
     let mut notes: Vec<String> = Vec::new();
@@ -774,7 +855,10 @@ pub fn plan_with(
                         .map(|x| (&x.param, &x.to))
                         .collect::<Vec<_>>()
                 );
-                if !seen.insert(key.clone()) || tried_bad.contains(&key) {
+                if !seen.insert(key.clone())
+                    || tried_bad.contains(&key)
+                    || !estimated_ok(&c, &estimated)
+                {
                     continue;
                 }
                 match check_remit(&input.remit, input.state, &state, c, cfg) {
@@ -799,7 +883,7 @@ pub fn plan_with(
             let mut st2 = state.clone();
             st2.apply(&k.cand.changes);
             let p2 = model.predict(&st2);
-            let d2 = run(&p2)?;
+            let d2 = run(&p2, &st2)?;
             let s2 = score_of(&d2, w, Some(&st2));
             let benefit = cur.objective - s2.objective;
             let net = benefit - cfg.cost_weight * k.cand.cost;
@@ -859,14 +943,14 @@ pub fn plan_with(
     // move's actual total change).
     let mut st = input.state.clone();
     let mut pred = model.predict(&st);
-    let mut diag = run(&pred)?;
+    let mut diag = run(&pred, &st)?;
     let mut cur = before.clone();
     for ph in &mut phases {
         for step in &mut ph.steps {
             let PlanStep::Move(m) = step else { continue };
             st.apply(&m.action.changes);
             let p2 = model.predict(&st);
-            let d2 = run(&p2)?;
+            let d2 = run(&p2, &st)?;
             let s2 = score_of(&d2, w, Some(&st));
             annotate(m, &st, &pred, &diag, &cur, &p2, &d2, &s2);
             pred = p2;
