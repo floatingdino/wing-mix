@@ -2,7 +2,7 @@
 id: M031
 title: mix-engine: diagnosis (current vs target → Problems)
 stage: S3
-status: review
+status: done
 owner: agent-M031
 depends: [M020, M010, M005]
 branch: task/M031
@@ -56,3 +56,4 @@ Compare current Features (main + per-channel/solo where available) against Targe
     (2) mix-reference/M023 fill `StemTargets.masking` with `stem_masking`; (3) sibilance and depth need better
     measures (20 ms block p95 for sibilance_db, a reference reverb/DRR proxy in TargetProfile); (4) acoustic
     guitar name hint misses "AC" (M025); (5) consider moving `Problem` to mix-core if non-engine crates need it.
+- 2026-10-30 coordinator: merged, make check passes. done. mix-surface ignore-doctest fix → M018; stem masking at ingest → M018 too.
