@@ -1,28 +1,30 @@
 //! Real multitrack excerpts (mix-fixtures, local only) patched into the simulator.
 //!
 //! The user's live recording has 28 mono tracks whose file names carry the number they were recorded under
-//! (fixtures/README.md). [`load_excerpt`] reads a window of every track and maps track number N <= 40 to WING
-//! channel N fed from USB input N (the recording's own numbering), so a scene written for the real console addresses
-//! the same strips here. Five unlabelled tracks are numbered above 40 (43, 52, 53, 55, 56: recorder slots beyond the
-//! 40 channels, origin unknown); they are put on the lowest WING channels the recording does not use, in order
-//! (`TrackInfo::recorded` keeps the original number). [`flat_scene`] is a neutral starting scene: every recorded channel at 0 dB to main 1, the
-//! engineer's REAPER item/track gain as digital trim (clamped to the WING's +-18 dB) and the project's mutes.
+//! (fixtures/README.md). Only the 23 console inputs are patched: [`load_excerpt`] maps recorded track N to WING
+//! channel N fed from USB input N, so a scene written for the real console addresses the same strips here.
+//! Tracks 43 (empty), 52/53 (FOH L/R, the engineer's live mix) and 55/56 (video mix L/R) are **not** console
+//! inputs (`mix_fixtures::kind_of`); they are never patched, and instead exposed as [`RealExcerpt::foh`] /
+//! [`RealExcerpt::video`] (the human mixes of the same window). [`render_vs_foh`] renders the multitrack through a
+//! scene and returns it next to the recorded FOH mix, to compare the tool's mix with the engineer's.
+//! [`flat_scene`] is a neutral starting scene: every input at 0 dB to main 1, the engineer's REAPER item/track gain
+//! as digital trim (clamped to the WING's +-18 dB) and the project's mutes.
 //!
 //! Nothing is copied into the repo; when the fixture folder is absent (`mix_fixtures::locate`) the loader returns
 //! `None` so tests can skip.
 
 use crate::scenes::Scene;
-use crate::surface::{Multitrack, Track};
+use crate::surface::{Multitrack, TapAudio, TapPoint, Track};
 use mix_core::ids::ParamId;
 use mix_core::value::Value;
-use mix_fixtures::Fixture;
+use mix_fixtures::{Fixture, HumanMix, StereoMix, TrackKind};
 
 /// One loaded track and its project metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackInfo {
     /// WING channel (and USB input) the track is patched to.
     pub channel: u8,
-    /// Number in the recorded file name.
+    /// Number in the recorded file name (equals `channel` for console inputs).
     pub recorded: u32,
     pub label: String,
     pub name: String,
@@ -36,7 +38,12 @@ pub struct TrackInfo {
 pub struct RealExcerpt {
     pub start: f64,
     pub multitrack: Multitrack,
+    /// Console inputs only (non-input tracks are not listed).
     pub tracks: Vec<TrackInfo>,
+    /// The engineer's recorded FOH mix (tracks 52/53) over the same window, if recorded.
+    pub foh: Option<StereoMix>,
+    /// The separate video mix (tracks 55/56) over the same window, if recorded.
+    pub video: Option<StereoMix>,
 }
 
 impl RealExcerpt {
@@ -63,32 +70,24 @@ pub fn load_window(name: &str, dur: f64) -> Option<Result<RealExcerpt, String>> 
     load_excerpt(start, dur.min(len))
 }
 
-/// Excerpt of an opened fixture.
+/// Excerpt of an opened fixture: console inputs on their own WING channels, FOH/video mixes alongside.
 pub fn excerpt_of(fx: &Fixture, start: f64, dur: f64) -> Result<RealExcerpt, String> {
     let ex = fx.excerpt(start, dur).map_err(|e| e.to_string())?;
-    let max = crate::map::CHANNELS as u32;
-    let mut used: Vec<u8> = fx
-        .tracks
-        .iter()
-        .filter(|t| (1..=max).contains(&t.channel))
-        .map(|t| t.channel as u8)
-        .collect();
+    let foh = ex.human_mix(fx, HumanMix::Foh);
+    let video = ex.human_mix(fx, HumanMix::Video);
     let mut tracks = Vec::new();
     let mut infos = Vec::new();
-    for (t, audio) in fx.tracks.iter().zip(ex.audio) {
-        let ch = if (1..=max).contains(&t.channel) {
-            t.channel as u8
-        } else {
-            let free = (1..=crate::map::CHANNELS)
-                .find(|c| !used.contains(c))
-                .ok_or_else(|| format!("no free WING channel for track {}", t.channel))?;
-            used.push(free);
-            free
-        };
+    for (t, mut audio) in fx.tracks.iter().zip(ex.audio) {
+        if t.kind() != TrackKind::Input {
+            continue;
+        }
+        let ch = u8::try_from(t.channel)
+            .ok()
+            .filter(|c| (1..=crate::map::CHANNELS).contains(c))
+            .ok_or_else(|| format!("input track {} is not a WING channel", t.channel))?;
         if infos.iter().any(|i: &TrackInfo| i.channel == ch) {
             return Err(format!("WING channel {ch} recorded twice"));
         }
-        let mut audio = audio;
         audio.resize(ex.frames, 0.0);
         tracks.push(Track {
             name: if t.label.is_empty() {
@@ -116,7 +115,30 @@ pub fn excerpt_of(fx: &Fixture, start: f64, dur: f64) -> Result<RealExcerpt, Str
             tracks,
         },
         tracks: infos,
+        foh,
+        video,
     })
+}
+
+/// The tool's mix next to the engineer's, for the same excerpt.
+#[derive(Debug, Clone)]
+pub struct FohComparison {
+    /// Simulator main 1 (post fader) rendered through the scene, trimmed to the excerpt length.
+    pub sim: TapAudio,
+    /// Recorded FOH mix of the same window (same sample rate and length as `sim`).
+    pub foh: StereoMix,
+}
+
+/// Render the whole excerpt through `scene` (main 1) and pair it with the recorded FOH mix.
+/// Errors when the excerpt has no FOH mix or the console cannot be built.
+pub fn render_vs_foh(ex: &RealExcerpt, scene: &Scene) -> Result<FohComparison, String> {
+    let foh = ex.foh.clone().ok_or("excerpt has no FOH mix")?;
+    let sim = crate::scenes::console_with(&ex.multitrack, scene, crate::SimConfig::default())?;
+    let r = sim.render_frames(ex.multitrack.frames(), &[TapPoint::Main(1)]);
+    let mut tap = r.taps.into_iter().next().ok_or("no main tap")?;
+    tap.left.truncate(foh.frames());
+    tap.right.truncate(foh.frames());
+    Ok(FohComparison { sim: tap, foh })
 }
 
 /// Neutral scene for an excerpt: main 1 at 0 dB; every recorded channel assigned to main 1 at 0 dB, fader 0 dB,

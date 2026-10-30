@@ -1,12 +1,12 @@
 //! The user's real multitrack (local only) patched into the simulator. Skips when the fixture folder is absent.
 
-use mix_sim::real::{flat_scene, load_excerpt, load_window};
+use mix_sim::real::{flat_scene, load_excerpt, load_window, render_vs_foh};
 use mix_sim::scenes::console_with;
 use mix_sim::{SimConfig, TapPoint};
 use mix_surface::Surface;
 use std::time::Instant;
 
-/// Fast: 2 s of the full-band window, all 28 channels patched to their WING inputs, rendered to main 1.
+/// Fast: 2 s of the full-band window, the 23 console inputs patched to their WING inputs, rendered to main 1.
 #[test]
 fn real_excerpt_renders_through_its_wing_channels() {
     let Some(ex) = load_window("full-band", 2.0) else {
@@ -14,7 +14,18 @@ fn real_excerpt_renders_through_its_wing_channels() {
         return;
     };
     let ex = ex.unwrap();
-    assert_eq!(ex.tracks.len(), 28);
+    assert_eq!(ex.tracks.len(), 23);
+    // 43/52/53/55/56 are not console inputs: never patched, FOH/video mixes carried separately
+    assert!(ex
+        .tracks
+        .iter()
+        .all(|t| t.recorded == t.channel as u32 && t.channel <= 40));
+    for n in [43, 52, 53, 55, 56] {
+        assert!(ex.tracks.iter().all(|t| t.recorded != n));
+    }
+    assert_eq!(ex.multitrack.tracks.len(), 23);
+    assert_eq!(ex.foh.as_ref().unwrap().frames(), ex.multitrack.frames());
+    assert!(ex.video.is_some());
     assert!(ex
         .tracks
         .iter()
@@ -69,4 +80,31 @@ fn real_window_30s() {
         t.elapsed().as_secs_f64()
     );
     assert!(r.tap(TapPoint::Main(1)).unwrap().rms_db() > -40.0);
+}
+
+/// Sim render and recorded FOH mix of the same 2 s, paired and comparable.
+#[test]
+fn sim_vs_foh_pair() {
+    let Some(ex) = load_window("full-band", 2.0) else {
+        eprintln!("skipped: multitrack fixture not present");
+        return;
+    };
+    let ex = ex.unwrap();
+    let c = render_vs_foh(&ex, &flat_scene(&ex)).unwrap();
+    assert_eq!(c.sim.left.len(), c.foh.frames());
+    assert_eq!(c.sim.right.len(), c.foh.frames());
+    assert!(c.sim.rms_db() > -50.0);
+    assert!(c.foh.left.iter().any(|&x| x.abs() > 1e-4), "FOH silent");
+}
+
+#[test]
+#[ignore = "slow: run with make check-full"]
+fn sim_vs_foh_30s() {
+    let Some(ex) = load_excerpt(3900.0, 30.0) else {
+        return;
+    };
+    let ex = ex.unwrap();
+    let c = render_vs_foh(&ex, &flat_scene(&ex)).unwrap();
+    assert_eq!(c.sim.left.len(), 30 * 48000);
+    assert_eq!(c.foh.frames(), 30 * 48000);
 }
