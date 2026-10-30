@@ -2,10 +2,10 @@
 id: M012
 title: mix-sim: offline closed-loop SimSurface + fixture generator
 stage: S1
-status: todo
-owner: -
+status: in_progress
+owner: agent-M012
 depends: [M010, M002]
-branch: -
+branch: task/M012
 model: opus
 ---
 
@@ -21,3 +21,6 @@ Coordinator note (after M002): follow docs/research/wing-control.md Â§mix-sim â€
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M012: started on task/M012 (.worktrees/M012). Plan: git dep on wing-sim lib (same rev), SimSurface
+  over prepare/Console::build/cycle with LevelBank meters; schema-driven minimal WING<->generic mapping inside
+  mix-sim (to be unified with mix-wing M011 later); synthetic multitrack + good/degraded scenes; real-fixture loader.
