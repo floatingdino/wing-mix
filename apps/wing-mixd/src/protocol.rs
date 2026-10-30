@@ -294,6 +294,13 @@ pub struct StartOptions {
     /// Feedback guard (default on for WING, off for the sim: synthetic loops false-trip it, see M033).
     #[serde(default)]
     pub feedback_guard: Option<bool>,
+    /// M062: measure strips without a tap through solo sweeps in autopilot (default true; needs a `solo` tap and
+    /// `inspect`).
+    #[serde(default)]
+    pub sweep: Option<bool>,
+    /// M062: estimate strips nobody has measured (mix-level fallback; default true).
+    #[serde(default)]
+    pub priors: Option<bool>,
 }
 
 /// Reply line.

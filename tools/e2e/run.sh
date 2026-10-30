@@ -7,7 +7,8 @@
 #   tools/e2e/run.sh sim             # (a) only (~2 min)
 #   tools/e2e/run.sh wing            # (b) only
 #
-# Env: E2E_SONGS (default: all three matched songs), E2E_MODES (reference,description), E2E_BATCHES (12),
+# Env: E2E_SONGS (default: all three matched songs), E2E_MODES (reference,description), E2E_TAPS (multi | solo |
+# multi,solo: per-strip USB taps or main + solo only, M062), E2E_BATCHES (12),
 # E2E_MAX_WAIT_S (900 per run), WING_SIM_BIN (default ../wing-simulator/target/release/wing-sim),
 # WINGMIX_FIXTURES (default /Users/sam/code/wing-mix/fixtures), WINGMIX_PUBLIC_SNAP, E2E_REPORT.
 # Never touches ports 2222/2223, the default shm name, or the user's WingSimulator / WingMix state dirs.

@@ -88,6 +88,9 @@ pub struct Opts {
     pub drills: bool,
     /// Use the PUBLIC.snap-derived scene (else factory defaults).
     pub public_scene: bool,
+    /// M062: route one user signal per strip to USB (per-strip taps); `false`: only main + monitor A (solo), the
+    /// one-stereo-stream setup where the daemon measures strips through solo sweeps.
+    pub strip_taps: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -129,6 +132,9 @@ pub struct RunResult {
     pub suggested: usize,
     pub suggest_writes: usize,
     pub inspections: usize,
+    /// M062: solo sweeps (`strip_measured` events) and how the strips were covered at the end.
+    pub sweeps: usize,
+    pub coverage: String,
     pub solo_restored_exact: usize,
     pub solo_ok: bool,
     pub solo_detail: String,
@@ -299,7 +305,11 @@ pub fn run(
     if let Some(s) = &snap_s {
         extra.extend(["--scene", s.as_str()]);
     }
-    let strips: Vec<u8> = ex.tracks.iter().map(|t| t.channel).collect();
+    let strips: Vec<u8> = if o.strip_taps {
+        ex.tracks.iter().map(|t| t.channel).collect()
+    } else {
+        Vec::new()
+    };
     let lanes: Vec<usize> = (1..=4 + strips.len()).collect();
     let console = Arc::new(SimConsole::start_with(feed, &lanes, &extra)?);
     assert!(console.addr().port() != 2222 && console.addr().port() != 2223);
@@ -693,6 +703,11 @@ pub fn run(
     // Solo: every inspection restored exactly (daemon events + what the observer saw), and at the end.
     let evs = d.events();
     r.inspections = evs.iter().filter(|e| ev_type(&e.v) == "soloed").count();
+    r.sweeps = evs
+        .iter()
+        .filter(|e| ev_type(&e.v) == "strip_measured")
+        .count();
+    r.coverage = snap["session"]["strips"].to_string();
     r.solo_restored_exact = evs
         .iter()
         .filter(|e| ev_type(&e.v) == "solo_restored" && e.v["exact"] == true)

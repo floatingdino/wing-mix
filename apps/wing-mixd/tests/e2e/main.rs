@@ -135,6 +135,13 @@ fn report(title: &str, runs: &[RunResult]) {
             r.solo_detail,
             if r.solo_ok { "OK" } else { "FAILED" }
         );
+        if r.sweeps > 0 || !r.coverage.is_empty() {
+            let _ = writeln!(
+                s,
+                "- strips (M062): {} solo sweeps; coverage {}",
+                r.sweeps, r.coverage
+            );
+        }
         if r.ramps.writes > 0 {
             let _ = writeln!(
                 s,
@@ -329,6 +336,111 @@ fn e2e_wing_smoke() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// M062: the WING path with only main + monitor A (solo) on USB, the one-stereo-stream setup: in suggest the plan
+/// comes from estimated strips (no solo, no write); one autopilot window later the daemon has soloed strips
+/// (`strip_measured`), every solo came back exactly as the observer saw it before.
+#[test]
+fn e2e_wing_smoke_solo_only() {
+    let feed_s = 4.0;
+    let mut extra = vec!["--idle-timeout", "0"];
+    let snap = wing::public_snap().map(|p| p.display().to_string());
+    if let Some(s) = &snap {
+        extra.extend(["--scene", s.as_str()]);
+    }
+    let strips: Vec<u8> = (1..=16).collect();
+    let Some(c) = SimConsole::start_with(Feed::synth(feed_s), &[1, 2, 3, 4], &extra) else {
+        eprintln!("e2e_wing_smoke_solo_only: SKIPPED (no wing-sim binary; see docs/testing.md)");
+        return;
+    };
+    let c = Arc::new(c);
+    let obs = observer::Observer::connect(c.addr());
+    for &ch in &strips {
+        obs.setup_write(
+            &format!("input.{ch}/source/grp"),
+            PValue::Enum("USB".into()),
+        );
+        obs.setup_write(&format!("input.{ch}/source/in"), PValue::Int(ch as i64));
+        obs.setup_write(&format!("input.{ch}/fader"), PValue::Float(-10.0));
+        obs.setup_write(&format!("input.{ch}/mute"), PValue::Bool(false));
+        obs.setup_write(&format!("input.{ch}/send/main.1/on"), PValue::Bool(true));
+        obs.setup_write(
+            &format!("input.{ch}/meta/name"),
+            PValue::Text(mix_sim::synth::TRACKS[ch as usize - 1].into()),
+        );
+    }
+    obs.setup_write("main.1/fader", PValue::Float(0.0));
+    let (taps, nlanes) = wing::route_usb_outs(&obs, &[]);
+    assert_eq!(nlanes, 4);
+    let br = bridge::Bridge::start(c.clone(), nlanes);
+    let solo0 = obs.s.solo_state().unwrap();
+    obs.settle();
+    let t_setup = Instant::now();
+    let dir = tmp("smokesolo");
+    let d = mixd::Mixd::start(&dir);
+    d.req(json!({"cmd": "connect_console", "console": "wing", "ip": "127.0.0.1", "port": c.addr().port()}));
+    d.req(json!({"cmd": "select_input", "source": "stream", "addr": br.addr, "channels": nlanes, "taps": taps}));
+    d.req(json!({"cmd": "load_description", "text": DESCRIPTION, "wait": true}));
+    let t0 = Instant::now();
+    d.req(json!({"cmd": "set_mode", "mode": "suggest"}));
+    d.req(json!({"cmd": "start", "window_s": 2.0, "time_scale": 0.1}));
+    let (_, sug) = d.expect_event(0, Duration::from_secs(90), "suggested", |e| {
+        e["type"] == "suggested" && e["moves"].as_array().is_some_and(|m| !m.is_empty())
+    });
+    obs.settle();
+    let mix_writes: Vec<_> = obs
+        .changes()
+        .into_iter()
+        .filter(|c| {
+            c.at > t_setup
+                && !c.param.as_str().starts_with("system/")
+                && !c.param.as_str().contains("/state/")
+        })
+        .collect();
+    assert!(mix_writes.is_empty(), "suggest wrote {mix_writes:?}");
+    assert!(
+        obs.solo_log().iter().all(|(at, _)| *at <= t_setup),
+        "suggest soloed"
+    );
+    let st = d.req(json!({"cmd": "snapshot"}));
+    assert_eq!(st["session"]["strips"]["tapped"], 0, "{}", st["session"]);
+    assert!(st["session"]["strips"]["estimated"].as_u64().unwrap_or(0) >= 8);
+    eprintln!(
+        "smoke (main + solo only): {} moves suggested from estimates after {:.1} s",
+        sug.v["moves"].as_array().unwrap().len(),
+        t0.elapsed().as_secs_f64()
+    );
+    // autopilot: the first strips are measured through the solo bus and the solo comes back each time
+    let seen = d.seen();
+    d.req(json!({"cmd": "set_mode", "mode": "autopilot"}));
+    d.expect_event(seen, Duration::from_secs(60), "strip_measured", |e| {
+        e["type"] == "strip_measured" && e["active"] == true
+    });
+    d.req(json!({"cmd": "STOP"}));
+    d.req(json!({"cmd": "stop"}));
+    d.req(json!({"cmd": "disconnect_console"}));
+    obs.settle();
+    let evs = d.events();
+    let restored: Vec<_> = evs
+        .iter()
+        .filter(|e| e.v["type"] == "solo_restored")
+        .collect();
+    assert!(!restored.is_empty());
+    assert!(restored.iter().all(|e| e.v["exact"] == true));
+    let log = obs.solo_log();
+    assert!(!log.is_empty(), "the observer saw no solo");
+    for e in &restored {
+        let st = log
+            .iter()
+            .rev()
+            .find(|(at, _)| *at <= e.at + Duration::from_millis(400))
+            .map(|(_, s)| s.clone());
+        assert_eq!(st.as_ref(), Some(&solo0), "solo after a sweep: {st:?}");
+    }
+    assert_eq!(obs.s.solo_state().unwrap(), solo0);
+    drop(d);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // -------------------------------------------------------------------------------------------------------------
 // Full runs (tools/e2e/run.sh)
 
@@ -413,6 +525,8 @@ fn e2e_wing_real() {
     let cache = ProfileCache::new(std::env::temp_dir().join("wingmix-m016-profiles"));
     let songs = std::env::var("E2E_SONGS").unwrap_or_else(|_| "i-know-that-i-know".into());
     let modes = std::env::var("E2E_MODES").unwrap_or_else(|_| "reference,description".into());
+    // M062: `multi` = a user signal per strip on USB (per-strip taps), `solo` = main + monitor A (solo) only
+    let tap_sets = std::env::var("E2E_TAPS").unwrap_or_else(|_| "multi".into());
     let max_batches: u32 = std::env::var("E2E_BATCHES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -440,7 +554,16 @@ fn e2e_wing_real() {
             .foh
             .as_ref()
             .map(|f| (f.left.as_slice(), f.right.as_slice()));
-        for mode in modes.split(',').map(str::trim) {
+        for (mode, taps) in modes
+            .split(',')
+            .map(str::trim)
+            .flat_map(|m| tap_sets.split(',').map(move |t| (m, t.trim())))
+        {
+            let strip_taps = match taps {
+                "multi" => true,
+                "solo" => false,
+                other => panic!("unknown E2E_TAPS {other} (multi, solo)"),
+            };
             let (target, score_target, drills) = match mode {
                 "reference" => {
                     let mut t = pair.reference.clone();
@@ -464,15 +587,25 @@ fn e2e_wing_real() {
                 ),
                 other => panic!("unknown mode {other}"),
             };
-            let dir = tmp(&format!("{}{}", &id[..4.min(id.len())], &mode[..3]));
+            let dir = tmp(&format!(
+                "{}{}{}",
+                &id[..4.min(id.len())],
+                &mode[..3],
+                &taps[..1]
+            ));
             let o = wing::Opts {
-                name: format!("{id} {mode}"),
+                name: if strip_taps {
+                    format!("{id} {mode}")
+                } else {
+                    format!("{id} {mode} [main+solo only]")
+                },
                 target,
                 score_target,
                 max_batches,
                 max_wait,
                 drills,
                 public_scene: true,
+                strip_taps,
             };
             let r = wing::run(&ex, foh, &o, &dir).expect("wing-sim");
             report(
