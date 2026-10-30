@@ -9,6 +9,8 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 ## In flight
 | Task | Agent | Model | Branch | Started |
 |---|---|---|---|---|
+| M033 | background subagent (session-local) | opus | task/M033 | 2026-10-30 |
+| M034 | background subagent (session-local) | opus | task/M034 | 2026-10-30 |
 | M019 | background subagent (session-local) | sonnet | task/M019b (reopened: flaky e2e yield test) | 2026-10-30 |
 
 ## Decisions log
@@ -20,3 +22,4 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 - 2026-10-30: M031 (diagnosis) and M025 (source ID) held back to cap concurrency at 5; dispatch next.
 - 2026-10-30: M060 (second surface) deferred until the core loop (M032/M033/M050) lands.
 - 2026-10-30: rule: chain merge → `make check && git push` (never push on a failing check; M019 was pushed with a flaky failure once).
+- 2026-10-30: main has unpushed commits (M032 merge etc.): push blocked until mix-wing wing_sim suite is stable under load (M019b).
