@@ -113,6 +113,8 @@ pub struct PlanConfig {
     pub allow_conditional: bool,
     /// Solo dwell suggested for inspect steps (s).
     pub inspect_dwell_s: f64,
+    /// Most param changes in one move (the actuator refuses larger batches: `ActuatorConfig::max_batch`).
+    pub max_changes: usize,
     pub candidates: CandidateConfig,
     pub diagnosis: DiagnosisConfig,
     /// Safety gain limits the actuator's gate enforces (M036): every gain increase is planned within the
@@ -136,6 +138,7 @@ impl PlanConfig {
             target_weight: 0.1,
             allow_conditional: true,
             inspect_dwell_s: kb.workflow.iteration.settle_s.lo(),
+            max_changes: mix_actuator::ActuatorConfig::default().max_batch,
             candidates: CandidateConfig::from_kb(kb),
             diagnosis: DiagnosisConfig {
                 gate_opportunities: true,
@@ -423,10 +426,10 @@ fn clamp_envelope(spec: &ParamSpec, from: &Value, to: &Value, env: &Envelope) ->
     if !matches!(to, Value::Float(_)) {
         return Some(to.clone());
     }
-    let leaf = spec.id.leaf();
     let mut x = b;
     match spec.unit {
-        Unit::Hz => {
+        // the safety gate measures these as octaves from the session baseline (M036: not only frequencies)
+        Unit::Hz | Unit::Q | Unit::Ms | Unit::Seconds | Unit::Ratio => {
             if let Some(o) = env.max_delta_oct {
                 if a > 0.0 && b > 0.0 {
                     let d = (b / a).log2().clamp(-o, o);
@@ -442,13 +445,13 @@ fn clamp_envelope(spec: &ParamSpec, from: &Value, to: &Value, env: &Envelope) ->
         Unit::Db => {
             let d = b - a;
             let mut d2 = d;
-            if leaf.ends_with("gain") && spec.class == mix_surface::ParamClass::Eq {
-                if let Some(m) = env.max_boost_db {
-                    d2 = d2.min(m);
-                }
-                if let Some(m) = env.max_cut_db {
-                    d2 = d2.max(-m);
-                }
+            // M036: the safety gate applies max_boost/max_cut to every dB param (thresholds, makeup), not only EQ
+            // gains; mirror it so a planned compressor threshold is not refused
+            if let Some(m) = env.max_boost_db {
+                d2 = d2.min(m);
+            }
+            if let Some(m) = env.max_cut_db {
+                d2 = d2.max(-m);
             }
             if let Some(m) = env.max_delta_db {
                 d2 = d2.clamp(-m, m);
@@ -563,6 +566,13 @@ fn check_remit(
     }
     if kept.is_empty() {
         return Err("nothing left inside the remit envelope".into());
+    }
+    if kept.len() > cfg.max_changes {
+        return Err(format!(
+            "x: too_large ({} changes, the actuator takes {})",
+            kept.len(),
+            cfg.max_changes
+        ));
     }
     if clamped {
         // the generator's label named the unclamped value
@@ -903,20 +913,30 @@ fn describe_changes_in(
 }
 
 /// M036 plan hygiene: one move per param. A move that touches a param an earlier move (in execution order)
-/// already set is folded into that earlier move: the union of both moves' changes, each param ending at its last
+/// already set is folded into that earlier move (while the union fits one actuator batch): the union of both moves' changes, each param ending at its last
 /// planned value (the console ends in the same state). Changes that return a param to its plan-time value are
 /// dropped, and so is a move left without changes. Merged moves get a label from their actual total change.
 fn merge_moves(
     eff: Vec<(usize, usize, &PlannedMove)>,
     state: &ConsoleState,
+    max_changes: usize,
 ) -> Vec<(usize, PlannedMove)> {
     let mut out: Vec<(usize, PlannedMove, bool)> = Vec::new();
     for (ph, _, m) in eff {
         let target = out.iter().position(|(_, prev, _)| {
-            prev.action
+            let shared = prev
+                .action
                 .changes
                 .iter()
-                .any(|a| m.action.changes.iter().any(|b| a.param == b.param))
+                .any(|a| m.action.changes.iter().any(|b| a.param == b.param));
+            let new = m
+                .action
+                .changes
+                .iter()
+                .filter(|b| !prev.action.changes.iter().any(|a| a.param == b.param))
+                .count();
+            // the merged move must still fit one actuator batch
+            shared && prev.action.changes.len() + new <= max_changes
         });
         let Some(i) = target else {
             out.push((ph, m.clone(), false));
@@ -1157,7 +1177,7 @@ fn order(
         eff.push((p, i, m));
     }
     eff.sort_by_key(|x| (x.0, x.1));
-    let eff = split_moves(merge_moves(eff, input.state), input, cfg);
+    let eff = split_moves(merge_moves(eff, input.state, cfg.max_changes), input, cfg);
     let orders: BTreeMap<String, u32> = kb
         .phases()
         .iter()

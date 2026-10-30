@@ -512,7 +512,10 @@ impl Gen<'_> {
                 };
                 push("dyn/threshold", fv(thr));
                 push("dyn/ratio", fv(ratio));
-                push("dyn/knee", fv(knee));
+                // the knee only when the batch has room (the actuator takes 8 changes; the detector comes first)
+                if pr.detector.is_none() {
+                    push("dyn/knee", fv(knee));
+                }
                 push("dyn/attack", fv(pr.attack_ms.mid()));
                 push("dyn/release", fv(pr.release_ms.mid()));
                 // the preset's times only apply with WING AUTO off
@@ -943,9 +946,28 @@ impl Gen<'_> {
             if room.is_finite() && short > 0.5 {
                 let d = -short.min(self.cfg.max_fader_step_db);
                 let mut changes = Vec::new();
+                // the loudest others (one actuator batch: at most 8 changes)
+                let others: Vec<StripId> = self
+                    .model
+                    .strips
+                    .iter()
+                    .filter(|o| {
+                        !o.tap.fx_return
+                            && !members.contains(&o.tap.strip)
+                            && self.kind(&o.tap.strip) != StripKind::Main
+                    })
+                    .map(|o| o.tap.strip.clone())
+                    .collect();
+                let all: Vec<usize> = (0..N_ERB).collect();
+                let loud: Vec<StripId> = self
+                    .ranked(&others, &all)
+                    .into_iter()
+                    .take(8)
+                    .map(|x| x.0)
+                    .collect();
                 for o in &self.model.strips {
                     let s = &o.tap.strip;
-                    if o.tap.fx_return || members.contains(s) || self.kind(s) == StripKind::Main {
+                    if !loud.contains(s) {
                         continue;
                     }
                     let st = self.settings(s);
@@ -958,7 +980,10 @@ impl Gen<'_> {
                     out.push(Candidate {
                         phase: 6,
                         strip: changes[0].param.strip().unwrap_or_else(|| members[0].clone()),
-                        label: format!("all but {} faders {d:+.1} dB", p.scope.subject.label()),
+                        label: format!(
+                            "loudest others than {} faders {d:+.1} dB",
+                            p.scope.subject.label()
+                        ),
                         changes,
                         problem: p.id.clone(),
                         rules: p.rules.clone(),
@@ -1187,12 +1212,15 @@ impl Gen<'_> {
                 continue;
             }
             if narrower {
-                // side from the name (L/R) or the current position; pairs use the kb spread
+                // side from the name (L/R), an adjacent channel of the same name (a stereo pair on two channels:
+                // the lower one left; M036), or the current position; pairs use the kb spread
                 let name = o.tap.name.to_uppercase();
                 let sign = if name.ends_with(" L") || name.ends_with("L") && name.len() <= 2 {
                     -1.0
                 } else if name.ends_with(" R") {
                     1.0
+                } else if let Some(side) = self.adjacent_pair_side(o) {
+                    side
                 } else if cur.abs() > 1.0 {
                     cur.signum()
                 } else {
@@ -1209,6 +1237,24 @@ impl Gen<'_> {
                 out.extend(self.pan(s, cur * 0.6, p, why, 1.0));
             }
         }
+    }
+
+    /// Side of a strip that has a neighbouring channel of the same kind with the same (non-empty) name: -1 for
+    /// the lower channel, +1 for the higher one.
+    fn adjacent_pair_side(&self, o: &super::predict::StripObs) -> Option<f64> {
+        let name = o.tap.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let i = o.tap.strip.index()?;
+        let kind = o.tap.strip.kind_name();
+        self.model.strips.iter().find_map(|x| {
+            let j = x.tap.strip.index()?;
+            (x.tap.strip.kind_name() == kind
+                && x.tap.name.trim().eq_ignore_ascii_case(name)
+                && (j == i + 1 || j + 1 == i))
+                .then_some(if j > i { -1.0 } else { 1.0 })
+        })
     }
 
     fn dynamics(&self, p: &Problem, out: &mut Vec<Candidate>) {

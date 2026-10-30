@@ -350,6 +350,18 @@ impl Rig {
         }) {
             eprintln!("  last top problems: {top:?}");
         }
+        if std::env::var("M036_ACT").is_ok() {
+            for (t, e) in &self.act_log {
+                if matches!(
+                    e,
+                    ActuatorEvent::Refused { .. }
+                        | ActuatorEvent::Aborted { .. }
+                        | ActuatorEvent::Yielded { .. }
+                ) {
+                    eprintln!("  act @{t:6.1} {e:?}");
+                }
+            }
+        }
         eprintln!(
             "  feedback trips {}, safety refusals {}",
             self.feedback_trips(),
@@ -388,12 +400,23 @@ impl Rig {
             .count()
     }
 
-    /// Batches the safety gate refused.
+    /// Moves (incl. an inspection's adjustment) the safety gate refused or aborted (planned outside its limits).
     pub fn safety_refusals(&self) -> usize {
-        self.ctl
-            .records()
+        use mix_actuator::{AbortReason, Refusal};
+        use mix_surface::remit::Reason;
+        self.act_log
             .iter()
-            .filter(|r| r.note.contains("Safety"))
+            .filter(|(_, e)| match e {
+                ActuatorEvent::Refused {
+                    reason: Refusal::Remit { reason, .. },
+                    ..
+                } => *reason == Reason::Safety,
+                ActuatorEvent::Aborted {
+                    reason: AbortReason::Remit { reason, detail, .. },
+                    ..
+                } => *reason == Reason::Safety && !detail.contains("increase refused"),
+                _ => false,
+            })
             .count()
     }
 

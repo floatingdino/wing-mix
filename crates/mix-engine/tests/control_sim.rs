@@ -637,10 +637,24 @@ fn conditional_moves_wait_for_confirmation() {
     // bass too loud and vocal buried: fader work only
     let scene = partly_degraded(&["input.7/fader", "input.13/fader"]);
     let mut r = rig_with(&scene, c, policy);
-    let asked = r.run_until(30.0, |r| !r.ctl.pending().is_empty() && !r.ctl.is_busy());
+    let asked = r.run_until(30.0, |r| {
+        r.ctl
+            .pending()
+            .iter()
+            .any(|p| p.key == "test-confirm-faders")
+            && !r.ctl.is_busy()
+    });
     r.print_report("pending confirmations");
     assert!(asked, "nothing pending");
-    let key = r.ctl.pending()[0].key.clone();
+    // (M036: compressor switch-ons wait too, under their `revive:` key)
+    let key = r
+        .ctl
+        .pending()
+        .iter()
+        .find(|p| p.key == "test-confirm-faders")
+        .expect("fader confirmation pending")
+        .key
+        .clone();
     assert!(
         r.count(|e| matches!(e, ControlEvent::ConfirmationNeeded { key: k, .. } if *k == key)) == 1
     );

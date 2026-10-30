@@ -232,6 +232,8 @@ pub struct Controller<'k> {
     /// Value of every param before this controller first changed it (the safety gate's session baseline; M036:
     /// the planner plans boosts within the per-session limit from it).
     session_baseline: BTreeMap<ParamId, f64>,
+    /// Strips found silent in a solo inspection: their moves run without one.
+    silent_in_solo: std::collections::BTreeSet<StripId>,
     kept: u32,
     pending: Vec<Pending>,
     inspections: Arc<Mutex<Vec<Inspection>>>,
@@ -285,6 +287,7 @@ impl<'k> Controller<'k> {
             batches: 0,
             change_db: 0.0,
             session_baseline: BTreeMap::new(),
+            silent_in_solo: Default::default(),
             kept: 0,
             pending: Vec::new(),
             inspections: Arc::new(Mutex::new(Vec::new())),
@@ -790,6 +793,12 @@ impl<'k> Controller<'k> {
         let mut silent = false;
         for i in inspections {
             silent |= !i.active;
+            if !i.active {
+                // M036: a strip that played nothing while soloed is not inspected again (sparse sources, e.g.
+                // toms, are often silent for a whole dwell): its later moves run in context instead of being
+                // retried until the budget is gone
+                self.silent_in_solo.insert(i.strip.clone());
+            }
             self.emit(ControlEvent::Inspected {
                 strip: i.strip,
                 loudness_lufs: i.loudness_lufs,
@@ -1095,7 +1104,7 @@ impl<'k> Controller<'k> {
                 PlanStep::Move(mv) => {
                     let insp = inspect
                         .take_if(|(s, _)| *s == mv.strip)
-                        .filter(|_| self.cfg.inspect);
+                        .filter(|(s, _)| self.cfg.inspect && !self.silent_in_solo.contains(s));
                     let b = Batch {
                         mv: (**mv).clone(),
                         inspect: insp,
