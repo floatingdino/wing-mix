@@ -70,4 +70,5 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | ID | Title | Depends | Model |
 |---|---|---|---|
 | M052 | Milestone: end-to-end against wing-simulator | M050, M051, M041, M024, M025 | opus |
+| M053 | wing-mixd follow-ups: signals, mid-session roles, RTA feed | M050 | sonnet |
 | M060 | Second-surface proof: adapter guide + stub adapter | M011 | sonnet |

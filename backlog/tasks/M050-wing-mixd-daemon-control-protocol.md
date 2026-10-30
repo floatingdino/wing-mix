@@ -2,7 +2,7 @@
 id: M050
 title: wing-mixd daemon + control protocol
 stage: S5
-status: review
+status: done
 owner: agent-M050
 depends: [M011, M021, M022, M033]
 branch: task/M050
@@ -63,3 +63,4 @@ Coordinator note (from M041): wire SafetyMonitor feeds (feed_mains/feed_features
     name for the role key is taken from the client (no generic Surface API for the active scene); (4) SIGINT/
     SIGTERM handling for a clean final status (needs libc); (5) mix-sources identification for strip source types
     (currently kb name hints via StripTap::new).
+- 2026-10-31 coordinator: merged, make check passes. done. E2E test kept in fast set (13 s; it is the main integration test). Follow-ups → M053.

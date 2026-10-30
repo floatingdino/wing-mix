@@ -11,7 +11,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 |---|---|---|---|---|
 | M035 | background subagent (session-local) | opus | task/M035 | 2026-10-31 |
 | M037 | background subagent (session-local) | opus | task/M037 | 2026-10-31 |
-| M050 | background subagent (session-local) | opus | task/M050 | 2026-10-31 |
 
 ## Decisions log
 - 2026-10-30: Rust workspace + SwiftUI app + daemon/control.sock, mirroring wing-simulator. Reuse wing-simulator
