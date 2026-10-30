@@ -9,16 +9,16 @@ struct LiveView: View {
     var snap: Snapshot? { model.snapshot }
 
     var body: some View {
-        ScrollView {
+        Scroller {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 safetyBanner
                 HStack(alignment: .top, spacing: 16) {
-                    GroupBox("Spectrum: current vs target (dB relative, ERB bands)") {
+                    Box("Spectrum: current vs target (dB relative, ERB bands)") {
                         SpectrumChart(points: snap?.spectrum?.points ?? [])
                             .frame(minHeight: 240).padding(6)
                     }
-                    GroupBox("Loudness and dynamics") {
+                    Box("Loudness and dynamics") {
                         MetersView(loudness: snap?.loudness, targetLufs: model.targetInfo?["integrated_lufs"]?.double)
                             .padding(6)
                     }
@@ -76,7 +76,7 @@ struct LiveView: View {
         if st?.feedbackLatched == true || st?.ceilingHold == true || st?.stalled == true || st?.feedbackSuspect == true
             || holding != nil || !trips.isEmpty || model.stopped
         {
-            GroupBox {
+            Box {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Image(systemName: "shield.lefthalf.filled.trianglebadge.exclamationmark").foregroundStyle(.orange)
@@ -110,7 +110,7 @@ struct LiveView: View {
     // MARK: lists
 
     var pendingBox: some View {
-        GroupBox("Waiting for your confirmation") {
+        Box("Waiting for your confirmation") {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(snap?.pending ?? []) { p in
                     HStack {
@@ -128,13 +128,13 @@ struct LiveView: View {
     }
 
     var problemsBox: some View {
-        GroupBox("Problems (\(snap?.problems.count ?? 0))") {
+        Box("Problems (\(snap?.problems.count ?? 0))") {
             VStack(alignment: .leading, spacing: 8) {
                 if snap?.problems.isEmpty ?? true { Text("None detected.").foregroundStyle(.secondary) }
                 ForEach((snap?.problems ?? []).prefix(8)) { p in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
-                            ProgressView(value: min(1, (p.severity ?? 0) / 2)).frame(width: 46).tint(.orange)
+                            Bar(value: (p.severity ?? 0) / 2, tint: .orange).frame(width: 46)
                             Text(p.explanation ?? p.id).font(.callout).lineLimit(2)
                         }
                         if let c = p.contributors, !c.isEmpty {
@@ -149,7 +149,7 @@ struct LiveView: View {
     }
 
     var planBox: some View {
-        GroupBox("Plan (\(snap?.plan.count ?? 0) moves \(model.mode == .autopilot ? "queued" : "suggested"))") {
+        Box("Plan (\(snap?.plan.count ?? 0) moves \(model.mode == .autopilot ? "queued" : "suggested"))") {
             VStack(alignment: .leading, spacing: 8) {
                 if snap?.plan.isEmpty ?? true { Text("Nothing planned.").foregroundStyle(.secondary) }
                 ForEach((snap?.plan ?? []).prefix(8)) { m in
@@ -169,7 +169,7 @@ struct LiveView: View {
     }
 
     var movesBox: some View {
-        GroupBox {
+        Box {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Move log").font(.headline)
@@ -207,7 +207,7 @@ struct LiveView: View {
     }
 
     var objectiveBox: some View {
-        GroupBox("Distance to target over time") {
+        Box("Distance to target over time") {
             let pts = snap?.curve ?? []
             if pts.count < 2 {
                 Text("Collecting...").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 100)
@@ -225,7 +225,7 @@ struct LiveView: View {
     }
 
     var eventsBox: some View {
-        GroupBox("Actuator events") {
+        Box("Actuator events") {
             VStack(alignment: .leading, spacing: 2) {
                 if snap?.log.isEmpty ?? true { Text("No actuator activity.").foregroundStyle(.secondary) }
                 ForEach(Array((snap?.log ?? []).suffix(12).enumerated()), id: \.offset) { _, e in

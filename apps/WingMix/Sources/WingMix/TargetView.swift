@@ -7,22 +7,21 @@ struct TargetView: View {
     @Bindable var model: AppModel
     @State private var importing = false
     @State private var dropTargeted = false
+    @Environment(\.shotMode) private var shot
 
     var body: some View {
-        ScrollView {
+        Scroller {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Target").font(.largeTitle.bold())
                 currentTarget
-                GroupBox("Reference mix") {
+                Box("Reference mix") {
                     VStack(alignment: .leading, spacing: 12) {
                         dropZone
                         HStack {
-                            Toggle("Separate stems (slower, per-instrument targets)", isOn: $model.useStems)
+                            FlagToggle(title: "Separate stems (slower, per-instrument targets)", isOn: $model.useStems)
                             Spacer()
                             if model.sectionCount > 1 {
-                                Picker("Section", selection: $model.section) {
-                                    ForEach(0..<model.sectionCount, id: \.self) { Text("Section \($0 + 1)").tag($0) }
-                                }
+                                ChoicePicker(title: "Section", selection: $model.section, options: (0..<model.sectionCount).map { ("Section \($0 + 1)", $0) })
                                 .frame(width: 190)
                             }
                             Button("Load reference") { Task { await model.loadReference() } }
@@ -31,19 +30,17 @@ struct TargetView: View {
                         if let l = model.loading {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("\(l.what ?? "Loading"): \(l.stage ?? "")").font(.callout)
-                                ProgressView(value: l.progress ?? 0)
+                                Bar(value: l.progress ?? 0)
                             }
                         }
                     }
                     .padding(6)
                 }
-                GroupBox("Or describe the mix you want") {
+                Box("Or describe the mix you want") {
                     VStack(alignment: .leading, spacing: 10) {
-                        TextEditor(text: $model.descriptionText)
-                            .font(.body).frame(height: 72)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                        TextBox(placeholder: "Describe the mix you want...", text: $model.descriptionText, lines: 3)
                         HStack {
-                            Toggle("Use Claude for unknown phrasing", isOn: $model.useLLM)
+                            FlagToggle(title: "Use Claude for unknown phrasing", isOn: $model.useLLM)
                             Spacer()
                             Button("Apply description") { Task { await model.loadDescription() } }
                                 .disabled(model.descriptionText.trimmingCharacters(in: .whitespaces).isEmpty
@@ -54,11 +51,16 @@ struct TargetView: View {
                     }
                     .padding(6)
                 }
-                GroupBox("Live context") {
+                Box("Live context") {
                     VStack(alignment: .leading, spacing: 6) {
-                        TextField("Room, venue, band, what the audience should hear...", text: $model.liveContext)
-                            .disabled(true)
-                        Text("Placeholder: live-context targets (M037) are not connected to the daemon yet.")
+                        ChoicePicker(title: "Context", selection: Binding<LiveContext>(get: { model.liveContext },
+                                                                      set: { c in Task { await model.setLiveContext(c) } }),
+                                     options: LiveContext.allCases.map { ($0.title, $0) })
+                        .frame(maxWidth: 380)
+                        .disabled(!model.daemonReady)
+                        Text(model.liveContextApplied == false
+                             ? "Stored by the daemon; the target adjustment takes effect once live-context targets (M037/M054) are active."
+                             : "Adjusts the target for how the mix will be heard: a room with an audience, a broadcast, or matching a recording.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(6)
@@ -115,11 +117,26 @@ struct TargetView: View {
         .background(RoundedRectangle(cornerRadius: 10)
             .strokeBorder(dropTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
                           style: StrokeStyle(lineWidth: 2, dash: [6])))
-        .dropDestination(for: URL.self) { urls, _ in
-            guard let u = urls.first else { return false }
-            model.referenceURL = u
-            model.section = 0
-            return true
-        } isTargeted: { dropTargeted = $0 }
+        .modifier(DropModifier(enabled: !shot, model: model, targeted: $dropTargeted))
+    }
+}
+
+/// File drop onto the reference zone (not applied while rendering screenshots).
+struct DropModifier: ViewModifier {
+    var enabled: Bool
+    var model: AppModel
+    @Binding var targeted: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.dropDestination(for: URL.self) { urls, _ in
+                guard let u = urls.first else { return false }
+                model.referenceURL = u
+                model.section = 0
+                return true
+            } isTargeted: { targeted = $0 }
+        } else {
+            content
+        }
     }
 }

@@ -58,6 +58,7 @@ public struct DaemonStatus: Decodable, Sendable, Equatable {
     public var target: Target?
     public var loading: Loading?
     public var mode: String?
+    public var liveContext: String?
     public var session: Session?
     public var safety: Safety?
     public var lastError: String?

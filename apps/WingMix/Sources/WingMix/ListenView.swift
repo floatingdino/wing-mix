@@ -6,7 +6,7 @@ struct ListenView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        ScrollView {
+        Scroller {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Listen").font(.largeTitle.bold())
                 consoleBox
@@ -18,16 +18,13 @@ struct ListenView: View {
     }
 
     var consoleBox: some View {
-        GroupBox("Console") {
+        Box("Console") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Picker("Console", selection: $model.selectedConsole) {
-                        Text("Embedded simulator").tag("sim")
-                        ForEach(model.consoles.filter { $0.kind != "sim" }) { c in
-                            Text("\(c.title)  \(c.ip ?? "")").tag(c.ip ?? c.id)
-                        }
-                        Text("WING by IP address...").tag("ip")
-                    }
+                    ChoicePicker(title: "Console", selection: $model.selectedConsole,
+                                 options: [("Embedded simulator", "sim")]
+                                     + model.consoles.filter { $0.kind != "sim" }.map { ("\($0.title)  \($0.ip ?? "")", $0.ip ?? $0.id) }
+                                     + [("WING by IP address...", "ip")])
                     .frame(maxWidth: 420)
                     Button {
                         Task { await model.discoverConsoles() }
@@ -37,17 +34,14 @@ struct ListenView: View {
                     .disabled(model.discovering)
                 }
                 if model.selectedConsole == "ip" {
-                    TextField("192.168.1.20", text: $model.wingIP).frame(width: 200)
+                    TextBox(placeholder: "192.168.1.20", text: $model.wingIP).frame(width: 200)
                 }
                 if model.selectedConsole == "sim" {
                     HStack {
-                        Picker("Scene", selection: $model.simScene) {
-                            Text("Degraded (needs mixing)").tag("degraded")
-                            Text("Factory").tag("factory")
-                            Text("Reference").tag("reference")
-                        }
-                        .frame(width: 280)
-                        TextField("Multitrack WAV (empty = built-in synthetic song)", text: $model.simMultitrack)
+                        ChoicePicker(title: "Scene", selection: $model.simScene,
+                                     options: [("Degraded (needs mixing)", "degraded"), ("Factory", "factory"), ("Reference", "reference")])
+                            .frame(width: 280)
+                        TextBox(placeholder: "Multitrack WAV (empty = built-in synthetic song)", text: $model.simMultitrack)
                     }
                 }
                 HStack {
@@ -66,22 +60,18 @@ struct ListenView: View {
     }
 
     var inputBox: some View {
-        GroupBox("Audio input") {
+        Box("Audio input") {
             VStack(alignment: .leading, spacing: 10) {
-                Picker("Source", selection: $model.inputSource) {
-                    ForEach(InputSource.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented).frame(width: 340)
+                ChoicePicker(title: "Source", selection: $model.inputSource,
+                             options: InputSource.allCases.map { ($0.rawValue, $0) }, segmented: true)
+                .frame(width: 340)
                 if model.inputSource == .sim {
                     Text("Analyses the embedded simulator's main bus, solo bus and every input post-fader (fixed taps).")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     HStack {
-                        Picker("Device", selection: $model.selectedDevice) {
-                            ForEach(model.devices) { d in
-                                Text("\(d.name)  (\(d.maxChannels) ch)").tag(d.name)
-                            }
-                        }
+                        ChoicePicker(title: "Device", selection: $model.selectedDevice,
+                                     options: model.devices.map { ("\($0.name)  (\($0.maxChannels) ch)", $0.name) })
                         .frame(maxWidth: 480)
                         Button("Refresh") { Task { await model.refreshDevices() } }
                     }
@@ -110,22 +100,18 @@ struct ListenView: View {
             Text("Which console signal does each channel (pair) carry?").font(.subheadline.bold())
             ForEach($model.taps) { $t in
                 HStack {
-                    Picker("Tap", selection: tapKind($t)) {
-                        Text("Main LR (compared with the target)").tag("main")
-                        Text("Solo bus").tag("solo")
-                        Text("Channel strip (post fader)").tag("input")
-                        Text("Monitor feed (feedback guard)").tag("monitor")
-                    }
-                    .labelsHidden().frame(width: 270)
+                    ChoicePicker(title: "Tap", selection: tapKind($t),
+                                 options: [("Main LR (compared with the target)", "main"), ("Solo bus", "solo"),
+                                           ("Channel strip (post fader)", "input"), ("Monitor feed (feedback guard)", "monitor")])
+                        .frame(width: 270)
                     if tapKind($t).wrappedValue == "input" {
-                        TextField("N", value: stripNumber($t), format: .number).frame(width: 44)
+                        TextBox(placeholder: "N", text: Binding(get: { String(stripNumber($t).wrappedValue) }, set: { stripNumber($t).wrappedValue = Int($0) ?? 1 })).frame(width: 44)
                     } else if tapKind($t).wrappedValue == "monitor" {
-                        TextField("Bus name", text: monitorName($t)).frame(width: 110)
+                        TextBox(placeholder: "Bus name", text: monitorName($t)).frame(width: 110)
                     }
-                    Stepper("Channel \(t.channel)\(t.stereo ? "-\(t.channel + 1)" : "")",
-                            value: $t.channel, in: 1...max(1, maxChannels - (t.stereo ? 1 : 0)))
+                    ChannelStepper(channel: $t.channel, stereo: t.stereo, maxChannel: max(1, maxChannels - (t.stereo ? 1 : 0)))
                         .frame(width: 170)
-                    Toggle("Stereo pair", isOn: $t.stereo).toggleStyle(.checkbox)
+                    FlagToggle(title: "Stereo pair", isOn: $t.stereo)
                     Button { model.taps.removeAll { $0.id == t.id } } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.borderless)
                         .disabled(t.tap == "main")
@@ -155,5 +141,21 @@ struct ListenView: View {
 
     func monitorName(_ t: Binding<TapSpec>) -> Binding<String> {
         Binding { String(t.wrappedValue.tap.dropFirst("monitor:".count)) } set: { t.wrappedValue.tap = "monitor:\($0)" }
+    }
+}
+
+struct ChannelStepper: View {
+    @Environment(\.shotMode) private var shot
+    @Binding var channel: Int
+    var stereo: Bool
+    var maxChannel: Int
+
+    var body: some View {
+        let label = "Channel \(channel)\(stereo ? "-\(channel + 1)" : "")"
+        if shot {
+            Text(label)
+        } else {
+            Stepper(label, value: $channel, in: 1...maxChannel)
+        }
     }
 }

@@ -50,10 +50,8 @@ struct ControlBar: View {
                 Text(connectionLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 12)
-            Picker("Mode", selection: Binding(get: { model.mode }, set: { m in Task { await model.setMode(m) } })) {
-                ForEach(MixMode.allCases) { Text($0.rawValue.capitalized).tag($0) }
-            }
-            .pickerStyle(.segmented)
+            ChoicePicker(title: "Mode", selection: Binding<MixMode>(get: { model.mode }, set: { m in Task { await model.setMode(m) } }),
+                         options: MixMode.allCases.map { ($0.rawValue.capitalized, $0) }, segmented: true)
             .frame(width: 270)
             .disabled(!model.isConnectedToConsole)
             .help("observe: measure only; suggest: plan but never write; autopilot: make the moves")

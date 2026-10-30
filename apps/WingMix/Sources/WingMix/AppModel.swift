@@ -48,7 +48,9 @@ final class AppModel {
     var sectionCount: Int { max(1, targetInfo?["sections"]?.int ?? 1) }
     var descriptionText = ""
     var useLLM = false
-    var liveContext = ""
+    var liveContext: LiveContext = .live
+    /// `applied: false` = the daemon stored it but the target transform is not active yet.
+    var liveContextApplied: Bool?
 
     // Listen
     var devices: [AudioDevice] = []
@@ -145,7 +147,10 @@ final class AppModel {
             daemonReady = true
             if status?.console != nil {
                 snapshot = try? await client.call(Snapshot.self, "snapshot")
-                if let m = snapshot?.mode, let mm = MixMode(rawValue: m), mm != mode { mode = mm }
+                if let lc = (snapshot?.liveContext ?? status?.liveContext).flatMap(LiveContext.init(rawValue:)), lc != liveContext {
+                liveContext = lc
+            }
+            if let m = snapshot?.mode, let mm = MixMode(rawValue: m), mm != mode { mode = mm }
                 if let info = snapshot?.target?.info { targetInfo = info }
             } else {
                 snapshot = nil
@@ -232,6 +237,13 @@ final class AppModel {
         if section > 0 { args["section"] = .number(Double(section)) }
         await send("load_reference", args)
         await refreshStatus()
+    }
+
+    func setLiveContext(_ c: LiveContext) async {
+        if let r = await send("set_live_context", ["context": .string(c.rawValue)]) {
+            liveContext = c
+            liveContextApplied = r["applied"]?.bool
+        }
     }
 
     func loadDescription() async {

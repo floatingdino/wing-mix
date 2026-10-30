@@ -103,6 +103,13 @@ func tempDir(_ tag: String) throws -> URL {
         #expect(StripRole.all.contains("monitor"))
     }
 
+    @Test func `live context values match the protocol`() throws {
+        #expect(LiveContext.allCases.map(\.rawValue) == ["live", "broadcast_video", "match_record"])
+        let s = try ControlClient.parseReply(#"{"ok":true,"result":{"mode":"observe","live_context":"match_record"}}"#,
+                                             as: Snapshot.self)
+        #expect(s.liveContext == "match_record")
+    }
+
     @Test func `tap specs serialise to the select_input shape`() {
         let t = TapSpec(tap: "input.5", channel: 7, stereo: false).json
         #expect(t["tap"]?.string == "input.5" && t["channels"]?.array == [.number(7)])
@@ -201,8 +208,11 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
         let desc = try await client.request("load_description", ["text": "warmer vocal", "wait": true])
         #expect(desc["kind"]?.string == "description")
         _ = try await client.request("set_mode", ["mode": "suggest"])
+        let lc = try await client.request("set_live_context", ["context": "broadcast_video"])
+        #expect(lc["live_context"]?.string == "broadcast_video")
 
         let status = try await client.call(DaemonStatus.self, "status")
+        #expect(status.liveContext == "broadcast_video")
         #expect(status.console?.kind == "sim" && status.mode == "suggest" && status.target?.kind == "description")
         let fileStatus = try #require(StatusFile.read(paths: paths))
         #expect(fileStatus.running && fileStatus.pid == Int(proc.processIdentifier))

@@ -6,6 +6,19 @@ public enum MixMode: String, CaseIterable, Sendable, Identifiable {
     public var id: String { rawValue }
 }
 
+/// The live-context target setting (`set_live_context`, M037).
+public enum LiveContext: String, CaseIterable, Sendable, Identifiable {
+    case live, broadcastVideo = "broadcast_video", matchRecord = "match_record"
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .live: "Live room (PA for an audience)"
+        case .broadcastVideo: "Broadcast / video"
+        case .matchRecord: "Match the recording"
+        }
+    }
+}
+
 /// `{"type":"float","value":-4.0}`.
 public struct ParamValue: Decodable, Sendable, Equatable {
     public var type: String?
@@ -151,6 +164,7 @@ public struct TouchedParam: Decodable, Sendable, Equatable, Identifiable {
 public struct Snapshot: Decodable, Sendable, Equatable {
     public var atS: Double?
     public var mode: String?
+    public var liveContext: String?
     public var console: DaemonStatus.Console?
     public var target: SnapshotTarget?
     public var loudness: Loudness?
@@ -168,7 +182,7 @@ public struct Snapshot: Decodable, Sendable, Equatable {
     public var touched: [TouchedParam]
 
     enum CodingKeys: String, CodingKey {
-        case atS, mode, console, target, loudness, spectrum, session, score, curve, problems, diagnosisNotes, plan,
+        case atS, mode, liveContext, console, target, loudness, spectrum, session, score, curve, problems, diagnosisNotes, plan,
              pending, moves, log, safety, touched
     }
 
@@ -176,6 +190,7 @@ public struct Snapshot: Decodable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         atS = try c.decodeIfPresent(Double.self, forKey: .atS)
         mode = try c.decodeIfPresent(String.self, forKey: .mode)
+        liveContext = try c.decodeIfPresent(String.self, forKey: .liveContext)
         console = try c.decodeIfPresent(DaemonStatus.Console.self, forKey: .console)
         target = try c.decodeIfPresent(SnapshotTarget.self, forKey: .target)
         loudness = try c.decodeIfPresent(Loudness.self, forKey: .loudness)

@@ -13,9 +13,12 @@ extension AppModel {
             if s == .target { await refreshStatus() }
             try? await Task.sleep(for: .seconds(2))
             let r = ImageRenderer(content: ShotView(model: self, screen: s)
-                .frame(width: 1120, height: 780)
+                .frame(width: 1120)
+                .frame(minHeight: 780, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
                 .background(Color(nsColor: .windowBackgroundColor))
-                .environment(\.colorScheme, .light))
+                .environment(\.colorScheme, .light)
+                .environment(\.shotMode, true))
             r.scale = 1.5
             if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                let png = rep.representation(using: .png, properties: [:])
@@ -44,6 +47,6 @@ struct ShotView: View {
             case .live: LiveView(model: model)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
