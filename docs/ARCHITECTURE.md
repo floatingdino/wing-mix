@@ -50,6 +50,7 @@ crates/mix-core       shared types: TargetProfile, Features, Problem, Action, un
 crates/mix-surface    generic console model (strips, params, capabilities, solo), Surface trait, Remit, journal
 crates/mix-wing       WING adapter: native-protocol client with auto-reconnect (wing-proto nrp framing), meters/RTA
 crates/mix-wing-map   WING tree <-> generic param mapping + value conversion (wing-model schema; shared with mix-sim)
+crates/mix-x32        second-surface proof: Behringer X32/M32 OSC adapter + fake server (docs/adapters.md)
 crates/mix-sim        SimSurface: in-process wing-engine render for closed-loop tests + fixture generator
 crates/mix-analysis   feature extraction (streaming + offline), loudness, spectra, dynamics, stereo, masking
 crates/mix-capture    audio input enumeration/capture (cpal), file source, SPSC ring

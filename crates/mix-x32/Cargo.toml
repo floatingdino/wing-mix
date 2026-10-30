@@ -1,0 +1,13 @@
+[package]
+name = "mix-x32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mix-core = { path = "../mix-core" }
+mix-surface = { path = "../mix-surface" }
+
+[dev-dependencies]
+mix-actuator = { path = "../mix-actuator" }
