@@ -28,3 +28,9 @@ Levels below are summed mean-square of the raw tracks, dBFS (total / vocals ch 3
 | full-band | 3900-3930 s | -14 / -21 / -28 | whole band, loudest sustained part of the show |
 | vocal-forward | 3420-3450 s | -15 / -19 / -28 | full band with the strongest vocal-to-total ratio |
 | no-vocals | 4080-4110 s | -16 / -55 / -51 | instrumental bed, vocal channels are bleed only |
+
+## Reference mixes (`mixes/`)
+Commercial recordings supplied by the user as reference mixes (local only, copyrighted — never commit, upload, or
+quote audio). All AAC in .m4a, 44.1 kHz stereo:
+- `Holy Forever.m4a` (644 s), `I Know That I Know.m4a` (319 s), `Show me Your Face.m4a` (497 s).
+These are likely songs in the multitrack set (a Sunday worship set); M016 aligns them to multitrack time ranges.

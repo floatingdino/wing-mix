@@ -2,7 +2,7 @@
 id: M010
 title: mix-core + mix-surface: generic console model, Surface trait, Remit engine, journal
 stage: S1
-status: review
+status: done
 owner: agent-M010
 depends: [M001, M004]
 branch: task/M010
@@ -53,3 +53,4 @@ Implement shared types in mix-core (units, Value, Features/TargetProfile skeleto
   Proposed follow-ups: M011 implements ConformanceDriver against wing-sim (external client write + cfg/solo/mode SIP)
   and runs conformance::run_all with model_probe = ch eq model; M041 consumes Decision.envelope/coupled; M050
   persists Journal::entries and RemitSession; fix the `phrases` comment in data/remit/wing-default.toml.
+- 2026-10-30 coordinator: merged, make check passes (78 tests, remit tables 79/79, 45/45). Deviations accepted. done.
