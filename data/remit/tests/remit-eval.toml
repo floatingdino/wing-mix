@@ -1,0 +1,711 @@
+# Remit evaluator test cases (M004 -> M010 unit tests). Spec: docs/research/remit.md sections 3-5.
+# Policy under test: data/remit/wing-default.toml (plus a per-case `overlay` of extra rules where given).
+#
+# The topology is generic (no WING paths) and modelled on wing-simulator fixtures/PUBLIC.snap after role
+# detection: roles below are the *effective* roles (section 6.5). Strip fields:
+#   id, kind, role, tags, chain (block order; position decides coupling), sends (dest, tap_after = last block
+#   before the send's tap, active), feeds_protected (strip output is re-input into a monitor/comms mix after all
+#   of its processing), hosts (fx pseudo-strips: "strip/insert.N" where the slot is inserted; empty = free slot).
+#
+# Case fields: param (generic ParamId), class (param class reported by the surface), optional from/to (current
+# and requested value, for value-dependent checks: revive, insert slot, fx model), optional confirmed (rule ids the
+# user confirmed this session), optional overlay (extra rules appended to the policy), optional action = "solo" with
+# solo_destructive. Expected: class (allowed|conditional|forbidden), reason (first decisive step:
+# unknown|readonly|hard|locked|unconfirmed|deny_tag|default_deny|rule|coupling|revive|inspection), rule (id of the
+# deciding rule, when reason is rule/coupling/revive or an unlock happened), coupled (optional bool).
+
+format = "wing-mix-remit-tests/1"
+
+[surface]
+solo_destructive = false
+external_fx_models = ["EXT"]     # models the surface reports as external hardware loops (capability flag)
+# A send/insert/fader at or below -90 dB is "silent" (revive.floor_db).
+
+[[strip]]
+id = "input.1"            # KICK: pre-fader IEM sends tap after dyn (WING ptap 5 with GEDI), GRP send to drums
+kind = "input"
+role = "foh"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "bus.8", tap_after = "dyn", active = true }, { dest = "bus.6", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.20"           # VOX1: IEM sends tapped at IN (pre filter): only preamp/in are coupled
+kind = "input"
+role = "foh"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "bus.8", tap_after = "in", active = true }, { dest = "main.1", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.30"           # post-fader send to a wedge: fader and pan are coupled too
+kind = "input"
+role = "foh"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "bus.8", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.9"            # BASS: no monitor sends at all; fader currently -oo (see revive cases)
+kind = "input"
+role = "foh"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "bus.7", tap_after = "pan", active = true }, { dest = "bus.8", tap_after = "dyn", active = false } ]
+
+[[strip]]
+id = "input.5"
+kind = "input"
+role = "foh"
+tags = ["NOAI"]
+
+[[strip]]
+id = "input.25"
+kind = "input"
+role = "foh"
+tags = ["AI"]
+
+[[strip]]
+id = "input.32"           # CLICK
+kind = "input"
+role = "monitor"
+
+[[strip]]
+id = "input.40"           # TALKBACK
+kind = "input"
+role = "comms"
+
+[[strip]]
+id = "input.44"           # aux input with no route to main or monitors
+kind = "aux"
+role = "unrouted"
+
+[[strip]]
+id = "bus.1"              # VOX VERB: FX bus, its output is re-input into IEM mixes
+kind = "bus"
+role = "fx"
+feeds_protected = true
+
+[[strip]]
+id = "bus.5"              # VOX group, re-input into IEMs via an aux "B. LINK"
+kind = "bus"
+role = "foh_group"
+feeds_protected = true
+
+[[strip]]
+id = "bus.6"
+kind = "bus"
+role = "foh_group"
+
+[[strip]]
+id = "bus.7"              # BAND BUS
+kind = "bus"
+role = "foh_group"
+
+[[strip]]
+id = "bus.8"              # VOX 1 IEM
+kind = "bus"
+role = "monitor"
+
+[[strip]]
+id = "bus.16"             # COMMS
+kind = "bus"
+role = "comms"
+
+[[strip]]
+id = "bus.12"             # undecided bus
+kind = "bus"
+role = "unknown"
+
+[[strip]]
+id = "bus.3"              # STREAM bus
+kind = "bus"
+role = "aux_feed"
+
+[[strip]]
+id = "main.1"
+kind = "main"
+role = "main"
+
+[[strip]]
+id = "main.4"             # STREAM main
+kind = "main"
+role = "aux_feed"
+
+[[strip]]
+id = "matrix.1"
+kind = "matrix"
+role = "matrix"
+
+[[strip]]
+id = "dca.1"
+kind = "dca"
+role = "dca"
+
+[[strip]]
+id = "fx.1"
+kind = "fx"
+hosts = ["bus.1/insert.1"]
+
+[[strip]]
+id = "fx.3"
+kind = "fx"
+hosts = ["input.20/insert.1"]
+
+[[strip]]
+id = "fx.5"
+kind = "fx"
+hosts = []
+
+[[strip]]
+id = "fx.9"
+kind = "fx"
+hosts = ["bus.8/insert.2"]
+
+[[strip]]
+id = "fx.12"
+kind = "fx"
+hosts = ["main.1/insert.1"]
+
+[[strip]]
+id = "fx.16"
+kind = "fx"
+hosts = ["matrix.1/insert.1"]
+
+# ===================== inputs ====================================================================================
+
+[[case]]
+id = "eq-before-iem-tap-is-coupled-but-allowed"
+param = "input.1/eq/band.2.gain"
+class = "eq"
+expect = { class = "allowed", reason = "rule", rule = "input-tone", coupled = true }
+
+[[case]]
+id = "eq-after-iem-tap-not-coupled"
+param = "input.20/eq/band.2.gain"
+class = "eq"
+expect = { class = "allowed", reason = "rule", rule = "input-tone", coupled = false }
+
+[[case]]
+id = "trim-coupled-to-iem"
+param = "input.20/in/trim"
+class = "trim"
+expect = { class = "conditional", reason = "coupling", rule = "input-gain-staging", coupled = true }
+
+[[case]]
+id = "trim-uncoupled"
+param = "input.9/in/trim"
+class = "trim"
+expect = { class = "allowed", reason = "rule", rule = "input-gain-staging", coupled = false }
+
+[[case]]
+id = "inactive-monitor-send-does-not-couple"
+param = "input.9/dyn/threshold"
+class = "dynamics"
+expect = { class = "allowed", reason = "rule", rule = "input-tone", coupled = false }
+
+[[case]]
+id = "input-mute-conditional"
+param = "input.1/mute"
+class = "mute"
+from = false
+to = true
+expect = { class = "conditional", reason = "rule", rule = "input-mute", coupled = false }
+
+[[case]]
+id = "input-mute-coupled-post-send"
+param = "input.30/mute"
+class = "mute"
+from = false
+to = true
+expect = { class = "forbidden", reason = "coupling", rule = "input-mute", coupled = true }
+
+[[case]]
+id = "fader-coupled-only-via-post-send"
+param = "input.30/fader"
+class = "fader"
+from = -10.0
+to = -8.0
+expect = { class = "conditional", reason = "coupling", rule = "input-level-pan", coupled = true }
+
+[[case]]
+id = "fader-small-move"
+param = "input.1/fader"
+class = "fader"
+from = -10.0
+to = -8.0
+expect = { class = "allowed", reason = "rule", rule = "input-level-pan", coupled = false }
+
+[[case]]
+id = "fader-revive-from-off"
+param = "input.9/fader"
+class = "fader"
+from = -144.0
+to = -20.0
+expect = { class = "conditional", reason = "revive", rule = "input-level-pan" }
+
+[[case]]
+id = "unmute-is-revive-and-rule-conditional"
+param = "input.9/mute"
+class = "mute"
+from = true
+to = false
+expect = { class = "conditional", reason = "rule", rule = "input-mute" }
+
+[[case]]
+id = "send-on-to-foh-group-revive"
+param = "input.9/send/bus.7/on"
+class = "send_on"
+from = false
+to = true
+expect = { class = "conditional", reason = "revive", rule = "input-sends-foh" }
+
+[[case]]
+id = "send-level-to-foh-group"
+param = "input.9/send/bus.7/level"
+class = "send_level"
+from = -12.0
+to = -9.0
+expect = { class = "allowed", reason = "rule", rule = "input-sends-foh" }
+
+[[case]]
+id = "send-into-monitor-locked"
+param = "input.1/send/bus.8/level"
+class = "send_level"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "send-into-unconfirmed-bus"
+param = "input.1/send/bus.12/level"
+class = "send_level"
+expect = { class = "forbidden", reason = "unconfirmed" }
+
+[[case]]
+id = "send-into-aux-feed-default-deny"
+param = "input.1/send/bus.3/level"
+class = "send_level"
+expect = { class = "forbidden", reason = "default_deny" }
+
+[[case]]
+id = "main-send-level"
+param = "input.1/send/main.1/level"
+class = "send_level"
+expect = { class = "allowed", reason = "rule", rule = "input-main-level" }
+
+[[case]]
+id = "main-assign"
+param = "input.20/send/main.1/on"
+class = "send_on"
+from = true
+to = false
+expect = { class = "conditional", reason = "rule", rule = "input-main-assign" }
+
+[[case]]
+id = "send-tap-forbidden"
+param = "input.1/send/bus.6/tap"
+class = "send_tap"
+expect = { class = "forbidden", reason = "rule", rule = "input-send-structure" }
+
+[[case]]
+id = "processing-order-coupled"
+param = "input.1/order"
+class = "processing_order"
+expect = { class = "forbidden", reason = "coupling", rule = "input-order", coupled = true }
+
+[[case]]
+id = "eq-model-discrete-conditional"
+param = "input.20/eq/model"
+class = "eq_model"
+expect = { class = "conditional", reason = "rule", rule = "input-models" }
+
+[[case]]
+id = "monitor-input-locked"
+param = "input.32/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "talkback-input-locked"
+param = "input.40/fader"
+class = "fader"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "unrouted-input-default-deny"
+param = "input.44/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "default_deny" }
+
+[[case]]
+id = "noai-tag"
+param = "input.5/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "deny_tag" }
+
+[[case]]
+id = "preamp-conditional"
+param = "input.9/preamp/gain"
+class = "preamp_gain"
+expect = { class = "conditional", reason = "rule", rule = "input-preamp" }
+
+[[case]]
+id = "preamp-unlocked-by-ai-tag"
+param = "input.25/preamp/gain"
+class = "preamp_gain"
+expect = { class = "allowed", reason = "rule", rule = "input-preamp" }
+
+[[case]]
+id = "preamp-unlocked-by-confirmation"
+param = "input.9/preamp/gain"
+class = "preamp_gain"
+confirmed = ["input-preamp"]
+expect = { class = "allowed", reason = "rule", rule = "input-preamp" }
+
+[[case]]
+id = "phantom-hard"
+param = "input.9/preamp/phantom"
+class = "phantom"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "input-patch-hard"
+param = "input.9/source/primary"
+class = "routing.input_patch"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "metadata-never"
+param = "input.9/meta/name"
+class = "metadata"
+expect = { class = "forbidden", reason = "rule", rule = "never-metadata" }
+
+[[case]]
+id = "insert-free-slot"
+param = "input.9/insert.1/slot"
+class = "insert_slot"
+from = "none"
+to = "fx.5"
+expect = { class = "allowed", reason = "rule", rule = "input-inserts" }
+
+[[case]]
+id = "insert-steals-used-slot-hard"
+param = "input.9/insert.1/slot"
+class = "insert_slot"
+from = "none"
+to = "fx.1"
+expect = { class = "forbidden", reason = "hard" }
+
+# ===================== buses =====================================================================================
+
+[[case]]
+id = "group-eq"
+param = "bus.7/eq/band.3.gain"
+class = "eq"
+expect = { class = "allowed", reason = "rule", rule = "bus-gain-tone", coupled = false }
+
+[[case]]
+id = "group-fader"
+param = "bus.7/fader"
+class = "fader"
+from = 0.0
+to = -2.0
+expect = { class = "allowed", reason = "rule", rule = "bus-level-pan" }
+
+[[case]]
+id = "group-mute"
+param = "bus.7/mute"
+class = "mute"
+from = false
+to = true
+expect = { class = "conditional", reason = "rule", rule = "bus-discrete" }
+
+[[case]]
+id = "group-to-main-assign"
+param = "bus.7/send/main.1/on"
+class = "send_on"
+from = true
+to = false
+expect = { class = "conditional", reason = "rule", rule = "bus-sends-assign" }
+
+[[case]]
+id = "group-to-main-level"
+param = "bus.7/send/main.1/level"
+class = "send_level"
+from = 0.0
+to = -1.0
+expect = { class = "allowed", reason = "rule", rule = "bus-main-level" }
+
+[[case]]
+id = "group-to-matrix-locked"
+param = "bus.7/send/matrix.1/level"
+class = "send_level"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "reinput-group-fader-coupled"
+param = "bus.5/fader"
+class = "fader"
+from = 0.0
+to = -2.0
+expect = { class = "conditional", reason = "coupling", rule = "bus-level-pan", coupled = true }
+
+[[case]]
+id = "reinput-group-eq-coupled-allowed"
+param = "bus.5/eq/band.1.gain"
+class = "eq"
+expect = { class = "allowed", reason = "rule", rule = "bus-gain-tone", coupled = true }
+
+[[case]]
+id = "send-into-reinput-group-coupled"
+param = "input.1/send/bus.5/level"
+class = "send_level"
+from = -10.0
+to = -8.0
+expect = { class = "conditional", reason = "coupling", rule = "input-sends-foh", coupled = true }
+
+[[case]]
+id = "monitor-bus-locked"
+param = "bus.8/fader"
+class = "fader"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "comms-bus-locked"
+param = "bus.16/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "unknown-bus-unconfirmed"
+param = "bus.12/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "unconfirmed" }
+
+[[case]]
+id = "aux-feed-bus-forbidden"
+param = "bus.3/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "rule", rule = "bus-aux-feed" }
+
+[[case]]
+id = "bus-out-delay-hard"
+param = "bus.7/out_delay/time"
+class = "out_delay"
+expect = { class = "forbidden", reason = "hard" }
+
+# ===================== mains, matrices, DCAs, mute groups ========================================================
+
+[[case]]
+id = "main-eq-conditional"
+param = "main.1/eq/band.1.gain"
+class = "eq"
+expect = { class = "conditional", reason = "rule", rule = "main-processing" }
+
+[[case]]
+id = "main-eq-confirmed"
+param = "main.1/eq/band.1.gain"
+class = "eq"
+confirmed = ["main-processing"]
+expect = { class = "allowed", reason = "rule", rule = "main-processing" }
+
+[[case]]
+id = "main-fader-conditional"
+param = "main.1/fader"
+class = "fader"
+from = 0.0
+to = -1.0
+expect = { class = "conditional", reason = "rule", rule = "main-fader" }
+
+[[case]]
+id = "main-mute-hard"
+param = "main.1/mute"
+class = "mute"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "stream-main-forbidden"
+param = "main.4/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "rule", rule = "bus-aux-feed" }
+
+[[case]]
+id = "main-to-matrix-locked"
+param = "main.1/send/matrix.1/level"
+class = "send_level"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "matrix-locked"
+param = "matrix.1/fader"
+class = "fader"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "dca-fader-conditional"
+param = "dca.1/fader"
+class = "fader"
+from = 0.0
+to = -2.0
+expect = { class = "conditional", reason = "rule", rule = "dca-fader" }
+
+[[case]]
+id = "dca-mute-forbidden"
+param = "dca.1/mute"
+class = "mute"
+expect = { class = "forbidden", reason = "rule", rule = "dca-mute" }
+
+[[case]]
+id = "mutegroup-hard"
+param = "mutegroup.1/mute"
+class = "mutegroup_mute"
+expect = { class = "forbidden", reason = "hard" }
+
+# ===================== FX slots ==================================================================================
+
+[[case]]
+id = "fx-on-reinput-fx-bus-param-coupled"
+param = "fx.1/param.decay"
+class = "fx_param"
+expect = { class = "conditional", reason = "coupling", rule = "fx-foh", coupled = true }
+
+[[case]]
+id = "fx-on-reinput-fx-bus-model-coupled"
+param = "fx.1/model"
+class = "fx_model"
+from = "BPLATE"
+to = "HALL"
+expect = { class = "forbidden", reason = "coupling", rule = "fx-foh-model", coupled = true }
+
+[[case]]
+id = "fx-on-foh-input-model"
+param = "fx.3/model"
+class = "fx_model"
+from = "PCORR"
+to = "DOUBLE"
+expect = { class = "allowed", reason = "rule", rule = "fx-foh-model", coupled = false }
+
+[[case]]
+id = "fx-free-slot-model"
+param = "fx.5/model"
+class = "fx_model"
+from = "HALL"
+to = "PLATE"
+expect = { class = "allowed", reason = "rule", rule = "fx-free-slot" }
+
+[[case]]
+id = "fx-external-loop-model-hard"
+param = "fx.5/model"
+class = "fx_model"
+from = "HALL"
+to = "EXT"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "fx-on-main-conditional"
+param = "fx.12/param.1"
+class = "fx_param"
+expect = { class = "conditional", reason = "rule", rule = "fx-on-main" }
+
+[[case]]
+id = "fx-on-matrix-locked"
+param = "fx.16/param.1"
+class = "fx_param"
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "fx-on-monitor-bus-locked"
+param = "fx.9/mix"
+class = "fx_mix"
+expect = { class = "forbidden", reason = "locked" }
+
+# ===================== system / unknown ==========================================================================
+
+[[case]]
+id = "clock-hard"
+param = "system/clock/source"
+class = "clock"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "scene-hard"
+param = "system/scene/recall"
+class = "scene"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "talkback-hard"
+param = "system/talkback/a/on"
+class = "talkback"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "output-patch-hard"
+param = "output.local.1/source"
+class = "routing.output_patch"
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "unknown-class"
+param = "input.1/frobnicate"
+class = "unknown"
+expect = { class = "forbidden", reason = "unknown" }
+
+[[case]]
+id = "unknown-strip"
+param = "input.99/eq/band.1.gain"
+class = "eq"
+expect = { class = "forbidden", reason = "unknown" }
+
+[[case]]
+id = "readonly"
+param = "input.1/meter/gain_reduction"
+class = "readonly"
+expect = { class = "forbidden", reason = "readonly" }
+
+# ===================== policy overlays (user rules) ==============================================================
+
+[[case]]
+id = "overlay-priority-allows-main-eq"
+param = "main.1/eq/band.1.gain"
+class = "eq"
+overlay = [ { id = "user-main-eq", kinds = ["main"], roles = ["main"], classes = ["eq"], class = "allowed", priority = 10 } ]
+expect = { class = "allowed", reason = "rule", rule = "user-main-eq" }
+
+[[case]]
+id = "overlay-same-priority-most-restrictive-wins"
+param = "bus.7/eq/band.1.gain"
+class = "eq"
+overlay = [ { id = "user-bus-eq-cond", kinds = ["bus"], classes = ["eq"], class = "conditional" } ]
+expect = { class = "conditional", reason = "rule", rule = "user-bus-eq-cond" }
+
+[[case]]
+id = "overlay-cannot-beat-hard"
+param = "input.9/preamp/phantom"
+class = "phantom"
+overlay = [ { id = "user-phantom", classes = ["phantom"], class = "allowed", priority = 1000 } ]
+expect = { class = "forbidden", reason = "hard" }
+
+[[case]]
+id = "overlay-cannot-beat-lock"
+param = "bus.8/eq/band.1.gain"
+class = "eq"
+overlay = [ { id = "user-iem-eq", params = ["bus.8/**"], class = "allowed", priority = 1000 } ]
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "overlay-glob"
+param = "input.9/in/delay"
+class = "input_delay"
+overlay = [ { id = "user-delay", params = ["input.*/in/delay"], class = "allowed", priority = 5 } ]
+expect = { class = "allowed", reason = "rule", rule = "user-delay" }
+
+# ===================== inspection ================================================================================
+
+[[case]]
+id = "solo-monitor-bus-allowed"
+action = "solo"
+param = "bus.8"
+expect = { class = "allowed", reason = "inspection" }
+
+[[case]]
+id = "solo-destructive-hard"
+action = "solo"
+param = "input.1"
+solo_destructive = true
+expect = { class = "forbidden", reason = "hard" }
