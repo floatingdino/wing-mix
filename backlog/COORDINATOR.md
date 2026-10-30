@@ -9,7 +9,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 ## In flight
 | Task | Agent | Model | Branch | Started |
 |---|---|---|---|---|
-| M036 | background subagent (session-local) | opus | task/M036 | 2026-10-31 |
 
 ## Decisions log
 - 2026-10-30: Rust workspace + SwiftUI app + daemon/control.sock, mirroring wing-simulator. Reuse wing-simulator
@@ -20,4 +19,3 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 - 2026-10-30: M031 (diagnosis) and M025 (source ID) held back to cap concurrency at 5; dispatch next.
 - 2026-10-30: M060 (second surface) deferred until the core loop (M032/M033/M050) lands.
 - 2026-10-30: rule: chain merge → `make check && git push` (never push on a failing check; M019 was pushed with a flaky failure once).
-- 2026-10-31: M052 (e2e milestone) held until M035+M036 land so it measures the tuned engine.

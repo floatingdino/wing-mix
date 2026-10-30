@@ -51,6 +51,7 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M036 | Engine tuning pass (safety-aware planning, accuracy, feedback guard) | M034, M035 | opus |
 | M037 | Live-context targets: de-master references, alignment check | M034 | opus |
 | M038 | Analysis + actuator follow-ups (noise floor, onsets, model-switch order) | M035 | sonnet |
+| M039 | Real-song convergence: width, tonal shape, subtle faults | M036, M061 | opus |
 
 ## S4 — Actuation & safety
 

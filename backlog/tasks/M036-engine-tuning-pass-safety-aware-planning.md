@@ -2,7 +2,7 @@
 id: M036
 title: Engine tuning pass: safety-aware planning, prediction accuracy, missed faults, feedback guard on music
 stage: S3
-status: review
+status: done
 owner: agent-M036
 depends: [M034, M035]
 branch: task/M036
@@ -126,3 +126,4 @@ Report before/after on seed 7 and the real-fixture song sections (distance vs FO
     are conditional (`revive:`), and the planner's horizon/greedy objective underweights the mix tonal shape vs
     strip problems on 23-input sessions; (4) GUI: show `(k/n)` parts and the new `why` field (M055); (5) the
     harness auto-confirms conditional moves - the daemon needs the same confirmations surfaced (M054).
+- 2026-10-31 coordinator: merged, make check passes. Accepted with 2 criteria partially met (seed-7 6/8; real songs 1/3 beat FOH) → carried into M039. done.
