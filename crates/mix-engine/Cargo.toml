@@ -6,4 +6,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mix-core = { path = "../mix-core" }
+mix-analysis = { path = "../mix-analysis" }
+mix-knowledge = { path = "../mix-knowledge" }
+mix-surface = { path = "../mix-surface" }
+serde = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
