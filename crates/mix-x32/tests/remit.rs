@@ -60,7 +60,7 @@ fn policy_detection_and_decisions_over_x32_topology() {
         &roles,
         &policy,
         &s.info().capabilities,
-        s.solo_state().unwrap().is_destructive(),
+        s.solo_destructive().unwrap(),
     );
     let session = RemitSession::default();
     let decide = |p: &str, from: Value, to: Value| {
@@ -170,7 +170,7 @@ fn tagged_strips_follow_name_tags() {
     assert_eq!(d.class, Verdict::Allowed, "{d:?}");
 }
 
-/// The actuator's real policy gate builds over an X32 surface (it needs `solo_state()` to work) and decides sanely.
+/// The actuator's real policy gate builds over an X32 surface (no solo: it must not need `solo_state()`) and decides sanely.
 #[test]
 fn actuator_policy_gate_builds_over_x32() {
     use mix_actuator::{PolicyGate, RemitGate};

@@ -105,6 +105,7 @@ fn to_value(v: &toml::Value) -> Value {
 fn build_ctx(t: &EvalTable) -> RemitContext {
     let mut ctx = RemitContext {
         solo_destructive: t.surface.solo_destructive,
+        solo_available: true,
         external_fx_models: t.surface.external_fx_models.clone(),
         ..Default::default()
     };
@@ -346,4 +347,21 @@ fn default_policy_warnings_are_only_hard_classes() {
     // never-metadata lists link, solo_config and out_delay, which the hard list already forbids.
     assert_eq!(p.warnings.len(), 3, "{:?}", p.warnings);
     assert!(p.warnings.iter().all(|w| w.contains("never-metadata")));
+}
+
+/// A console without solo (`solo_available = false`): solo/listen are forbidden, RTA and writes are not affected.
+#[test]
+fn no_solo_forbids_solo_and_listen_only() {
+    let policy = default_policy();
+    let mut ctx = build_ctx(&eval_table());
+    ctx.solo_available = false;
+    let id = StripId::parse("input.1").unwrap();
+    for k in [InspectionKind::Solo, InspectionKind::Listen] {
+        let d = evaluate_inspection(&policy, &ctx, k, &id);
+        assert_eq!(d.class, mix_surface::remit::Verdict::Forbidden, "{k:?}: {d:?}");
+    }
+    assert_ne!(
+        evaluate_inspection(&policy, &ctx, InspectionKind::Rta, &id).class,
+        mix_surface::remit::Verdict::Forbidden
+    );
 }

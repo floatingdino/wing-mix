@@ -1192,7 +1192,11 @@ fn order(
             .state
             .strip(&m.strip)
             .is_none_or(|s| matches!(s.kind, StripKind::Input | StripKind::Aux));
-        if SOLO_PHASES.contains(&ph) && is_input && inspected.insert((ph, m.strip.clone())) {
+        if SOLO_PHASES.contains(&ph)
+            && is_input
+            && input.remit.ctx.solo_available
+            && inspected.insert((ph, m.strip.clone()))
+        {
             let d = evaluate_inspection(
                 input.remit.policy,
                 input.remit.ctx,

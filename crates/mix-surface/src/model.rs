@@ -571,6 +571,9 @@ pub enum SendTap {
     Post,
     /// Subgroup mode: assignment only (`on`), level ignored.
     Group,
+    /// The adapter cannot tell. Role detection treats it like `Pre` (looks like a monitor feed: the destination
+    /// stays protected until the user confirms its role) and the remit sees the send tapped at the earliest point.
+    Unknown,
 }
 
 /// One send from a strip.

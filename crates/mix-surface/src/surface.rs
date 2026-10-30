@@ -293,6 +293,16 @@ pub trait Surface: Send + Sync {
         Ok(())
     }
 
+    /// Whether the console's solo mode is destructive (solo-in-place). A surface without solo
+    /// (`capabilities.solo == false`) is never destructive and `solo_state` is not consulted, so such adapters may
+    /// answer `solo_state()` with `Unsupported`.
+    fn solo_destructive(&self) -> SurfaceResult<bool> {
+        if !self.info().capabilities.solo {
+            return Ok(false);
+        }
+        Ok(self.solo_state()?.is_destructive())
+    }
+
     /// Latest meter frame.
     fn meters(&self) -> SurfaceResult<MeterFrame> {
         Err(SurfaceError::Unsupported("meters"))

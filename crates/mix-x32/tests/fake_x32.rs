@@ -109,8 +109,8 @@ fn info_and_capabilities() {
     assert!(
         !i.capabilities.solo && i.capabilities.meters.is_none() && i.capabilities.rta.is_none()
     );
-    let solo = s.solo_state().unwrap();
-    assert!(!solo.is_destructive() && solo.active.is_empty());
+    assert!(matches!(s.solo_state(), Err(SurfaceError::Unsupported(_))));
+    assert!(!s.solo_destructive().unwrap());
     assert!(matches!(
         s.set_solo(
             &mix_surface::surface::SoloTarget::strip(StripId::new("input", 1)),

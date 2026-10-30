@@ -106,7 +106,7 @@ pub fn remit_context(
         &roles,
         policy,
         &surface.info().capabilities,
-        surface.solo_state()?.is_destructive(),
+        surface.solo_destructive()?,
     ))
 }
 

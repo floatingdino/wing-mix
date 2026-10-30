@@ -2,10 +2,10 @@
 id: M061
 title: Genericity fixes from the X32 proof (docs/adapters.md F1–F5)
 stage: S6
-status: todo
-owner: -
+status: in_progress
+owner: task-agent-M061
 depends: [M060, M036]
-branch: -
+branch: task/M061
 model: sonnet
 ---
 
@@ -24,3 +24,7 @@ adapter selection (`--console wing:<ip>|x32:<ip>|sim`) and RTA claim only when t
 
 ## Log
 - 2026-10-31 coordinator: created from M060.
+- 2026-10-31 task-agent-M061: F1 (Surface::solo_destructive consults capabilities.solo; RemitContext.solo_available forbids
+  solo/listen inspections, planner emits no Inspect steps, actuator refuses inspect w/o solo; PolicyGate/remit_context no longer
+  call solo_state) + F2 (SendTap::Unknown, counted as pre by detection) done; mix-x32 solo workaround removed
+  (solo_state/clear_solo -> Unsupported, unknown tap -> Unknown). Next: F3 EQ shape + transfer, F4 mixd factory, F5 policy check.
