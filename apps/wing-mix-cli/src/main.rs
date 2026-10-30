@@ -143,7 +143,7 @@ fn fixture(args: &[String]) -> i32 {
 }
 
 const PROFILE_USAGE: &str =
-    "usage: profile <file> [--section N] [--out file.json] [--cache-dir DIR]  (sections are listed on stderr)";
+    "usage: profile <file> [--section N] [--out file.json] [--cache-dir DIR] [--stems [--state-dir DIR]]  (sections are listed on stderr; --stems adds per-stem targets when the optional sidecar is installed)";
 
 /// `profile <file>`: decode a reference, detect sections, build a TargetProfile (JSON to --out or stdout).
 fn profile(args: &[String]) -> i32 {
@@ -161,17 +161,47 @@ fn profile(args: &[String]) -> i32 {
         }
     };
     let cache = flag(args, "--cache-dir").map(ProfileCache::new);
-    let opts = ProfileOptions {
-        section,
-        ..Default::default()
-    };
-    let p = match mix_reference::profile_file(std::path::Path::new(file), &opts, cache.as_ref()) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
+    let (p, stems_status) = if args.iter().any(|a| a == "--stems") {
+        let state = flag(args, "--state-dir")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(mix_stems::default_state_dir);
+        let sep = mix_stems::StemConfig::from_state_dir(&state).map(|c| {
+            mix_stems::StemSeparator::new(c)
+                .with_progress(|p| eprintln!("stems: {:.0}%", p * 100.0))
+        });
+        match mix_stems::profile_with_stems(
+            std::path::Path::new(file),
+            section,
+            cache.as_ref(),
+            sep,
+        ) {
+            Ok((p, st)) => (p, Some(st)),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    } else {
+        let opts = ProfileOptions {
+            section,
+            ..Default::default()
+        };
+        match mix_reference::profile_file(std::path::Path::new(file), &opts, cache.as_ref()) {
+            Ok(p) => (p, None),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
         }
     };
+    match &stems_status {
+        Some(mix_stems::StemsStatus::Used { model }) => eprintln!("stems: {model}"),
+        Some(mix_stems::StemsStatus::Unavailable(why)) => eprintln!("stems unavailable: {why}"),
+        Some(mix_stems::StemsStatus::Failed(why)) => {
+            eprintln!("stems failed (profile has none): {why}")
+        }
+        None => {}
+    }
     let json = match mix_reference::profile_to_json(&p) {
         Ok(j) => j,
         Err(e) => {

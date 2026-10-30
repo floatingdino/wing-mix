@@ -38,7 +38,11 @@ impl std::fmt::Display for StemsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StemsError::Unavailable(m) => write!(f, "stems unavailable: {m}"),
-            StemsError::Timeout(d) => write!(f, "stem separation timed out after {:.0} s", d.as_secs_f64()),
+            StemsError::Timeout(d) => write!(
+                f,
+                "stem separation timed out after {:.0} s",
+                d.as_secs_f64()
+            ),
             StemsError::Cancelled => write!(f, "stem separation cancelled"),
             StemsError::Sidecar(m) => write!(f, "stem sidecar error: {m}"),
             StemsError::Crashed(m) => write!(f, "stem sidecar crashed: {m}"),
@@ -167,7 +171,10 @@ pub fn run_sidecar(
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
     let mut child = c.spawn().map_err(|e| {
-        StemsError::Unavailable(format!("cannot start {}: {e}", cmd.program.to_string_lossy()))
+        StemsError::Unavailable(format!(
+            "cannot start {}: {e}",
+            cmd.program.to_string_lossy()
+        ))
     })?;
 
     let started = Instant::now();
@@ -183,8 +190,14 @@ pub fn run_sidecar(
     .to_string();
 
     let outcome = (|| {
-        let mut stdin = child.stdin.take().ok_or_else(|| StemsError::Protocol("no stdin".into()))?;
-        let stdout = child.stdout.take().ok_or_else(|| StemsError::Protocol("no stdout".into()))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| StemsError::Protocol("no stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| StemsError::Protocol("no stdout".into()))?;
         let (tx, rx) = mpsc::channel::<String>();
         std::thread::spawn(move || {
             for l in BufReader::new(stdout).lines() {
@@ -225,7 +238,8 @@ pub fn run_sidecar(
                             e.as_str().map_or_else(|| e.to_string(), str::to_string),
                         ));
                     } else if let Some(Value::Object(stems)) = m.get("stems") {
-                        let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                        let s =
+                            |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
                         let stems = stems
                             .iter()
                             .filter_map(|(k, v)| Some((k.clone(), PathBuf::from(v.as_str()?))))

@@ -9,8 +9,8 @@ use std::time::Duration;
 use mix_analysis::{
     analyse_buffer, stat_of, AnalyserConfig, OfflineAnalysis, OfflineOptions, ProfileBuilder,
 };
-use mix_core::{StemKind, StemProfile, StemTargets, Stat, DB_FLOOR};
 use mix_core::bands::{N_BROAD, N_ERB};
+use mix_core::{Stat, StemKind, StemProfile, StemTargets, DB_FLOOR};
 use mix_reference::{
     decode_bytes, resample, DecodedAudio, StemInput, StemTargetProvider, ANALYSIS_RATE,
 };
@@ -79,7 +79,11 @@ pub struct StemSeparator {
 
 impl StemSeparator {
     pub fn new(cfg: StemConfig) -> Self {
-        StemSeparator { cfg, progress: None, cancel: Arc::new(AtomicBool::new(false)) }
+        StemSeparator {
+            cfg,
+            progress: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// Progress callback (0..=1; only fires on a cache miss).
@@ -128,10 +132,15 @@ impl StemSeparator {
         }
     }
 
-    fn run(&self, audio: &DecodedAudio, scratch: &Path) -> Result<crate::client::SepResult, StemsError> {
+    fn run(
+        &self,
+        audio: &DecodedAudio,
+        scratch: &Path,
+    ) -> Result<crate::client::SepResult, StemsError> {
         let input = resample(audio, SIDECAR_RATE).map_err(|e| StemsError::Io(e.to_string()))?;
         let wav = scratch.join("input.wav");
-        write_f32_wav(&wav, &input).map_err(|e| StemsError::Io(format!("{}: {e}", wav.display())))?;
+        write_f32_wav(&wav, &input)
+            .map_err(|e| StemsError::Io(format!("{}: {e}", wav.display())))?;
         let out_dir = scratch.join("out");
         let req = Request {
             input_wav: wav,
@@ -139,7 +148,10 @@ impl StemSeparator {
             model: self.cfg.model.clone(),
             device: self.cfg.device.clone(),
         };
-        let timeout = self.cfg.timeout.unwrap_or_else(|| timeout_for(audio.duration_s()));
+        let timeout = self
+            .cfg
+            .timeout
+            .unwrap_or_else(|| timeout_for(audio.duration_s()));
         let mut report = |p: f32| {
             if let Some(f) = &self.progress {
                 f(p)
@@ -184,12 +196,17 @@ fn stem_kind(name: &str) -> Option<StemKind> {
 
 /// Loads a stem WAV at the analysis rate with the mix's channel count and length.
 fn load_stem(path: &Path, like: &DecodedAudio) -> Result<DecodedAudio, StemsError> {
-    let bytes = std::fs::read(path).map_err(|e| StemsError::Io(format!("{}: {e}", path.display())))?;
-    let d = decode_bytes(bytes, Some("wav")).map_err(|e| StemsError::Io(format!("{}: {e}", path.display())))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| StemsError::Io(format!("{}: {e}", path.display())))?;
+    let d = decode_bytes(bytes, Some("wav"))
+        .map_err(|e| StemsError::Io(format!("{}: {e}", path.display())))?;
     let mut d = resample(&d, ANALYSIS_RATE).map_err(|e| StemsError::Io(e.to_string()))?;
     if d.channels != like.channels {
         d.samples = if like.channels == 1 {
-            d.samples.chunks(d.channels).map(|f| f.iter().sum::<f32>() / d.channels as f32).collect()
+            d.samples
+                .chunks(d.channels)
+                .map(|f| f.iter().sum::<f32>() / d.channels as f32)
+                .collect()
         } else {
             d.samples.iter().flat_map(|&x| [x, x]).collect() // mono stem, stereo mix
         };
@@ -200,25 +217,40 @@ fn load_stem(path: &Path, like: &DecodedAudio) -> Result<DecodedAudio, StemsErro
 }
 
 /// Per-stem statistics over the mix's gated windows in `range`.
-pub fn stem_profile(mix: &OfflineAnalysis, stem: &OfflineAnalysis, range: Option<(f64, f64)>) -> Option<StemProfile> {
+pub fn stem_profile(
+    mix: &OfflineAnalysis,
+    stem: &OfflineAnalysis,
+    range: Option<(f64, f64)>,
+) -> Option<StemProfile> {
     let (s, e) = range.unwrap_or((0.0, mix.duration_s + 1.0));
     let pairs: Vec<_> = ProfileBuilder::new(mix)
         .windows(s, e)
         .into_iter()
         .filter_map(|m| {
-            let i = stem.short_term.partition_point(|g| g.t_end_s < m.t_end_s - 1e-6);
-            let g = stem.short_term.get(i).filter(|g| (g.t_end_s - m.t_end_s).abs() < 1e-6)?;
+            let i = stem
+                .short_term
+                .partition_point(|g| g.t_end_s < m.t_end_s - 1e-6);
+            let g = stem
+                .short_term
+                .get(i)
+                .filter(|g| (g.t_end_s - m.t_end_s).abs() < 1e-6)?;
             Some((m, g))
         })
         .collect();
     if pairs.is_empty() {
         return None;
     }
-    let st = |f: &dyn Fn(&mix_core::Features, &mix_core::Features) -> f32| stat_of(pairs.iter().map(|(m, g)| f(m, g)));
+    let st = |f: &dyn Fn(&mix_core::Features, &mix_core::Features) -> f32| {
+        stat_of(pairs.iter().map(|(m, g)| f(m, g)))
+    };
     let stereo = mix.channels == 2;
     Some(StemProfile {
-        level_rel_mix_db: st(&|m, g| (g.loudness.short_term_lufs - m.loudness.short_term_lufs).max(LEVEL_FLOOR_DB)),
-        erb_rel_db: (0..N_ERB).map(|b| st(&|_, g| g.spectrum.erb_mid_rel_db[b])).collect(),
+        level_rel_mix_db: st(&|m, g| {
+            (g.loudness.short_term_lufs - m.loudness.short_term_lufs).max(LEVEL_FLOOR_DB)
+        }),
+        erb_rel_db: (0..N_ERB)
+            .map(|b| st(&|_, g| g.spectrum.erb_mid_rel_db[b]))
+            .collect(),
         crest_db: std::array::from_fn::<Stat, N_BROAD, _>(|b| st(&|_, g| g.dynamics.crest_db[b])),
         width_db: if stereo {
             st(&|_, g| g.stereo.as_ref().map_or(DB_FLOOR, |x| x.width_db))
@@ -235,14 +267,19 @@ impl StemTargetProvider for StemSeparator {
     }
 
     fn stem_targets(&self, input: &StemInput<'_>) -> Result<Option<StemTargets>, String> {
-        let entry = self.separate(input.audio, input.blake3).map_err(|e| e.to_string())?;
+        let entry = self
+            .separate(input.audio, input.blake3)
+            .map_err(|e| e.to_string())?;
         let cfg = AnalyserConfig::new(ANALYSIS_RATE, input.audio.channels);
         let range = input.focus.map(|s| (s.start_s, s.end_s));
         let mut stems = std::collections::BTreeMap::new();
         for (name, path) in entry.stem_paths() {
-            let Some(kind) = stem_kind(&name) else { continue };
+            let Some(kind) = stem_kind(&name) else {
+                continue;
+            };
             let audio = load_stem(&path, input.audio).map_err(|e| e.to_string())?;
-            let a = analyse_buffer(&audio.samples, &cfg, &OfflineOptions::default()).map_err(|e| e.to_string())?;
+            let a = analyse_buffer(&audio.samples, &cfg, &OfflineOptions::default())
+                .map_err(|e| e.to_string())?;
             if let Some(p) = stem_profile(input.analysis, &a, range) {
                 stems.insert(kind, p);
             }

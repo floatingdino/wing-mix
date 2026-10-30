@@ -14,7 +14,10 @@ const SR: u32 = 48_000;
 const SECS: f64 = 8.0;
 
 fn python_ok() -> bool {
-    std::process::Command::new("python3").arg("--version").output().is_ok()
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok()
 }
 
 fn tools_dir() -> PathBuf {
@@ -45,7 +48,12 @@ impl Drop for Dir {
 
 /// Stereo test "song": 60 Hz bass (steady), 1 kHz vocal-ish tone, and 8 kHz noise bursts; louder second half.
 fn write_song(path: &Path) {
-    let spec = hound::WavSpec { channels: 2, sample_rate: SR, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: SR,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
     let mut w = hound::WavWriter::create(path, spec).unwrap();
     let mut rng = 0x2545F4914F6CDD1Du64;
     let n = (SECS * SR as f64) as usize;
@@ -95,11 +103,24 @@ fn pid_dead(pid: i32) -> bool {
 fn tiny_request(dir: &Path) -> Request {
     let wav = dir.join("in.wav");
     write_song(&wav);
-    Request { input_wav: wav, out_dir: dir.join("out"), model: "htdemucs".into(), device: "cpu".into() }
+    Request {
+        input_wav: wav,
+        out_dir: dir.join("out"),
+        model: "htdemucs".into(),
+        device: "cpu".into(),
+    }
 }
 
 fn plain(path: &Path, section: Option<usize>) -> TargetProfile {
-    profile_file(path, &ProfileOptions { section, stems: None }, None).unwrap()
+    profile_file(
+        path,
+        &ProfileOptions {
+            section,
+            stems: None,
+        },
+        None,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -121,14 +142,23 @@ fn per_stem_profiles_progress_and_cache() {
 
     let seen = Arc::new(Mutex::new(Vec::<f32>::new()));
     let s2 = seen.clone();
-    let sep = StemSeparator::new(config(&cache, "")).with_progress(move |p| s2.lock().unwrap().push(p));
+    let sep =
+        StemSeparator::new(config(&cache, "")).with_progress(move |p| s2.lock().unwrap().push(p));
     let (p, status) = profile_with_stems(&song, None, None, Ok(sep)).unwrap();
-    assert_eq!(status, StemsStatus::Used { model: "htdemucs@mock-1".into() });
+    assert_eq!(
+        status,
+        StemsStatus::Used {
+            model: "htdemucs@mock-1".into()
+        }
+    );
     p.validate().unwrap();
     let st = p.stems.as_ref().expect("stems present");
     assert_eq!(st.stems.len(), 4);
     let prog = seen.lock().unwrap().clone();
-    assert!(prog.len() >= 3 && prog.windows(2).all(|w| w[0] <= w[1]) && *prog.last().unwrap() == 1.0, "{prog:?}");
+    assert!(
+        prog.len() >= 3 && prog.windows(2).all(|w| w[0] <= w[1]) && *prog.last().unwrap() == 1.0,
+        "{prog:?}"
+    );
 
     // spectra: power-weighted ERB centroid rises bass < vocals < drums (one-pole band split leaks, so no peaks)
     let centroid = |k: StemKind| {
@@ -136,18 +166,34 @@ fn per_stem_profiles_progress_and_cache() {
         let w: Vec<f32> = e.iter().map(|s| 10f32.powf(s.p50 / 10.0)).collect();
         w.iter().enumerate().map(|(i, x)| i as f32 * x).sum::<f32>() / w.iter().sum::<f32>()
     };
-    let (b, v, h) = (centroid(StemKind::Bass), centroid(StemKind::Vocals), centroid(StemKind::Drums));
+    let (b, v, h) = (
+        centroid(StemKind::Bass),
+        centroid(StemKind::Vocals),
+        centroid(StemKind::Drums),
+    );
     eprintln!("centroid bands bass {b} vocals {v} drums {h}");
     assert!(b < v && v < h, "{b} {v} {h}");
     // the 60 Hz bass is the loudest stem
     let lvl = |k: StemKind| st.stems[&k].level_rel_mix_db.p50;
-    assert!(lvl(StemKind::Bass) > lvl(StemKind::Vocals), "{} {}", lvl(StemKind::Bass), lvl(StemKind::Vocals));
+    assert!(
+        lvl(StemKind::Bass) > lvl(StemKind::Vocals),
+        "{} {}",
+        lvl(StemKind::Bass),
+        lvl(StemKind::Vocals)
+    );
     assert!(lvl(StemKind::Bass) < 1.0 && lvl(StemKind::Bass) > -6.0);
     // top-level targets are untouched by stems
     let q = plain(&song, None);
-    assert_eq!(TargetProfile { stems: None, ..p.clone() }, q);
+    assert_eq!(
+        TargetProfile {
+            stems: None,
+            ..p.clone()
+        },
+        q
+    );
     // JSON round trip with stems
-    let back = mix_reference::profile_from_json(&mix_reference::profile_to_json(&p).unwrap()).unwrap();
+    let back =
+        mix_reference::profile_from_json(&mix_reference::profile_to_json(&p).unwrap()).unwrap();
     assert_eq!(back, p);
 
     // second run: the sidecar command no longer exists, the stem cache serves it
@@ -166,23 +212,41 @@ fn per_stem_profiles_progress_and_cache() {
 }
 
 #[test]
-fn section_pick_gives_section_aware_stems() {
+fn section_focus_selects_windows() {
     if !python_ok() {
         return;
     }
+    use mix_reference::StemTargetProvider;
     let d = Dir::new("section");
     let song = d.0.join("song.wav");
     write_song(&song);
     let ing = mix_reference::ingest_file(&song).unwrap();
-    // pick a section if detection found several, else the whole-song path is already covered above
-    if ing.sections.len() < 2 {
-        eprintln!("only {} section(s); skipping", ing.sections.len());
-        return;
-    }
-    let cache = d.0.join("cache");
-    let (p, st) = profile_with_stems(&song, Some(1), None, Ok(StemSeparator::new(config(&cache, "")))).unwrap();
-    assert!(matches!(st, StemsStatus::Used { .. }));
-    assert!(p.section.is_some() && p.stems.is_some());
+    let sep = StemSeparator::new(config(&d.0.join("cache"), ""));
+    let run = |focus: Option<&mix_core::SectionRef>| {
+        sep.stem_targets(&mix_reference::StemInput {
+            audio: &ing.audio,
+            blake3: &ing.blake3,
+            sections: &ing.sections,
+            focus,
+            params: ing.analysis.params,
+            analysis: &ing.analysis,
+        })
+        .unwrap()
+        .unwrap()
+    };
+    let half = |i, a, b| mix_core::SectionRef {
+        index: i,
+        label: format!("h{i}"),
+        start_s: a,
+        end_s: b,
+    };
+    let whole = run(None);
+    let (h1, h2) = (half(0, 0.0, 5.5), half(1, 5.5, SECS));
+    let (a, b) = (run(Some(&h1)), run(Some(&h2)));
+    // the stem set is the same, but the statistics come from different windows
+    assert_eq!(a.stems.len(), 4);
+    assert_ne!(a.stems[&StemKind::Drums], b.stems[&StemKind::Drums]);
+    assert_ne!(a.stems[&StemKind::Drums], whole.stems[&StemKind::Drums]);
 }
 
 #[test]
@@ -215,8 +279,17 @@ fn sidecar_error_and_crash_fall_back() {
     write_song(&song);
     for (mode, needle) in [("error", "mock failure"), ("crash", "crashed")] {
         let cache = d.0.join(format!("cache-{mode}"));
-        let (p, status) = profile_with_stems(&song, None, None, Ok(StemSeparator::new(config(&cache, mode)))).unwrap();
-        assert!(matches!(&status, StemsStatus::Failed(m) if m.contains(needle)), "{mode}: {status:?}");
+        let (p, status) = profile_with_stems(
+            &song,
+            None,
+            None,
+            Ok(StemSeparator::new(config(&cache, mode))),
+        )
+        .unwrap();
+        assert!(
+            matches!(&status, StemsStatus::Failed(m) if m.contains(needle)),
+            "{mode}: {status:?}"
+        );
         assert!(p.stems.is_none());
         // no half-written cache entry is left behind
         let leftovers = std::fs::read_dir(&cache).map(|r| r.count()).unwrap_or(0);
@@ -232,10 +305,20 @@ fn timeout_kills_process_group() {
     let d = Dir::new("timeout");
     let req = tiny_request(&d.0);
     let t0 = Instant::now();
-    let r = run_sidecar(&mock_cmd("hang"), &req, Duration::from_secs(3), &mut |_| {}, &AtomicBool::new(false));
+    let r = run_sidecar(
+        &mock_cmd("hang"),
+        &req,
+        Duration::from_secs(3),
+        &mut |_| {},
+        &AtomicBool::new(false),
+    );
     assert!(matches!(r, Err(StemsError::Timeout(_))), "{r:?}");
     assert!(t0.elapsed() < Duration::from_secs(10));
-    let pid: i32 = std::fs::read_to_string(req.out_dir.join("child.pid")).unwrap().trim().parse().unwrap();
+    let pid: i32 = std::fs::read_to_string(req.out_dir.join("child.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(pid_dead(pid), "grandchild {pid} survived the kill");
 }
 
@@ -255,9 +338,19 @@ fn cancel_kills_process_group() {
         }
         c2.store(true, Ordering::Relaxed);
     });
-    let r = run_sidecar(&mock_cmd("hang"), &req, Duration::from_secs(60), &mut |_| {}, &cancel);
+    let r = run_sidecar(
+        &mock_cmd("hang"),
+        &req,
+        Duration::from_secs(60),
+        &mut |_| {},
+        &cancel,
+    );
     h.join().unwrap();
     assert!(matches!(r, Err(StemsError::Cancelled)), "{r:?}");
-    let pid: i32 = std::fs::read_to_string(req.out_dir.join("child.pid")).unwrap().trim().parse().unwrap();
+    let pid: i32 = std::fs::read_to_string(req.out_dir.join("child.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(pid_dead(pid));
 }

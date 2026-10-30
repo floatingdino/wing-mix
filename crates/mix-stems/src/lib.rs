@@ -45,21 +45,36 @@ pub fn profile_with_stems(
     cache: Option<&ProfileCache>,
     stems: Result<StemSeparator, String>,
 ) -> Result<(TargetProfile, StemsStatus), ReferenceError> {
-    let plain = ProfileOptions { section, stems: None };
+    let plain = ProfileOptions {
+        section,
+        stems: None,
+    };
     let sep = match stems {
         Ok(s) => s,
-        Err(why) => return Ok((profile_file(path, &plain, cache)?, StemsStatus::Unavailable(why))),
+        Err(why) => {
+            return Ok((
+                profile_file(path, &plain, cache)?,
+                StemsStatus::Unavailable(why),
+            ))
+        }
     };
-    let opts = ProfileOptions { section, stems: Some(Arc::new(sep)) };
+    let opts = ProfileOptions {
+        section,
+        stems: Some(Arc::new(sep)),
+    };
     match profile_file(path, &opts, cache) {
         Ok(p) => {
             let status = match &p.stems {
-                Some(s) => StemsStatus::Used { model: s.model.clone() },
+                Some(s) => StemsStatus::Used {
+                    model: s.model.clone(),
+                },
                 None => StemsStatus::Failed("sidecar produced no stems".into()),
             };
             Ok((p, status))
         }
-        Err(ReferenceError::Stems(why)) => Ok((profile_file(path, &plain, cache)?, StemsStatus::Failed(why))),
+        Err(ReferenceError::Stems(why)) => {
+            Ok((profile_file(path, &plain, cache)?, StemsStatus::Failed(why)))
+        }
         Err(e) => Err(e),
     }
 }

@@ -90,3 +90,73 @@ fn resample_44k1_to_48k_keeps_length_and_level() {
     // Same rate is a no-op.
     assert_eq!(resample(&r, 48000).unwrap(), r);
 }
+
+/// Encodes `src` (interleaved f32) with ffmpeg at test time (nothing committed); None when ffmpeg is absent
+/// or lacks the encoder, so the test is skipped.
+fn ffmpeg_encode(src: &[f32], ch: u16, sr: u32, args: &[&str], ext: &str) -> Option<Vec<u8>> {
+    let dir = std::env::temp_dir().join(format!("mixref-ffmpeg-{}-{ext}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let (inp, out) = (dir.join("in.wav"), dir.join(format!("out.{ext}")));
+    std::fs::write(&inp, wav_f32(src, ch, sr)).ok()?;
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&inp)
+        .args(args)
+        .arg(&out)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let bytes = ok.then(|| std::fs::read(&out).ok()).flatten();
+    let _ = std::fs::remove_dir_all(&dir);
+    if bytes.is_none() {
+        eprintln!("ffmpeg missing or cannot encode {ext}; skipping");
+    }
+    bytes
+}
+
+/// Lossy decode: right rate/channels, plausible length (encoder delay/padding allowed) and the tones survive.
+fn check_lossy(bytes: Vec<u8>, ext: &str, sr: u32, frames: usize) {
+    let d = decode_bytes(bytes, Some(ext)).unwrap();
+    assert_eq!(d.sample_rate, sr);
+    assert_eq!(d.channels, 2);
+    let n = d.frames();
+    assert!(
+        n.abs_diff(frames) < sr as usize / 10,
+        "{n} frames vs {frames}"
+    );
+    // Compare RMS of the left channel (440 Hz, amp 0.5 -> 0.354) over the steady middle part.
+    let mid = &d.samples[n / 4 * 2..n * 3 / 4 * 2];
+    let rms = |ch: usize, amp: f32| {
+        let v: f32 =
+            mid.iter().skip(ch).step_by(2).map(|x| x * x).sum::<f32>() / (mid.len() / 2) as f32;
+        (v.sqrt(), amp * std::f32::consts::FRAC_1_SQRT_2)
+    };
+    for (ch, amp) in [(0, 0.5), (1, 0.25)] {
+        let (got, want) = rms(ch, amp);
+        assert!(
+            (got - want).abs() < want * 0.1,
+            "{ext} ch{ch}: rms {got} vs {want}"
+        );
+    }
+}
+
+#[test]
+fn mp3_and_aac_via_ffmpeg_if_present() {
+    let (sr, frames) = (44100, 44100 * 2);
+    let src = stereo_test_signal(frames, sr);
+    if let Some(b) = ffmpeg_encode(&src, 2, sr, &["-c:a", "libmp3lame", "-b:a", "256k"], "mp3") {
+        check_lossy(b, "mp3", sr, frames);
+    }
+    if let Some(b) = ffmpeg_encode(&src, 2, sr, &["-c:a", "aac", "-b:a", "192k"], "m4a") {
+        check_lossy(b, "m4a", sr, frames);
+    }
+    if let Some(b) = ffmpeg_encode(
+        &src,
+        2,
+        sr,
+        &["-c:a", "aac", "-b:a", "192k", "-f", "adts"],
+        "aac",
+    ) {
+        check_lossy(b, "aac", sr, frames);
+    }
+}
