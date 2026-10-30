@@ -2,10 +2,10 @@
 id: M033
 title: mix-engine: closed-loop controller
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M033
 depends: [M032, M040]
-branch: -
+branch: task/M033
 model: opus
 ---
 
@@ -19,3 +19,9 @@ Run plan step → actuator → wait for settle → re-measure → keep/revert; c
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-31 agent-M033: claimed. Design: `mix_engine::control` — deterministic `Controller::tick(now, &mut dyn
+  Executor, &mut dyn MixMeter)` state machine (settle → measure window → verify/keep/revert → decide), `Guard`
+  (reversal counting, cool-downs, action-type penalties/bans), `SectionDetector` (short-term loudness/ERB jump),
+  `ControlEvent` stream, `KeepRule`. Seams: `plan::score` (pub wrapper of the planner objective) in plan/mod.rs;
+  mix-engine now depends on mix-actuator. Unit tests (8) green. Next: SimSurface + StreamingAnalyser harness on a
+  virtual clock (tests/loop_harness), closed-loop tests.
