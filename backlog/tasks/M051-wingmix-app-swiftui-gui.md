@@ -2,7 +2,7 @@
 id: M051
 title: WingMix.app SwiftUI GUI
 stage: S5
-status: in_progress
+status: review
 owner: agent-M051
 depends: [M050]
 branch: task/M051
@@ -31,7 +31,7 @@ SwiftUI app (pattern: ../wing-simulator/apps/WingSimMenu): drop a reference file
     daemon it started. Screens Target / Listen / Remit / Live; ControlBar (mode switch, STOP Cmd-., PANIC, Resume)
     always visible. `--smoke-test` launches/quits without a daemon.
   - Test: `make app` (daemon release build, bundle, 16 Swift tests incl. the real daemon over its socket with the sim,
-    smoke) passes; `make check` run on this branch (see below).
+    smoke) passes; `make check` passes on this branch (after merging main).
   - Gotchas: `screencapture` unusable here (black screen / "could not create image": no screen-recording
     permission), so screenshots are rendered by the app (`WINGMIX_SHOTS`, ImageRenderer + look-alike controls); STOP/PANIC
     with no session return the daemon's "nothing to stop" error (shown in the banner). Autopilot-state UI (move log,
