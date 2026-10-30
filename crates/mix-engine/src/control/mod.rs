@@ -153,6 +153,8 @@ struct Running {
     finished: Option<Result<(), String>>,
     stopped: bool,
     confirm_key: Option<String>,
+    /// The gate refused this param (no confirmation possible).
+    refused: Option<ParamId>,
 }
 
 #[derive(Debug)]
@@ -414,6 +416,11 @@ impl<'k> Controller<'k> {
                         reason,
                         AbortReason::Stopped | AbortReason::Panic | AbortReason::Disconnected
                     );
+                    if let (State::Executing(r), AbortReason::Remit { param, .. }) =
+                        (&mut self.state, &reason)
+                    {
+                        r.refused = Some(param.clone());
+                    }
                     self.on_job_end(id, changes, Some((format!("aborted: {reason:?}"), stop)));
                 }
                 ActuatorEvent::Refused { id, reason, .. } => {
@@ -425,6 +432,8 @@ impl<'k> Controller<'k> {
                     if let State::Executing(r) = &mut self.state {
                         if key.is_some() {
                             r.confirm_key = key;
+                        } else if let Refusal::Remit { param, .. } = &reason {
+                            r.refused = Some(param.clone());
                         }
                     }
                     self.on_job_end(id, Vec::new(), Some((format!("refused: {reason:?}"), stop)));
@@ -782,6 +791,11 @@ impl<'k> Controller<'k> {
         if let Some(e) = failure {
             if let Some(key) = r.confirm_key {
                 self.add_pending(key, &v.batch);
+            } else if let Some(p) = r.refused {
+                // a limit, not a misprediction: block that direction of that param, not the action type
+                if let Some(c) = v.batch.mv.action.changes.iter().find(|c| c.param == p) {
+                    self.guard.refuse(&p, c.from.as_ref(), &c.to);
+                }
             } else if !silent {
                 self.guard.penalise(&v.batch.mv);
             }
@@ -906,14 +920,22 @@ impl<'k> Controller<'k> {
             return;
         }
         // drop stale plan / plan anew
+        let mut fresh = false;
         if let Some(reason) = self.replan.take() {
-            self.make_plan(reason);
+            fresh = self.make_plan(reason);
         } else if self.plan.is_empty() {
-            self.make_plan(PlanReason::Exhausted);
+            fresh = self.make_plan(PlanReason::Exhausted);
         }
         let mut waiting = false;
         loop {
             let Some(b) = self.plan.pop_front() else {
+                if !fresh && !waiting {
+                    // the rest of an older plan was blocked: plan once more from the last measurement
+                    fresh = true;
+                    if self.make_plan(PlanReason::Exhausted) {
+                        continue;
+                    }
+                }
                 break;
             };
             match self.guard.check(&b.mv, self.now, &self.cfg) {
@@ -975,6 +997,7 @@ impl<'k> Controller<'k> {
             finished: None,
             stopped: false,
             confirm_key: None,
+            refused: None,
         }));
     }
 

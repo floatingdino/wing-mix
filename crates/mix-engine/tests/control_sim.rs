@@ -152,8 +152,22 @@ fn autopilot_converges_on_degraded_fixture() {
         Some(HoldReason::Converged),
         "{curve:.3?}"
     );
-    assert!(last <= r.ctl.config().target_objective, "{curve:.3?}");
-    assert!(last < 0.4 * first, "{first:.3} -> {last:.3}");
+    // converged within tolerance; later windows of the unchanged mix stay within the resume hysteresis
+    let at_hold = r
+        .log
+        .iter()
+        .find_map(|(_, e)| match e {
+            ControlEvent::Holding {
+                reason: HoldReason::Converged,
+                objective,
+            } => Some(*objective),
+            _ => None,
+        })
+        .unwrap();
+    let target = r.ctl.config().target_objective;
+    assert!(at_hold <= target, "{curve:.3?}");
+    assert!(last <= target * r.ctl.config().resume_factor, "{curve:.3?}");
+    assert!(at_hold < 0.4 * first, "{first:.3} -> {at_hold:.3}");
     assert!(r.ctl.records().len() <= 30, "{} batches", r.ctl.records().len());
     assert_no_hunting(&r);
     // the ground truth is undone in the right direction

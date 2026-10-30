@@ -115,12 +115,27 @@ fn penalties_and_bans() {
     // 0.015 x 0.5 = 0.0075 still >= min_benefit
     assert!(g.check(&m, 0.0, &c).is_ok());
     g.penalise(&m);
-    // banned on input.2 after two reverts; another strip only sees the penalty (0.015 x 0.25 < 0.005? no: 0.00375)
+    // banned on input.2 after two reverts; another strip sees the penalty (0.015 x 0.25 = 0.00375 < min_benefit)
     assert!(matches!(g.check(&m, 0.0, &c), Err(Block::Never(_))));
     let other = mv("input.4/eq/band.1.gain", 0.0, 3.0, 0.015);
     assert!(matches!(g.check(&other, 0.0, &c), Err(Block::Never(_))));
     let big = mv("input.4/eq/band.1.gain", 0.0, 3.0, 0.2);
     assert!(g.check(&big, 0.0, &c).is_ok());
+}
+
+#[test]
+fn refused_direction_is_not_retried() {
+    let c = cfg();
+    let mut g = Guard::new();
+    let p = ParamId::new("input.13/fader");
+    g.refuse(&p, Some(&Value::Float(-4.0)), &Value::Float(-1.0));
+    assert!(matches!(
+        g.check(&mv("input.13/fader", -4.0, -2.0, 0.2), 0.0, &c),
+        Err(Block::Never(_))
+    ));
+    // the other direction is still fine, and the action type is not penalised
+    assert!(g.check(&mv("input.13/fader", -4.0, -6.0, 0.2), 0.0, &c).is_ok());
+    assert_eq!(g.type_reverts("balance:fader"), 0);
 }
 
 #[test]

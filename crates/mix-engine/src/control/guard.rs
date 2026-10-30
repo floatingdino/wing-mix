@@ -6,6 +6,7 @@
 //!   `reversal_cooldown_s`. A planned move that would reverse a param is only allowed while a spare reversal is
 //!   left for its possible revert, so no param ever reverses more than `max_reversals` times.
 //! - Params the engineer moved are held for `engineer_hold_s`.
+//! - A move the remit/safety gate refused (e.g. the session boost limit) is not proposed again in that direction.
 //! - A reverted batch penalises its **action type** (`phase:block`, e.g. `tonal_eq:eq`): later moves of that type
 //!   need `benefit × penalty_factor^reverts ≥ min_benefit`, and the type is banned on that strip after
 //!   `max_type_reverts` reverts there.
@@ -82,6 +83,8 @@ pub enum Block {
 pub struct Guard {
     params: BTreeMap<ParamId, ParamTrack>,
     type_reverts: BTreeMap<String, u32>,
+    /// Params the remit/safety gate refused to move in a direction (0 = any): not proposed again this session.
+    refused: BTreeMap<ParamId, i8>,
     strip_type_reverts: BTreeMap<(StripId, String), u32>,
 }
 
@@ -135,6 +138,15 @@ impl Guard {
         ty
     }
 
+    /// The gate refused moving `param` from `from` to `to` (e.g. the safety layer's session boost limit).
+    pub fn refuse(&mut self, param: &ParamId, from: Option<&Value>, to: &Value) {
+        let dir = from.map_or(0, |f| direction(f, to));
+        let d = self.refused.entry(param.clone()).or_insert(dir);
+        if *d != dir {
+            *d = 0;
+        }
+    }
+
     pub fn reversals(&self, param: &ParamId) -> u32 {
         self.params.get(param).map_or(0, |t| t.reversals)
     }
@@ -172,6 +184,12 @@ impl Guard {
         }
         let mut wait: Option<(f64, ParamId)> = None;
         for c in &mv.action.changes {
+            if let Some(&d) = self.refused.get(&c.param) {
+                let dir = c.from.as_ref().map_or(0, |f| direction(f, &c.to));
+                if d == 0 || d == dir {
+                    return Err(Block::Never(format!("{} refused by the gate", c.param)));
+                }
+            }
             let Some(t) = self.params.get(&c.param) else {
                 continue;
             };
