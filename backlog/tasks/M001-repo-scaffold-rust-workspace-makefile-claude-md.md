@@ -2,7 +2,7 @@
 id: M001
 title: Repo scaffold: Rust workspace, Makefile, CLAUDE.md, wing-simulator git deps
 stage: S0
-status: review
+status: done
 owner: eng-M001
 depends: []
 branch: task/M001
@@ -29,3 +29,4 @@ Create the Cargo workspace with empty crates per docs/ARCHITECTURE.md (mix-core,
   not yet used). dev opt-level=2 for wing-blocks/dsp/engine. Test: `make check` (passes). Windows CI omitted (the
   task asked for macOS + Linux). Gotcha: first build fetches the git repo over https (network needed).
   Proposed follow-ups: unused-dep check once crates grow; consider `cargo deny`/vendoring if the github fetch is flaky in CI.
+- 2026-10-30 coordinator: reviewed, merged to main, make check passes. done.
