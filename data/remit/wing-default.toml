@@ -6,13 +6,14 @@
 # for any surface; only `surface`, the detection vocabulary and the defaults differ.
 #
 # Evaluation (remit.md section 4), first decisive step wins:
-#   1. unknown / read-only param                -> forbidden          (default-deny)
+#   1. unknown / read-only class                -> forbidden          (default-deny)
 #   2. hard-forbidden list (compiled in)        -> forbidden          (cannot be changed by any policy)
-#   3. role / kind locks ([locks])              -> forbidden          (change the strip's role, not the rules)
-#   4. [[rule]]s: highest priority wins, ties -> most restrictive; no match -> forbidden (default-deny)
-#   5. unlock: conditional + strip tag in rule.unlock_tags, or a recorded user confirmation -> allowed
-#   6. [coupling.*]: param audibly changes a protected mix -> min(result, coupling class)
-#   7. [revive]: write makes a silent path audible -> min(result, revive class)
+#   3. unknown strip / send destination         -> forbidden
+#   4. locks ([locks]) on strip, send dest, fx hosts -> forbidden     (change the strip's role, not the rules)
+#   5. [[rule]]s: highest priority wins, ties -> most restrictive; no match -> forbidden (default-deny)
+#   6. unlock: conditional + strip tag in rule.unlock_tags, or a recorded user confirmation -> allowed
+#   7. [coupling.*]: param audibly changes a protected mix -> min(result, coupling class)
+#   8. [revive]: write makes a silent path audible -> min(result, revive class)
 # Classes order: forbidden < conditional < allowed ("min" = most restrictive).
 
 format = "wing-mix-remit/1"
