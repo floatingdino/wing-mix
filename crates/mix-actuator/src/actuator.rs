@@ -467,9 +467,10 @@ impl Actuator {
             .into_iter()
             .partition(|c| governed(&c.param, &written));
         snap.phase2 = keep;
-        snap.report
-            .skipped
-            .extend(drop.into_iter().map(|c| Refusal::MixedModelChange { param: c.param }));
+        snap.report.skipped.extend(
+            drop.into_iter()
+                .map(|c| Refusal::MixedModelChange { param: c.param }),
+        );
         if lost {
             self.finish_snap(snap, Some(AbortReason::Disconnected));
         } else if snap.phase2.is_empty() {
@@ -661,7 +662,8 @@ impl Actuator {
     fn on_remap(&mut self, strip: &StripId, block: &str) {
         if let Some(Active::Snap(sn)) = self.active.as_mut() {
             if sn.models.iter().any(|(m, _, c)| {
-                m.head() == strip.as_str() && (*c == ParamClass::FxModel || m.block() == Some(block))
+                m.head() == strip.as_str()
+                    && (*c == ParamClass::FxModel || m.block() == Some(block))
             }) {
                 sn.remapped = true;
             }
@@ -1664,7 +1666,9 @@ impl Actuator {
             match moved {
                 Some((m, _, _)) => sn.report.skipped.push(Refusal::Surface {
                     param: c.param.clone(),
-                    error: format!("model {m} changed by someone else before the block's params were written"),
+                    error: format!(
+                        "model {m} changed by someone else before the block's params were written"
+                    ),
                 }),
                 None => ok.push(c),
             }
@@ -1678,8 +1682,10 @@ impl Actuator {
         sn.report.total_ms = sn.started.elapsed().as_secs_f64() * 1e3;
         sn.report.aborted = aborted;
         if !sn.report.changes.is_empty() {
-            self.journal
-                .record(format!("snap: {}", sn.report.label), sn.report.changes.clone());
+            self.journal.record(
+                format!("snap: {}", sn.report.label),
+                sn.report.changes.clone(),
+            );
         }
         self.journal.note(format!(
             "{} snap {}: {} written in {} batch(es) ({:.1} ms), {} skipped{}",
@@ -1717,9 +1723,10 @@ impl Actuator {
             Some(Active::Inspect(i)) => self.abort_inspect(*i, reason.clone()),
             Some(Active::Snap(mut sn)) => {
                 let left = std::mem::take(&mut sn.phase2);
-                sn.report
-                    .skipped
-                    .extend(left.into_iter().map(|c| Refusal::MixedModelChange { param: c.param }));
+                sn.report.skipped.extend(
+                    left.into_iter()
+                        .map(|c| Refusal::MixedModelChange { param: c.param }),
+                );
                 self.finish_snap(*sn, Some(reason.clone()));
             }
             None => {}

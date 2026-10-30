@@ -5,8 +5,8 @@ mod common;
 
 use common::*;
 use mix_actuator::{
-    AbortReason, ActuatorConfig, ActuatorEvent, Job, PolicyGate, Refusal, RemitGate,
-    SafetyConfig, SafetyGate, SafetyMonitor, SnapReport, SnapRequest,
+    AbortReason, ActuatorConfig, ActuatorEvent, Job, PolicyGate, Refusal, RemitGate, SafetyConfig,
+    SafetyGate, SafetyMonitor, SnapReport, SnapRequest,
 };
 use mix_core::action::{Action, ParamChange};
 use mix_core::features::{Features, Window};
@@ -195,12 +195,11 @@ fn snap_writes_the_whole_set_in_one_batch_and_supersedes_a_running_move() {
     assert_eq!(r.read("input.1/eq/band.1.gain"), f(4.0));
     assert_eq!(r.read("input.2/eq/band.2.gain"), f(-2.5));
     // not ramped: exactly one write per param, all at the same scheduler time
-    let snap_writes: Vec<_> = r
-        .a
-        .write_log()
-        .iter()
-        .filter(|w| w.id == report.id)
-        .collect();
+    let snap_writes: Vec<_> =
+        r.a.write_log()
+            .iter()
+            .filter(|w| w.id == report.id)
+            .collect();
     assert_eq!(snap_writes.len(), 6);
     assert!(snap_writes.iter().all(|w| w.at_s == snap_writes[0].at_s));
     // audited (journal entry + note), session baseline captured, but not an undo unit
@@ -217,7 +216,10 @@ fn snap_writes_the_whole_set_in_one_batch_and_supersedes_a_running_move() {
     r.tick_for(0.5);
     // the aborted slow move is the only undo unit: undo returns input.1/fader from where the ramp left it (the snap
     // moved it since, so it is a conflict and stays at the snap's value)
-    assert!(r.log.iter().any(|e| matches!(e, ActuatorEvent::Reverted { id, .. } if *id == undo)));
+    assert!(r
+        .log
+        .iter()
+        .any(|e| matches!(e, ActuatorEvent::Reverted { id, .. } if *id == undo)));
     assert_eq!(r.read("input.1/fader"), f(-6.0));
 }
 
@@ -275,15 +277,17 @@ fn refused_model_switch_keeps_its_blocks_params_out() {
     );
     let rep = rx.try_recv().expect("finished at once");
     assert_eq!(written(&rep), vec!["input.2/fader"]);
-    assert!(rep
-        .skipped
-        .iter()
-        .any(|r| matches!(r, Refusal::Remit { param, .. } if param.as_str() == "input.1/eq/model")));
+    assert!(rep.skipped.iter().any(
+        |r| matches!(r, Refusal::Remit { param, .. } if param.as_str() == "input.1/eq/model")
+    ));
     assert!(rep
         .skipped
         .iter()
         .any(|r| matches!(r, Refusal::MixedModelChange { param } if param.as_str() == "input.1/eq/mid.gain")));
-    assert_eq!(s.read(&p("input.1/eq/model")).unwrap(), Value::Enum("STD".into()));
+    assert_eq!(
+        s.read(&p("input.1/eq/model")).unwrap(),
+        Value::Enum("STD".into())
+    );
 }
 
 #[test]
@@ -341,7 +345,10 @@ fn safety_envelope_and_holds_apply_but_not_the_per_move_limit() {
             _ => None,
         })
         .collect();
-    assert!(details.iter().any(|d| d.contains("per-session")), "{details:?}");
+    assert!(
+        details.iter().any(|d| d.contains("per-session")),
+        "{details:?}"
+    );
     assert!(details.iter().any(|d| d.contains("ceiling")), "{details:?}");
     // a mains ceiling hold blocks increases in a snap, cuts still go
     let m = r.monitor.clone().unwrap();
@@ -366,7 +373,10 @@ fn discrete_changes_are_allowed_in_a_recall_on_an_audible_strip() {
     let mv =
         r.a.submit(Action::new("flip").with(ParamChange::new("input.1/in/polarity", true)));
     r.tick_for(0.3);
-    assert!(r.log.iter().any(|e| matches!(e, ActuatorEvent::Refused { id, .. } if *id == mv)));
+    assert!(r
+        .log
+        .iter()
+        .any(|e| matches!(e, ActuatorEvent::Refused { id, .. } if *id == mv)));
     // ... a recall goes through (the GUI has warned it may click)
     let rep = r.snap("flip", &[("input.1/in/polarity", Value::Bool(true))]);
     assert_eq!(written(&rep), vec!["input.1/in/polarity"], "{rep:#?}");
@@ -403,7 +413,9 @@ fn snap_is_refused_while_stopped_and_commit_is_one_undo_unit() {
     let undo = r.a.submit(Job::Undo);
     r.tick_for(3.0);
     assert!(
-        r.log.iter().any(|e| matches!(e, ActuatorEvent::Done { id, .. } if *id == undo)),
+        r.log
+            .iter()
+            .any(|e| matches!(e, ActuatorEvent::Done { id, .. } if *id == undo)),
         "{:#?}",
         r.log
     );

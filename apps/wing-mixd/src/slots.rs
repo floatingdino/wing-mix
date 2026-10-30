@@ -345,7 +345,11 @@ pub fn switching_set<'a>(
 }
 
 /// Params where two value sets differ (`b` missing a param counts as a difference).
-pub fn diff(a: &SlotValues, b: &BTreeMap<ParamId, PValue>, tol: impl Fn(&ParamId) -> f64) -> Vec<ParamId> {
+pub fn diff(
+    a: &SlotValues,
+    b: &BTreeMap<ParamId, PValue>,
+    tol: impl Fn(&ParamId) -> f64,
+) -> Vec<ParamId> {
     let mut keys: BTreeSet<&ParamId> = a.keys().collect();
     keys.extend(b.keys());
     keys.into_iter()
@@ -403,9 +407,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wmx-slots-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut st = SlotStore::open(&dir, "wing:WING:My Desk", "Show 1").unwrap();
-        assert!(st
-            .path()
-            .ends_with("slots/wing_WING_My_Desk+Show_1.json"));
+        assert!(st.path().ends_with("slots/wing_WING_My_Desk+Show_1.json"));
         assert_eq!(st.next_name(), "A");
         st.put(slot(ORIGINAL, &[("input.1/fader", 0.0)])).unwrap();
         st.put(slot("A", &[("input.1/fader", -3.0)])).unwrap();
@@ -447,8 +449,14 @@ mod tests {
         ]
         .into();
         let set = switching_set([&a, &b], &cur, |_| 0.01);
-        assert_eq!(set.into_iter().collect::<Vec<_>>(), vec![ParamId::new("input.1/fader")]);
-        assert_eq!(diff(&b.values, &cur, |_| 0.01), vec![ParamId::new("input.1/fader")]);
+        assert_eq!(
+            set.into_iter().collect::<Vec<_>>(),
+            vec![ParamId::new("input.1/fader")]
+        );
+        assert_eq!(
+            diff(&b.values, &cur, |_| 0.01),
+            vec![ParamId::new("input.1/fader")]
+        );
 
         let mut m = EngineerMoves::new("r1");
         let p = ParamId::new("input.1/fader");
@@ -461,8 +469,14 @@ mod tests {
         let mut other_run = a.clone();
         other_run.run = "r0".into();
         other_run.seq = 99;
-        assert!(m.moved_since(&p, &other_run), "older run: any move this run counts");
+        assert!(
+            m.moved_since(&p, &other_run),
+            "older run: any move this run counts"
+        );
         m.acknowledge(&p);
-        assert!(!m.moved_since(&p, &a), "the engineer let the slot overwrite it");
+        assert!(
+            !m.moved_since(&p, &a),
+            "the engineer let the slot overwrite it"
+        );
     }
 }

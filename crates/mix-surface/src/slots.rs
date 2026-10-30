@@ -125,7 +125,29 @@ pub fn check_compatible(surface: &dyn Surface, values: &SlotValues) -> Result<()
             bad.push(s);
         }
     };
+    // blocks whose model the slot switches: their model-dependent leaves are checked after the switch (the
+    // actuator re-resolves them before writing), not against the current model's mapping
+    let models: Vec<(&ParamId, ParamClass)> = values
+        .iter()
+        .filter(|(_, p)| is_model_class(p.class))
+        .filter(|(id, p)| {
+            surface
+                .read(id)
+                .is_ok_and(|cur| !cur.approx_eq(&p.value, 1e-9))
+        })
+        .map(|(id, p)| (id, p.class))
+        .collect();
+    let switched = |id: &ParamId| {
+        models.iter().any(|(m, class)| {
+            id != *m
+                && id.head() == m.head()
+                && (*class == ParamClass::FxModel || id.block() == m.block())
+        })
+    };
     for (id, p) in values {
+        if p.model_dependent && switched(id) {
+            continue;
+        }
         match surface.param_spec(id) {
             Ok(spec) => {
                 if spec.class != p.class || spec.unit != p.unit {
@@ -153,6 +175,16 @@ pub fn check_compatible(surface: &dyn Surface, values: &SlotValues) -> Result<()
             if n > bad.len() { "; ..." } else { "" }
         ))
     }
+}
+
+fn is_model_class(c: ParamClass) -> bool {
+    matches!(
+        c,
+        ParamClass::FilterModel
+            | ParamClass::EqModel
+            | ParamClass::DynamicsModel
+            | ParamClass::FxModel
+    )
 }
 
 /// Whether two stored values differ beyond the param's tolerance (`tol` by param).
@@ -194,7 +226,9 @@ mod tests {
         assert!(!ids.iter().any(|i| i.starts_with("bus.2/")), "{ids:?}");
         assert!(!ids.contains(&"input.1/send/bus.2/level"), "{ids:?}");
         assert!(!ids.contains(&"main.1/mute"));
-        assert!(!ids.iter().any(|i| i.starts_with("matrix.") || i.starts_with("system")));
+        assert!(!ids
+            .iter()
+            .any(|i| i.starts_with("matrix.") || i.starts_with("system")));
     }
 
     #[test]
@@ -217,7 +251,9 @@ mod tests {
         assert!(check_compatible(&s, &v).is_ok());
         let mut bad = v.clone();
         bad.get_mut(&ParamId::new("input.1/fader")).unwrap().unit = Unit::Hz;
-        assert!(check_compatible(&s, &bad).unwrap_err().contains("input.1/fader"));
+        assert!(check_compatible(&s, &bad)
+            .unwrap_err()
+            .contains("input.1/fader"));
         let mut gone = v.clone();
         gone.insert(
             ParamId::new("input.99/fader"),

@@ -20,8 +20,6 @@ use mix_actuator::{
     PolicyGate, SafetyConfig, SafetyGate, SafetyMonitor, SnapRequest,
 };
 use mix_core::action::ParamChange;
-use mix_surface::journal::Change;
-use mix_surface::SurfaceEvent;
 use mix_core::bands::{BandLayout, THIRD_OCT_CENTRES_HZ};
 use mix_core::ids::{ParamId, StripId};
 use mix_core::profile::TargetProfile;
@@ -29,7 +27,9 @@ use mix_core::value::Value as PValue;
 use mix_engine::control::{ControlConfig, ControlEvent, Controller, Executor, Mode};
 use mix_knowledge::KnowledgeBase;
 use mix_sim::{Multitrack, SimConfig, SimSurface, Track};
+use mix_surface::journal::Change;
 use mix_surface::remit::{detect_topology, Policy, ScoringDetector};
+use mix_surface::SurfaceEvent;
 use mix_surface::{Role, Surface};
 use serde_json::{json, Value};
 
@@ -41,8 +41,8 @@ use crate::protocol::{
     SimOptions, StartOptions, TapSel,
 };
 use crate::rta::RtaFeed;
-use crate::slots::{EngineerMoves, Slot, SlotConsole, SlotStore, SlotTarget, ORIGINAL};
 use crate::server::{ControlServer, Dispatch};
+use crate::slots::{EngineerMoves, Slot, SlotConsole, SlotStore, SlotTarget, ORIGINAL};
 use crate::source::Source;
 use crate::status::{atomic_write, unix_now, DaemonStatus, RoleStore, SOCKET_FILE, STATUS_FILE};
 use crate::taps::TapLayout;
@@ -1415,9 +1415,9 @@ impl Daemon {
             }
             events.push(("actuator", serde_json::to_value(&e).unwrap_or(Value::Null)));
         }
-        let converged = events
-            .iter()
-            .any(|(src, e)| *src == "control" && e["type"] == "holding" && e["reason"] == "converged");
+        let converged = events.iter().any(|(src, e)| {
+            *src == "control" && e["type"] == "holding" && e["reason"] == "converged"
+        });
         for (src, e) in events {
             self.shared.hub.emit(src, now, &e);
         }
@@ -1887,9 +1887,11 @@ impl Daemon {
             .ok_or_else(|| format!("no slot `{name}`"))?;
         if self.live_confirmation_needed() {
             if !confirm_live {
-                return Err("live console: recalling a slot changes what the audience hears at once; \
+                return Err(
+                    "live console: recalling a slot changes what the audience hears at once; \
                             repeat with confirm_live: true (asked once per connection)"
-                    .into());
+                        .into(),
+                );
             }
             self.live_confirmed = true;
         }
@@ -1899,26 +1901,16 @@ impl Daemon {
         if self.session.as_ref().is_some_and(|s| s.stopped) {
             return Err("STOP is in effect: `resume` before recalling a slot".into());
         }
-        // the switching set over every recallable slot, then this slot's values in it
-        let current = self.slot_current()?;
-        let store = self.slot_store()?;
-        let others: Vec<Slot> = store
-            .slots()
-            .into_iter()
-            .filter(|s| self.compatible(s).is_ok())
-            .cloned()
-            .collect();
+        // what this slot changes: its params that differ from the console now (the switching set restricted to
+        // this slot; writing is decided again by the gate)
+        let c = self.console.as_ref().expect("console");
         let tol = self.tolerance_fn();
-        let set = crate::slots::switching_set(others.iter(), &current, &tol);
         let mut changes = Vec::new();
         let mut kept = Vec::new();
-        for p in &set {
-            let Some(sp) = slot.values.get(p) else {
-                continue;
-            };
-            if current
-                .get(p)
-                .is_some_and(|cur| cur.approx_eq(&sp.value, tol(p)))
+        for (p, sp) in &slot.values {
+            if c.surface
+                .read(p)
+                .is_ok_and(|cur| cur.approx_eq(&sp.value, tol(p)))
             {
                 continue;
             }
@@ -1928,6 +1920,7 @@ impl Daemon {
             }
             changes.push(ParamChange::new(p.clone(), sp.value.clone()));
         }
+        let t_prep = t_req.elapsed().as_secs_f64() * 1e3;
         drop(tol);
         // pause the loop: observe mode measures (distance to the slot's target) and moves nothing
         if self.comparing.is_none() {
@@ -2020,7 +2013,7 @@ impl Daemon {
             "write_ms": report.write_ms,
             "total_ms": report.total_ms,
             "request_ms": request_ms,
-            "switching_set": set.len(),
+            "prep_ms": t_prep,
             "aborted": report.aborted,
             "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label})),
             "job": report.id,
@@ -2079,7 +2072,11 @@ impl Daemon {
         if self.target.is_none() {
             return Err("load a reference or a description first".into());
         }
-        let stale = self.session.as_ref().and_then(|s| s.ctl.as_ref()).map(|c| c.gen)
+        let stale = self
+            .session
+            .as_ref()
+            .and_then(|s| s.ctl.as_ref())
+            .map(|c| c.gen)
             != self.target.as_ref().map(|t| t.gen);
         if stale {
             self.build_ctl()?;
