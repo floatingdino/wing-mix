@@ -843,6 +843,8 @@ version = "0.1.0"
 dependencies = [
  "mix-actuator",
  "mix-core",
+ "mix-engine",
+ "mix-knowledge",
  "mix-surface",
 ]
 
