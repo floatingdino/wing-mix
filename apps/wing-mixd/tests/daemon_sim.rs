@@ -40,6 +40,8 @@ impl Daemon {
         let child = Command::new(env!("CARGO_BIN_EXE_wing-mixd"))
             .arg("--state-dir")
             .arg(&state)
+            // never look at a wing-sim the user may be running
+            .env("WINGSIM_STATE_DIR", dir.join("no-wingsim"))
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()

@@ -13,6 +13,7 @@ pub mod analysis;
 pub mod daemon;
 pub mod events;
 pub mod gate;
+pub mod local_sim;
 pub mod protocol;
 pub mod rta;
 pub mod server;

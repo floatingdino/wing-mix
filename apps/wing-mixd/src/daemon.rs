@@ -109,6 +109,9 @@ pub struct Config {
     pub socket: bool,
     /// status.json rewrite period.
     pub status_period: Duration,
+    /// State dir of a wing-sim on this machine (`list_consoles` lists it when its status.json is live). Default:
+    /// `$WINGSIM_STATE_DIR`, else `~/Library/Application Support/WingSimulator` (macOS).
+    pub wingsim_state_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -119,6 +122,7 @@ impl Config {
             console: None,
             socket: true,
             status_period: Duration::from_secs(1),
+            wingsim_state_dir: crate::local_sim::default_state_dir(),
         }
     }
 }
@@ -553,7 +557,8 @@ impl Daemon {
                 discover,
                 wait_ms,
                 probe,
-            } => self.list_consoles(discover, wait_ms, probe),
+                local,
+            } => self.list_consoles(discover, wait_ms, probe, local),
             Request::ConnectConsole(c) => self.connect(c),
             Request::DisconnectConsole => {
                 self.disconnect();
@@ -665,6 +670,7 @@ impl Daemon {
         discover: bool,
         wait_ms: Option<u64>,
         probe: Option<String>,
+        local: bool,
     ) -> Result<Value, String> {
         let wait = Duration::from_millis(wait_ms.unwrap_or(800));
         let mut found = Vec::new();
@@ -675,6 +681,15 @@ impl Daemon {
             found.extend(mix_wing::discovery::probe(resolve(&p)?, wait).map_err(err)?);
         }
         let mut consoles = vec![json!({"kind": "sim", "name": "embedded wing-sim"})];
+        if local {
+            // A wing-sim on this machine (its status.json), connectable over the native protocol on localhost.
+            consoles.extend(
+                self.cfg
+                    .wingsim_state_dir
+                    .as_deref()
+                    .and_then(crate::local_sim::entry),
+            );
+        }
         consoles.extend(found.into_iter().map(|d| {
             json!({
                 "kind": "wing",
@@ -689,7 +704,15 @@ impl Daemon {
     }
 
     fn connect(&mut self, c: ConnectConsole) -> Result<Value, String> {
-        let scene = c.scene.clone().unwrap_or_else(|| "default".into());
+        // Role confirmations are keyed by scene: an embedded sim loaded from a .snap defaults to the file's name.
+        let scene = c.scene.clone().unwrap_or_else(|| {
+            c.sim
+                .as_ref()
+                .and_then(|o| o.scene.as_deref())
+                .filter(|p| p.ends_with(".snap"))
+                .and_then(|p| Path::new(p).file_stem())
+                .map_or("default".into(), |f| f.to_string_lossy().into_owned())
+        });
         let console = match c.console.as_str() {
             "sim" => connect_sim(c.sim.unwrap_or_default(), scene)?,
             "x32" => {
@@ -977,6 +1000,8 @@ impl Daemon {
                 json!({
                     "strip": id,
                     "name": topo.get(id).map(|s| s.name.clone()).unwrap_or_default(),
+                    // routing context only (not controllable on this surface, e.g. the embedded sim's aux inputs)
+                    "context": !topo.strips.iter().any(|s| &s.id == id),
                     "detected": d.role.as_str(),
                     "effective": conf.unwrap_or(d.effective).as_str(),
                     "confidence": d.confidence,
@@ -986,26 +1011,31 @@ impl Daemon {
                 })
             })
             .collect();
-        Ok(json!({"key": c.role_key(), "strips": strips}))
+        Ok(json!({
+            "key": c.role_key(),
+            "console": {"kind": c.kind, "name": c.name, "scene": c.scene},
+            "strips": strips,
+        }))
     }
 
     fn confirm_roles(
         &mut self,
-        roles: BTreeMap<String, String>,
+        roles: BTreeMap<String, Option<String>>,
         scene: Option<String>,
     ) -> Result<Value, String> {
         let c = self.console.as_mut().ok_or("no console")?;
-        if let Some(s) = scene {
-            c.scene = s;
-        }
+        // Validate the whole batch before touching anything: one batch applies completely or not at all.
         let mut parsed = BTreeMap::new();
         for (s, r) in &roles {
             let id = StripId::parse(s).ok_or_else(|| format!("bad strip id `{s}`"))?;
-            let role: Role = r.parse()?;
+            let role: Option<Role> = r.as_deref().map(str::parse).transpose()?;
             parsed.insert(id, role);
         }
+        if let Some(s) = scene {
+            c.scene = s;
+        }
         let key = c.role_key();
-        self.roles.confirm(&key, &parsed);
+        let previous = self.roles.apply(&key, &parsed);
         self.roles
             .save(&self.cfg.state_dir)
             .map_err(|e| format!("roles: {e}"))?;
@@ -1022,7 +1052,13 @@ impl Daemon {
             "daemon",
             &json!({"type": "roles_confirmed", "key": key, "roles": roles, "applies": applies}),
         );
-        Ok(json!({"key": key, "confirmed": roles.len(), "applies": applies}))
+        Ok(json!({
+            "key": key,
+            "confirmed": roles.values().filter(|r| r.is_some()).count(),
+            "cleared": roles.values().filter(|r| r.is_none()).count(),
+            "previous": previous,
+            "applies": applies,
+        }))
     }
 
     // ---------------------------------------------------------------------------------------------------------

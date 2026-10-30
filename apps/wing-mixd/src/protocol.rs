@@ -35,6 +35,9 @@ pub enum Request {
         /// Unicast probe of one address (`ip` or `ip:port`) instead of / besides the broadcast.
         #[serde(default)]
         probe: Option<String>,
+        /// List a wing-sim running on this machine (from its `status.json`; M065).
+        #[serde(default = "yes")]
+        local: bool,
     },
     ConnectConsole(ConnectConsole),
     DisconnectConsole,
@@ -43,9 +46,10 @@ pub enum Request {
     LoadDescription(LoadDescription),
     /// Role detection per strip, with the confirmed roles of this console + scene.
     ListRoles,
-    /// Confirm strip roles (`{"bus.5":"monitor"}`); persisted per console + scene.
+    /// Confirm strip roles (`{"bus.5":"monitor"}`); persisted per console + scene. One request = one batch: a
+    /// `null` role clears the confirmation (back to detection); the reply's `previous` undoes the whole batch.
     ConfirmRoles {
-        roles: BTreeMap<String, String>,
+        roles: BTreeMap<String, Option<String>>,
         #[serde(default)]
         scene: Option<String>,
     },
