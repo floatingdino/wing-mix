@@ -15,6 +15,7 @@ members = [
     "crates/mix-actuator",
     "crates/mix-llm",
     "crates/mix-describe",
+    "crates/mix-sources",
     "apps/wing-mixd",
     "apps/wing-mix-cli",
 ]
@@ -70,6 +71,8 @@ opt-level = 2
 opt-level = 2
 
 # Analysis tests run FFTs and BS.1770 filters over tens of seconds of audio; unoptimised they are too slow.
+[profile.dev.package.mix-sources]
+opt-level = 2
 [profile.dev.package.mix-analysis]
 opt-level = 2
 [profile.dev.package.rustfft]

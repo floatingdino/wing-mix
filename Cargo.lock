@@ -760,6 +760,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mix-sources"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "mix-analysis",
+ "mix-core",
+ "mix-fixtures",
+ "mix-knowledge",
+ "mix-sim",
+ "mix-surface",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mix-stems"
 version = "0.1.0"
 dependencies = [

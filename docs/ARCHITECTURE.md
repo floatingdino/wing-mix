@@ -53,6 +53,7 @@ crates/mix-sim        SimSurface: in-process wing-engine render for closed-loop 
 crates/mix-analysis   feature extraction (streaming + offline), loudness, spectra, dynamics, stereo, masking
 crates/mix-capture    audio input enumeration/capture (cpal), file source, SPSC ring
 crates/mix-reference  reference ingest, sectioning, TargetProfile building, stem sidecar client
+crates/mix-sources    channel source identification: name heuristics + feature prototypes, confidence, overrides
 crates/mix-knowledge  mixing knowledge base (data/knowledge/*.toml) + typed access
 crates/mix-engine     diagnosis, planning, effect prediction, closed-loop controller
 crates/mix-actuator   move scheduler (ramps, batches, solo workflow), safety limits, undo/panic
