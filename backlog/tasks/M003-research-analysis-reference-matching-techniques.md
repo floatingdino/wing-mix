@@ -2,7 +2,7 @@
 id: M003
 title: Research: analysis & reference-matching techniques and libraries
 stage: S0
-status: blocked
+status: review
 owner: agent-M003
 depends: []
 branch: task/M003
@@ -24,3 +24,4 @@ Write docs/research/analysis.md: survey and choose Rust crates (realfft/rustfft,
   docs/research/analysis.md was refused by the agent harness (subagents may not write report .md files), so the full
   document was handed back to the coordinator in the agent report. Next: coordinator (or a top-level session) writes
   docs/research/analysis.md on task/M003 from that report, then sets status review.
+- 2026-10-30 coordinator: committed docs/research/analysis.md from the agent's final text (harness blocked the agent's write).
