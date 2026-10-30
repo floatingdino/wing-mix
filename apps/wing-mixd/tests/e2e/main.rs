@@ -228,6 +228,13 @@ fn check(r: &RunResult) {
         r.name,
         r.ramps.over
     );
+    if !r.drills.ceiling.is_empty() {
+        assert!(
+            r.drills.ceiling_tripped,
+            "{}: mains ceiling did not trip: {}",
+            r.name, r.drills.ceiling
+        );
+    }
     if r.drills.stop_tested {
         assert_eq!(
             r.drills.writes_after_stop, 0,
