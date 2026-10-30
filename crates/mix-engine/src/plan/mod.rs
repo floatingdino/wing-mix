@@ -363,6 +363,56 @@ fn dynamics_opportunity(p: &Problem, state: Option<&ConsoleState>) -> bool {
 /// otherwise equal moves without outweighing the target deviations.
 const MASKING_SHARE: f64 = 0.2;
 
+/// eq.toml `[limits] preferred_boost_db` upper end: the typical tonal boost (checked against the kb in tests).
+pub const PREFERRED_BOOST_DB: f64 = 3.0;
+
+/// Weight (relative to `target_weight`) of one strip's boost into an excess band, per [`PREFERRED_BOOST_DB`] of
+/// boost beyond the typical one, capped at one unit per strip and band.
+const BOOST_INTO_EXCESS_SHARE: f64 = 0.5;
+
+/// M039 per-strip contribution: EQ boosts larger than the typical tonal boost on a strip that contributes to a stem or
+/// mix band which is above its target (eq.toml: cut before boost; a boost feeding an excess is the excess's cause).
+/// A +8 dB keys boost at 250 Hz moves mix-sim's Other stem by ~3 dB inside the reference's 20 dB window spread
+/// (seed 7): invisible as a deviation, obvious as a contribution. Counted while the console shows the boost.
+fn boost_into_excess(d: &Diagnosis, state: &ConsoleState) -> f64 {
+    let mut seen: BTreeSet<(StripId, state::BandSlot)> = BTreeSet::new();
+    let mut load = 0.0;
+    for p in &d.problems {
+        if !matches!(p.kind, ProblemKind::Tonal | ProblemKind::Harshness)
+            || p.evidence.deviation <= 0.0
+            || p.evidence.excess <= 0.0
+        {
+            continue;
+        }
+        let Some(band) = &p.scope.band else { continue };
+        let strips: Vec<&StripId> = match &p.scope.subject {
+            Subject::Stem { strips, .. } => strips.iter().collect(),
+            Subject::Strip { strip, .. } => vec![strip],
+            _ => p.contributors.iter().map(|c| &c.strip).collect(),
+        };
+        let (lo, hi) = (
+            band.lo_hz as f64 / std::f64::consts::SQRT_2,
+            band.hi_hz as f64 * std::f64::consts::SQRT_2,
+        );
+        for s in strips {
+            let Some(eq) = state.settings(s).eq.filter(|e| e.on) else {
+                continue;
+            };
+            let scale = eq.mix_pct / 100.0;
+            for (slot, b) in &eq.bands {
+                let g = b.gain_db * scale;
+                if g <= PREFERRED_BOOST_DB || b.freq_hz < lo || b.freq_hz > hi {
+                    continue;
+                }
+                if seen.insert((s.clone(), *slot)) {
+                    load += ((g - PREFERRED_BOOST_DB) / PREFERRED_BOOST_DB).min(1.0);
+                }
+            }
+        }
+    }
+    load
+}
+
 fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
     let load: f32 = d
         .problems
@@ -370,6 +420,8 @@ fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
         .filter(|p| target_referenced(p) || dynamics_opportunity(p, state))
         .map(|p| p.score())
         .sum();
+    let boosts = state.map_or(0.0, |st| boost_into_excess(d, st));
+    let load = load + (BOOST_INTO_EXCESS_SHARE * boosts) as f32;
     let masking: f64 = d
         .problems
         .iter()

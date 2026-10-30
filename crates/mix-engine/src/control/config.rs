@@ -67,6 +67,10 @@ pub struct ControlConfig {
     pub target_objective: f64,
     /// A converged controller resumes when the objective rises above `target_objective × resume_factor`.
     pub resume_factor: f64,
+    /// M039: below `target_objective` the loop holds only once no executable planned move predicts at least this
+    /// objective gain (0 = hold as soon as the target is reached). A fault worth a clear move (mix-sim seed 7's snare
+    /// -6 dB: +0.05) is no longer left behind because the objective dipped under the target just before it.
+    pub converge_min_gain: f64,
     pub keep: KeepRule,
     /// Re-plan when the measured objective after a kept batch differs from the plan's expectation (objective
     /// measured when planning − Σ predicted gains of the batches kept since) by more than this.
@@ -117,6 +121,7 @@ impl ControlConfig {
             // masking (mix-sim's matched reference measures 0.41-0.46 against its own profile, was 0.34)
             target_objective: 0.6,
             resume_factor: 1.5,
+            converge_min_gain: 0.04,
             keep: KeepRule {
                 keep_fraction: it.keep_if_distance_reduced_by,
                 rel_tol: 0.5,

@@ -30,6 +30,10 @@ use super::state::{BandKind, BandSlot, ConsoleState, DynSlot, StripSettings, DEE
 use crate::diagnosis::stem_masking::stem_of;
 use crate::diagnosis::{Problem, ProblemKind, Subject};
 
+/// Main-bus voicing EQ (M039) only for a band no single source family carries this share of (else fix it at the
+/// source: eq.toml `prefer_fix_at_source`).
+const MAX_VOICING_SHARE: f64 = 0.6;
+
 /// Smallest share of a tonal problem's band a strip must carry for its fader to be offered instead of EQ.
 const MIN_FADER_SHARE: f64 = 0.3;
 
@@ -1015,7 +1019,69 @@ impl Gen<'_> {
             }
             _ => {}
         }
+        self.link_pairs(&mut out);
         out
+    }
+
+    /// M039: a stereo pair is processed alike. For every EQ/filter candidate on one side of a pair whose two sides
+    /// currently carry the same settings in the params it touches, add the same change on both sides (keys L/R with
+    /// the same boost: cutting one side only leaves the image lopsided and half the fault in place).
+    fn link_pairs(&self, out: &mut Vec<Candidate>) {
+        let mut linked = Vec::new();
+        for c in out.iter() {
+            if c.changes.is_empty() || !matches!(c.phase, 1 | 3 | 5) {
+                continue;
+            }
+            let Some(o) = self.model.strips.iter().find(|o| o.tap.strip == c.strip) else {
+                continue;
+            };
+            let Some(partner) = self.pair_partner(o) else {
+                continue;
+            };
+            let ps = &partner.tap.strip;
+            let mut changes = Vec::new();
+            let mut ok = true;
+            for ch in &c.changes {
+                let rest = ch.param.as_str().split_once('/').map(|x| x.1).unwrap_or("");
+                let block = rest.split('/').next().unwrap_or("");
+                if ch.param.strip().as_ref() != Some(&c.strip) || !matches!(block, "eq" | "filter")
+                {
+                    ok = false;
+                    break;
+                }
+                let id = pid(ps, rest);
+                let same = match (self.state.get(&id), &ch.from) {
+                    (Some(a), Some(b)) => a.approx_eq(
+                        b,
+                        self.state
+                            .spec(&id)
+                            .map_or(1e-6, |sp| sp.tolerance().max(1e-3)),
+                    ),
+                    (Some(_), None) => true,
+                    _ => false,
+                };
+                if !same {
+                    ok = false;
+                    break;
+                }
+                if let Some(pc) = self.change(id, ch.to.clone()) {
+                    changes.push(pc);
+                }
+            }
+            if !ok || changes.is_empty() {
+                continue;
+            }
+            let mut all = c.changes.clone();
+            all.extend(changes);
+            linked.push(Candidate {
+                label: format!("{} + {ps}: {}", c.strip, c.label),
+                changes: all,
+                cost: c.cost * 1.3,
+                why: format!("{} (stereo pair {} / {ps}: both sides)", c.why, c.strip),
+                ..c.clone()
+            });
+        }
+        out.extend(linked);
     }
 
     fn level(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
@@ -1158,6 +1224,9 @@ impl Gen<'_> {
         if matches!(p.scope.subject, Subject::Mix) {
             self.main_eq(p, band, dev, excess, out);
         }
+        if dev > 0.0 {
+            self.reduce_boosts(p, band, &members, out);
+        }
         for (s, share) in ranked.iter().take(self.cfg.contributors) {
             let why = format!(
                 "{} {} {:+.1} dB vs target; {s} carries {:.0} % of that band",
@@ -1231,6 +1300,49 @@ impl Gen<'_> {
         }
     }
 
+    /// M039: a band above target with a contributor whose EQ boosts it beyond the typical tonal boost (the planner's
+    /// boost-into-excess term): take the boost back, in steps (eq.toml cut before boost).
+    fn reduce_boosts(
+        &self,
+        p: &Problem,
+        band: &crate::diagnosis::BandRef,
+        members: &[StripId],
+        out: &mut Vec<Candidate>,
+    ) {
+        let (lo, hi) = (
+            band.lo_hz as f64 / std::f64::consts::SQRT_2,
+            band.hi_hz as f64 * std::f64::consts::SQRT_2,
+        );
+        let rules = vec![
+            "mix_band_excess".to_string(),
+            "cut_before_boost".to_string(),
+        ];
+        for s in members {
+            let Some(eq) = self.settings(s).eq.filter(|e| e.on) else {
+                continue;
+            };
+            for (_, b) in &eq.bands {
+                if b.kind != BandKind::Peq
+                    || b.gain_db <= super::PREFERRED_BOOST_DB
+                    || b.freq_hz < lo
+                    || b.freq_hz > hi
+                {
+                    continue;
+                }
+                let why = format!(
+                    "{} {} above target and {s} boosts it by {:+.1} dB at {:.0} Hz: take the boost back",
+                    p.scope.subject.label(),
+                    band.name,
+                    b.gain_db,
+                    b.freq_hz
+                );
+                for d in [-(b.gain_db - super::PREFERRED_BOOST_DB), -b.gain_db] {
+                    out.extend(self.eq(s, b.freq_hz, d, b.q, None, p, &rules, &why, 0.8));
+                }
+            }
+        }
+    }
+
     /// Main-bus EQ for a mix tonal problem (M039): a broad peak at the band's centre (or the band's peak), shelves
     /// for the sub/bass and brilliance/air ends; gains of the deviation and half of it (eq() caps the step).
     fn main_eq(
@@ -1245,6 +1357,28 @@ impl Gen<'_> {
             return;
         };
         if self.settings(main).eq.is_none() {
+            return;
+        }
+        // eq.toml policy `prefer_fix_at_source`: a band one source dominates is that source's problem (mix-sim seed 7:
+        // hats +8 dB own the mix's air band; a main high shelf would hide them)
+        let idx = centre_band(band.lo_hz, band.hi_hz);
+        let all: Vec<StripId> = self
+            .model
+            .strips
+            .iter()
+            .filter(|o| !o.tap.fx_return)
+            .map(|o| o.tap.strip.clone())
+            .collect();
+        // shares per source family (a kit's hats and overheads together own its air band)
+        let mut fam: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+        for (s, share) in self.ranked(&all, &idx) {
+            let key = (self.source_of)(&s)
+                .and_then(|id| self.kb.source(&id).map(|x| x.family.as_str().to_string()))
+                .unwrap_or_else(|| s.as_str().to_string());
+            *fam.entry(key).or_default() += share;
+        }
+        let top = fam.values().cloned().fold(0.0, f64::max);
+        if self.kb.eq.policy.prefer_fix_at_source && top >= MAX_VOICING_SHARE {
             return;
         }
         let rules = vec![
