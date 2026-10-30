@@ -345,6 +345,8 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
         #expect(RoleBulk.needingConfirmation(strips) == ["bus.1", "bus.6", "bus.12"])
         let order = strips.map(\.strip)
         #expect(RoleBulk.span(order, from: "bus.16", to: "bus.6") == ["bus.6", "bus.8", "bus.9", "bus.16"])
+        #expect(["bus.10", "main.1", "bus.2", "input.3", "aux.1"].sorted(by: RoleBulk.consoleOrder)
+            == ["input.3", "aux.1", "bus.2", "bus.10", "main.1"])
     }
 
     @Test func `bulk actions list only real changes and flag unprotection`() {

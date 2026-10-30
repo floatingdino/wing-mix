@@ -14,10 +14,20 @@ struct RemitView: View {
         guard let r = model.roles else { return [] }
         // routing-only strips (not controllable on this console) are listed only when they are named
         return r.strips.filter { $0.context != true || !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
+            .sorted { RoleBulk.consoleOrder($0.strip, $1.strip) }
     }
 
     var shown: [RoleStrip] {
-        visible.filter { !model.showOnlyUnconfirmed || $0.needsConfirmation }
+        visible.filter { s in
+            let k = RoleBulk.parts(s.strip).kind
+            let kindOK = switch model.remitKindFilter {
+            case "bus": k == "bus"
+            case "input": k == "input" || k == "aux"
+            case "main": k == "main" || k == "matrix"
+            default: true
+            }
+            return kindOK && (!model.showOnlyUnconfirmed || s.needsConfirmation)
+        }
     }
 
     var body: some View {
@@ -34,6 +44,9 @@ struct RemitView: View {
                 if !model.pendingBulk.isEmpty && shot { confirmBox }
                 bulkBar
                 HStack {
+                    ChoicePicker(title: "Show", selection: $model.remitKindFilter,
+                                 options: [("All", "all"), ("Buses", "bus"), ("Inputs", "input"), ("Mains", "main")], segmented: true)
+                        .frame(width: 280)
                     FlagToggle(title: "Only strips needing confirmation", isOn: $model.showOnlyUnconfirmed)
                     Spacer()
                     Text("\(visible.filter(\.needsConfirmation).count) of \(visible.count) need confirmation")

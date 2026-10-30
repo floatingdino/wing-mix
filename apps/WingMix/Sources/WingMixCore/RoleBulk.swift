@@ -31,6 +31,16 @@ public enum RoleBulk {
         return (String(p.first ?? ""), p.count > 1 ? Int(p[1]) : nil)
     }
 
+    /// Console order: inputs, aux, buses, mains, matrices, then the rest; numbers ascending (`bus.2` before `bus.10`).
+    public static func consoleOrder(_ a: String, _ b: String) -> Bool {
+        let kinds = ["input", "aux", "bus", "main", "matrix", "dca", "fx"]
+        let (pa, pb) = (parts(a), parts(b))
+        let (ka, kb) = (kinds.firstIndex(of: pa.kind) ?? kinds.count, kinds.firstIndex(of: pb.kind) ?? kinds.count)
+        if ka != kb { return ka < kb }
+        if pa.kind != pb.kind { return pa.kind < pb.kind }
+        return (pa.index ?? 0) < (pb.index ?? 0)
+    }
+
     public static func ofKind(_ strips: [RoleStrip], _ kind: String) -> Set<String> {
         Set(strips.filter { parts($0.strip).kind == kind }.map(\.strip))
     }
@@ -75,7 +85,7 @@ public enum RoleBulk {
     }
 
     private static func pick(_ strips: [RoleStrip], _ selection: Set<String>) -> [RoleStrip] {
-        strips.filter { selection.contains($0.strip) }
+        strips.filter { selection.contains($0.strip) }.sorted { consoleOrder($0.strip, $1.strip) }
     }
 
     /// Confirm `role` for every selected strip.
@@ -103,7 +113,7 @@ public enum RoleBulk {
     /// `minConfidence` (0...1), within `selection` when one is given.
     public static func acceptSuggestions(_ strips: [RoleStrip], minConfidence: Double,
                                          within selection: Set<String>? = nil) -> [Change] {
-        strips.filter {
+        strips.sorted { consoleOrder($0.strip, $1.strip) }.filter {
             $0.needsConfirmation && $0.confirmed == nil && $0.confidence >= minConfidence
                 && $0.detected != "unknown" && (selection?.contains($0.strip) ?? true)
         }

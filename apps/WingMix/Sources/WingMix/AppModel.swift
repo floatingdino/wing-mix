@@ -85,6 +85,8 @@ final class AppModel {
     var roles: RoleList?
     var roleOverrides: [String: String] = [:]
     var showOnlyUnconfirmed = false
+    /// Remit table filter by strip kind (`all`, `bus`, `input` = inputs + aux, `main` = mains + matrices).
+    var remitKindFilter = "all"
     /// Bulk editing (M065): selected strip ids, the shift-click anchor, the change list awaiting confirmation and
     /// the batch that undoes the last applied bulk change.
     var selectedStrips: Set<String> = []
