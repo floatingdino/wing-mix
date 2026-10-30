@@ -1,6 +1,6 @@
 //! Wing Mix headless CLI (analyse, match, dry-run against the simulator).
 //!
-//! Subcommands so far: `devices` (list audio input devices).
+//! Subcommands so far: `devices` (list audio input devices), `fixture info|excerpt|scan` (real multitrack fixture).
 
 use mix_capture::list_input_devices;
 
@@ -32,16 +32,135 @@ fn devices() -> i32 {
     }
 }
 
+const FIXTURE_USAGE: &str =
+    "usage: fixture info | fixture excerpt --start S --dur D [--out DIR] | fixture scan [--step S]";
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn fixture(args: &[String]) -> i32 {
+    use mix_fixtures::{group_of, Fixture, Group};
+    let Some(root) = mix_fixtures::locate() else {
+        eprintln!("error: fixtures not found (set WINGMIX_FIXTURES or see fixtures/README.md)");
+        return 1;
+    };
+    let fx = match Fixture::open(&root) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let num =
+        |name: &str, default: Option<f64>| flag(args, name).map_or(default, |v| v.parse().ok());
+    match args.first().map(String::as_str) {
+        Some("info") => {
+            println!(
+                "{}\n{} Hz, {:.1} s, {} audio tracks ({} project tracks)",
+                root.display(),
+                fx.sample_rate(),
+                fx.duration(),
+                fx.tracks.len(),
+                fx.project.tracks.len()
+            );
+            for t in &fx.tracks {
+                println!(
+                    "ch {:>2}\t{:<8}\t{:<8}\tgain {:+.1} dB{}",
+                    t.channel,
+                    t.name,
+                    t.label,
+                    20.0 * t.project_gain.max(1e-9).log10(),
+                    if t.mute { "\tMUTED" } else { "" }
+                );
+            }
+            0
+        }
+        Some("excerpt") => {
+            let (Some(start), Some(dur)) = (num("--start", None), num("--dur", Some(30.0))) else {
+                eprintln!("{FIXTURE_USAGE}");
+                return 2;
+            };
+            let out = flag(args, "--out").map_or_else(
+                || std::env::temp_dir().join(format!("wingmix-excerpt-{start:.0}s")),
+                Into::into,
+            );
+            let t0 = std::time::Instant::now();
+            match fx.excerpt(start, dur).and_then(|e| e.write_wavs(&fx, &out)) {
+                Ok(paths) => {
+                    println!(
+                        "{} files -> {} ({:.2} s)",
+                        paths.len(),
+                        out.display(),
+                        t0.elapsed().as_secs_f64()
+                    );
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        Some("scan") => {
+            let step = num("--step", Some(10.0)).unwrap_or(10.0);
+            let map = match fx.loudness_map(step) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            };
+            println!("t_s,total_db,drums_db,bass_db,vocals_db,other_db");
+            for b in 0..map.bins() {
+                let g = |sel: Option<Group>| {
+                    db_of(&map, &fx, b, |t| {
+                        sel.is_none_or(|s| group_of(t.channel) == s)
+                    })
+                };
+                println!(
+                    "{:.0},{:.1},{:.1},{:.1},{:.1},{:.1}",
+                    b as f64 * step,
+                    g(None),
+                    g(Some(Group::Drums)),
+                    g(Some(Group::Bass)),
+                    g(Some(Group::Vocals)),
+                    g(Some(Group::Other))
+                );
+            }
+
+            0
+        }
+        _ => {
+            eprintln!("{FIXTURE_USAGE}");
+            2
+        }
+    }
+}
+
+fn db_of(
+    map: &mix_fixtures::LoudnessMap,
+    fx: &mix_fixtures::Fixture,
+    bin: usize,
+    pick: impl Fn(&mix_fixtures::AudioTrack) -> bool,
+) -> f64 {
+    map.power_db(fx, bin, bin + 1, pick)
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let code = match args.next().as_deref() {
         Some("devices") => devices(),
+        Some("fixture") => fixture(&args.collect::<Vec<_>>()),
         Some("--version") | None => {
             println!("wing-mix-cli {}", env!("CARGO_PKG_VERSION"));
             0
         }
         Some(other) => {
-            eprintln!("unknown command '{other}' (try: devices)");
+            eprintln!("unknown command '{other}' (try: devices, fixture)");
             2
         }
     };

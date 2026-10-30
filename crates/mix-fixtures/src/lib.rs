@@ -95,6 +95,15 @@ pub fn group_of(channel: u32) -> Group {
     }
 }
 
+/// Representative 30 s windows `(name, start seconds, duration)`, chosen from `fixture scan --step 10`
+/// (see fixtures/README.md for the levels that justify them).
+pub const WINDOWS: &[(&str, f64, f64)] = &[
+    ("quiet-verse", 1500.0, 30.0),
+    ("full-band", 3900.0, 30.0),
+    ("vocal-forward", 3420.0, 30.0),
+    ("no-vocals", 4080.0, 30.0),
+];
+
 /// One recorded input: a track with a single media item.
 #[derive(Debug, Clone)]
 pub struct AudioTrack {
@@ -358,6 +367,13 @@ impl LoudnessMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_are_sane() {
+        for (n, s, d) in WINDOWS {
+            assert!(!n.is_empty() && *s > 180.0 && *d > 0.0);
+        }
+    }
 
     #[test]
     fn channel_names() {
