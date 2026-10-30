@@ -17,6 +17,7 @@ wing-dsp = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+mix-describe = { path = "../mix-describe" }
 mix-fixtures = { path = "../mix-fixtures" }
 mix-reference = { path = "../mix-reference" }
 mix-sim = { path = "../mix-sim" }

@@ -16,6 +16,7 @@
 
 pub mod apply;
 pub mod base;
+pub mod context;
 mod llm;
 
 use std::collections::BTreeSet;
@@ -26,6 +27,7 @@ use mix_llm::LlmBridge;
 
 pub use apply::{Applier, Target};
 pub use base::{genre_names, genre_profile, neutral_profile};
+pub use context::{apply_context, context_of, with_context, MixContext};
 
 /// One vocabulary term that was applied, with its effective deltas.
 #[derive(Debug, Clone, PartialEq)]

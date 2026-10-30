@@ -2,10 +2,10 @@
 id: M037
 title: Live-context targets: de-master references, alignment sanity check
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M037
 depends: [M034]
-branch: -
+branch: task/M037
 model: opus
 ---
 
@@ -29,3 +29,7 @@ calibration. Use the video mix (55/56) as a second human baseline for the broadc
 
 ## Log
 - 2026-10-31 coordinator: created from M034's FOH report.
+- 2026-10-31 agent-M037: claimed. WIP: `mix_describe::context` (MixContext live/broadcast_video/match_record,
+  norms-based transform + derive), `mix_fixtures::sanity` (sub gap + chroma check), section-scope PLR/LRA in
+  `mix_reference::build_profile` (REFERENCE_VERSION 2), fixture test crates/mix-engine/tests/live_context.rs.
+  Next: unit tests, docs, make check.
