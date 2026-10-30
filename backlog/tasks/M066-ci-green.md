@@ -2,10 +2,10 @@
 id: M066
 title: Make CI green on macOS and Linux
 stage: S6
-status: todo
-owner: -
+status: review
+owner: agent-M066
 depends: []
-branch: -
+branch: task/M066
 model: sonnet
 ---
 
@@ -25,8 +25,10 @@ Verify by pushing the task branch and watching its CI run (`gh run watch` / `gh 
 Pushing the task branch to origin is allowed for this task only; do not push main.
 
 ## Acceptance criteria
-- [ ] A CI run on task/M066 is green on both jobs
-- [ ] The flaky test passes 20× locally under parallel load
+- [x] A CI run on task/M066 is green on both jobs
+- [x] The flaky test passes 20× locally under parallel load
 
 ## Log
 - 2026-10-31 coordinator: created; CI red since M021 went unnoticed (coordinator now checks CI after each push).
+- 2026-10-31 agent-M066: causes: (1) linux alsa-sys -> workflow installs libasound2-dev pkg-config; (2) inproc.rs preamp_alias test read the driver mirror after only a driver barrier (s->console->driver propagation race) -> s barrier + poll. Added rust-cache. Flaky test 20x parallel passes locally. Next: push and watch CI.
+- 2026-10-31 agent-M066: review. Files: .github/workflows/ci.yml (apt deps, rust-cache, also run on task/** pushes), crates/mix-wing/tests/inproc.rs, this file. CI run https://github.com/floatingdino/wing-mix/actions/runs/41133696678 green (linux 8m, macos 9m). make check passed locally; flaky test 20x parallel ok.
