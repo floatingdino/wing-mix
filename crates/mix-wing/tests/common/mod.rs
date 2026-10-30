@@ -16,6 +16,9 @@ use wing_proto::server::{
 pub fn opts() -> ConnectOptions {
     ConnectOptions {
         discovery_port: None,
+        // generous: other test binaries (and agents) load the machine
+        timeout: Duration::from_secs(20),
+        sync_timeout: Duration::from_secs(60),
         ..ConnectOptions::default()
     }
 }
@@ -123,7 +126,16 @@ impl Daemon {
 
     pub fn connect(&self) -> WingSurface {
         let _ = &self.inner;
-        WingSurface::connect(self.addr, &opts()).expect("connect wing-sim")
+        // a loaded machine can drop a connection while the daemon is still settling: retry
+        let mut last = None;
+        for _ in 0..5 {
+            match WingSurface::connect(self.addr, &opts()) {
+                Ok(s) => return s,
+                Err(e) => last = Some(e),
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        panic!("connect wing-sim: {:?}", last.unwrap());
     }
 }
 

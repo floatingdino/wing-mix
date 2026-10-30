@@ -12,10 +12,27 @@ use mix_surface::{Surface, SurfaceError};
 use mix_wing::{ConnectOptions, WingSurface};
 use std::time::Duration;
 
+/// Poll `f` until it holds (the console's own logic and event fan-out are asynchronous; CI machines are loaded).
+fn eventually(what: &str, f: impl Fn() -> bool) {
+    let end = std::time::Instant::now() + Duration::from_secs(15);
+    while !f() {
+        assert!(std::time::Instant::now() < end, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Round trip on both connections: everything either wrote before is now on the console and in both mirrors.
+fn sync2(a: &WingSurface, b: &WingSurface) {
+    let t = Duration::from_secs(10);
+    a.client().barrier(t).unwrap();
+    b.client().barrier(t).unwrap();
+    a.client().barrier(t).unwrap();
+}
+
 fn opts() -> ConformanceOptions {
     ConformanceOptions {
         model_probe: Some((ParamId::new("input.1/eq/model"), Value::Enum("SOUL".into()))),
-        event_timeout: Duration::from_secs(2),
+        event_timeout: Duration::from_secs(10),
         ..Default::default()
     }
 }
@@ -61,7 +78,7 @@ fn wing_sim_write_read_back_and_solo_round_trip() {
     let p = ParamId::new("bus.2/meta/name");
     s.write(&p, Value::Text("WEDGE 2".into())).unwrap();
     // writes are not acknowledged: a round trip orders it before the other connection's get
-    s.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(10)).unwrap();
     assert_eq!(
         other.refresh(std::slice::from_ref(&p)).unwrap()[0],
         Value::Text("WEDGE 2".into())
@@ -71,6 +88,12 @@ fn wing_sim_write_read_back_and_solo_round_trip() {
     other
         .set_solo(&SoloTarget::strip(StripId::new("input", 9)), true)
         .unwrap();
+    sync2(&s, &other);
+    eventually("solo of ch 9 seen", || {
+        other.client().barrier(Duration::from_secs(10)).unwrap();
+        s.client().barrier(Duration::from_secs(10)).unwrap();
+        s.solo_state().is_ok_and(|x| !x.active.is_empty())
+    });
     let saved = s.solo_state().unwrap();
     assert_eq!(saved.mode, SoloMode::NonDestructive);
     assert_eq!(
@@ -80,21 +103,21 @@ fn wing_sim_write_read_back_and_solo_round_trip() {
     s.clear_solo().unwrap();
     s.set_solo(&SoloTarget::strip(StripId::new("input", 3)), true)
         .unwrap();
-    std::thread::sleep(Duration::from_millis(300)); // the console's control logic runs asynchronously
-    let st = s.solo_state().unwrap();
-    assert_eq!(st.active, vec![SoloTarget::strip(StripId::new("input", 3))]);
+    // the console's control logic runs asynchronously
+    let want3 = vec![SoloTarget::strip(StripId::new("input", 3))];
+    eventually("solo state is ch 3", || {
+        s.solo_state().is_ok_and(|x| x.active == want3)
+    });
     // the console reports the solo (control logic ran)
     let led = s.client().store().lookup("ch/3/$sololed").unwrap();
-    s.client().refresh(&[led], Duration::from_secs(2)).unwrap();
-    assert_eq!(
-        s.client().store().get_f64(led),
-        Some(1.0),
-        "console solo indicator"
-    );
+    eventually("console solo indicator", || {
+        s.client().refresh(&[led], Duration::from_secs(10)).unwrap();
+        s.client().store().get_f64(led) == Some(1.0)
+    });
     s.restore_solo(&saved).unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(s.solo_state().unwrap(), saved);
-    assert_eq!(other.solo_state().unwrap(), saved);
+    eventually("solo restored", || {
+        s.solo_state().is_ok_and(|x| x == saved) && other.solo_state().is_ok_and(|x| x == saved)
+    });
 
     // SIP: refuse, clear still works
     other
@@ -103,6 +126,7 @@ fn wing_sim_write_read_back_and_solo_round_trip() {
             Value::Enum("SIP".into()),
         )
         .unwrap();
+    sync2(&s, &other);
     assert_eq!(
         s.set_solo(&SoloTarget::strip(StripId::new("input", 3)), true),
         Err(SurfaceError::DestructiveSolo)
@@ -119,8 +143,8 @@ fn wing_sim_monitor_classification_meters_rta() {
     let s = d.connect();
     let driver = d.connect();
     common::build_show(&driver);
-    driver.client().barrier(Duration::from_secs(2)).unwrap();
-    s.client().barrier(Duration::from_secs(2)).unwrap();
+    driver.client().barrier(Duration::from_secs(10)).unwrap();
+    s.client().barrier(Duration::from_secs(10)).unwrap();
     common::check_monitor_classification(&s);
 
     let f = s.meters().unwrap();
@@ -158,7 +182,7 @@ fn wing_sim_meter_renewal_and_keepalive() {
     let mut last_seq = 0;
     while start.elapsed() < Duration::from_secs(12) {
         let f = rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(15))
             .expect("meter frames keep arriving");
         assert!(f.seq > last_seq);
         last_seq = f.seq;
@@ -171,6 +195,7 @@ fn wing_sim_meter_renewal_and_keepalive() {
     );
     idle.write(&ParamId::new("input.1/fader"), Value::Float(-3.0))
         .unwrap();
+    idle.client().barrier(Duration::from_secs(10)).unwrap();
     assert_eq!(
         d.connect().read(&ParamId::new("input.1/fader")).unwrap(),
         Value::Float(-3.0)
@@ -206,11 +231,12 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
         d.addr,
         &ConnectOptions {
             discovery_port: None,
+            timeout: Duration::from_secs(20),
+            sync_timeout: Duration::from_secs(60),
             reconnect: Some(mix_wing::ReconnectPolicy {
                 initial: Duration::from_millis(50),
                 max: Duration::from_millis(400),
             }),
-            ..ConnectOptions::default()
         },
     )
     .unwrap();
@@ -220,7 +246,7 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
     s.write(&p, Value::Float(-4.3)).unwrap();
     assert_eq!(s.read(&p).unwrap(), Value::Float(-4.3));
     // meters run before the outage
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while s.meters().is_err() {
         assert!(std::time::Instant::now() < deadline, "no meters");
         std::thread::sleep(Duration::from_millis(50));
@@ -231,7 +257,7 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
         wait_event(
             &rx,
             |e| matches!(e, E::Disconnected),
-            Duration::from_secs(5)
+            Duration::from_secs(20)
         ),
         "Disconnected event"
     );
@@ -246,7 +272,7 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
         wait_event(
             &rx,
             |e| matches!(e, E::Reconnected),
-            Duration::from_secs(30)
+            Duration::from_secs(60)
         ),
         "Reconnected event"
     );
@@ -254,7 +280,7 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
         wait_event(
             &rx,
             |e| matches!(e, E::TopologyChanged),
-            Duration::from_secs(2)
+            Duration::from_secs(20)
         ),
         "topology refresh follows"
     );
@@ -262,6 +288,7 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
     assert_eq!(s.read(&p).unwrap(), default);
     // writes work again and reach the console
     s.write(&p, Value::Float(-2.5)).unwrap();
+    s.client().barrier(Duration::from_secs(10)).unwrap(); // unacknowledged write: order it before the new connection
     assert_eq!(d.connect().read(&p).unwrap(), Value::Float(-2.5));
     // external changes flow again
     let other = d.connect();
@@ -269,10 +296,10 @@ fn wing_sim_auto_reconnect_after_daemon_restart() {
     assert!(wait_event(
         &rx,
         |e| matches!(e, E::ParamChanged { value: Value::Float(v), .. } if (*v - 3.0).abs() < 0.01),
-        Duration::from_secs(2)
+        Duration::from_secs(20)
     ));
     // meters resume (the receiver redefines the report on the new connection)
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
     let mut last = None;
     while std::time::Instant::now() < deadline {
         let f = s.meters().ok();
@@ -297,8 +324,9 @@ fn wing_sim_stays_disconnected_without_reconnect_policy() {
         d.addr,
         &ConnectOptions {
             discovery_port: None,
+            timeout: Duration::from_secs(20),
+            sync_timeout: Duration::from_secs(60),
             reconnect: None,
-            ..ConnectOptions::default()
         },
     )
     .unwrap();
@@ -322,16 +350,18 @@ fn wing_sim_stays_disconnected_without_reconnect_policy() {
 fn collect_param(
     rx: &std::sync::mpsc::Receiver<mix_surface::SurfaceEvent>,
     param: &ParamId,
-    window: Duration,
+    a: &WingSurface,
+    b: &WingSurface,
 ) -> Vec<(mix_surface::surface::Origin, Value)> {
-    let end = std::time::Instant::now() + window;
+    // round trips order everything on the wire; then drain until the event thread has been quiet for a while
+    sync2(a, b);
     let mut out = Vec::new();
-    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
-        if let Ok(mix_surface::SurfaceEvent::ParamChanged {
+    while let Ok(ev) = rx.recv_timeout(Duration::from_millis(150)) {
+        if let mix_surface::SurfaceEvent::ParamChanged {
             param: p,
             value,
             origin,
-        }) = rx.recv_timeout(left)
+        } = ev
         {
             if &p == param {
                 out.push((origin, value));
@@ -367,11 +397,11 @@ fn wing_sim_origin_of_own_and_other_clients_writes() {
             }
         };
         b.write(&p, mk(v1)).unwrap();
-        let ev = collect_param(&rx, &p, Duration::from_millis(400));
+        let ev = collect_param(&rx, &p, &a, &b);
         assert_eq!(ev.len(), 1, "{name} from B: {ev:?}");
         assert_eq!(ev[0].0, Origin::External, "{name}");
         a.write(&p, mk(v2)).unwrap();
-        let ev = collect_param(&rx, &p, Duration::from_millis(400));
+        let ev = collect_param(&rx, &p, &a, &b);
         assert!(
             ev.iter().all(|e| e.0 == Origin::Local),
             "{name} own write: {ev:?}"
@@ -394,11 +424,12 @@ fn wing_sim_reconnect_diff_emits_external_changes() {
         d.addr,
         &ConnectOptions {
             discovery_port: None,
+            timeout: Duration::from_secs(20),
+            sync_timeout: Duration::from_secs(60),
             reconnect: Some(mix_wing::ReconnectPolicy {
                 initial: Duration::from_millis(50),
                 max: Duration::from_millis(400),
             }),
-            ..ConnectOptions::default()
         },
     )
     .unwrap();
@@ -411,23 +442,24 @@ fn wing_sim_reconnect_diff_emits_external_changes() {
     let default_untouched = s.read(&untouched).unwrap();
     s.write(&changed, Value::Float(-4.3)).unwrap();
     s.write(&name, Value::Text("WEDGE 2".into())).unwrap();
-    while rx.try_recv().is_ok() {}
+    s.client().barrier(Duration::from_secs(10)).unwrap();
+    while rx.recv_timeout(Duration::from_millis(150)).is_ok() {}
 
     d.kill();
     assert!(wait_event(
         &rx,
         |e| matches!(e, E::Disconnected),
-        Duration::from_secs(5)
+        Duration::from_secs(20)
     ));
     assert!(d.restart());
     assert!(wait_event(
         &rx,
         |e| matches!(e, E::Reconnected),
-        Duration::from_secs(30)
+        Duration::from_secs(60)
     ));
     // the diff follows the Reconnected event
     let mut evs = Vec::new();
-    while let Ok(e) = rx.recv_timeout(Duration::from_millis(500)) {
+    while let Ok(e) = rx.recv_timeout(Duration::from_millis(400)) {
         evs.push(e);
     }
     let of = |p: &ParamId| -> Vec<(Origin, Value)> {
@@ -464,6 +496,7 @@ fn wing_sim_engineer_move_pauses_the_actuator_ramp() {
     let s = Arc::new(d.connect());
     let engineer = d.connect();
     let fader = ParamId::new("input.1/fader");
+    let watch = s.subscribe();
     s.write(&fader, Value::Float(-30.0)).unwrap();
     let cfg = ActuatorConfig {
         external_cooldown_s: 2.0,
@@ -490,12 +523,21 @@ fn wing_sim_engineer_move_pauses_the_actuator_ramp() {
     );
     // virtual time runs far faster than the wire: make sure the console has the ramp's writes before the
     // engineer's (separate connections are not ordered against each other)
-    s.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(10)).unwrap();
     // the engineer grabs the fader
     engineer.write(&fader, Value::Float(-1.0)).unwrap();
-    engineer.client().barrier(Duration::from_secs(2)).unwrap();
-    s.client().barrier(Duration::from_secs(2)).unwrap();
-    std::thread::sleep(Duration::from_millis(100));
+    engineer.client().barrier(Duration::from_secs(10)).unwrap();
+    s.client().barrier(Duration::from_secs(10)).unwrap();
+    // the event thread has announced the engineer's move (the actuator listens to the same broadcast)
+    assert!(
+        wait_event(
+            &watch,
+            |e| matches!(e, mix_surface::SurfaceEvent::ParamChanged { origin: mix_surface::surface::Origin::External, value: Value::Float(v), .. } if (*v + 1.0).abs() < 1e-6),
+            Duration::from_secs(20)
+        ),
+        "engineer's move announced"
+    );
+    std::thread::sleep(Duration::from_millis(50)); // the actuator's own subscription gets it right behind
     let writes_before = a.write_log().len();
     tick(&mut a, 1.0);
     let evs: Vec<_> = ev.try_iter().collect();

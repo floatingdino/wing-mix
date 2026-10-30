@@ -51,3 +51,19 @@ after a reconnect. Optionally expose the preamp alias in SimSurface.
   a conflicting concurrent write (stale mirror when two clients write the same param at once).
 - 2026-10-30 coordinator: merged, make check passes. done. Simultaneous-write stale-mirror risk noted for M052 review.
 - 2026-10-30 coordinator: REOPENED. After merge, full `make check` failed once: wing_sim_engineer_move_pauses_the_actuator_ramp line 519, s.read(fader) = -29.53 vs engineer -1.0 (passes 5/5 alone → load-dependent). Likely the stale-mirror race on near-simultaneous writes. Fix on a new branch task/M019b from main.
+- 2026-10-31 agent-M019b (branch task/M019b): flaky wing_sim suite under load. Production causes fixed:
+  1. Root cause of the engineer-move failure: `send_value` re-read the mirror, so a console event applied by the
+     reader thread between a write's apply and its send replaced the written value (the engineer client received the
+     coalesced ramp events of the other client and sent -29.x instead of -1.0), and a console value produced before an
+     own write could roll the mirror back. Now: `NativeClient::write_guard` (held across apply+send, and by the
+     reader while applying console values) and per-node pending writes: `send_value` queues a barrier right behind
+     the write and console values for that node arriving before its `DE` are ignored, so the mirror converges to the
+     console's final value (own write wins when it is last).
+  2. mix-testsim: port pick mixes in the clock (concurrent test binaries walked the same sequence) and `wait_ready`
+     only accepts a port when our own child survived binding it (another binary's daemon could answer instead).
+  3. ConformanceDriver writes (`external_write`, `set_destructive_solo`) round-trip before returning.
+  Tests (wing_sim.rs/common): generous timeouts, retrying `Daemon::connect`, `sync2` barriers after cross-client
+  writes, polling instead of sleeps (solo logic, reconnect), event-driven wait in the engineer test, deterministic
+  drain in origin/reconnect-diff tests.
+  Verified: 4 parallel x 20 runs of the wing_sim binary plus a `cargo test --workspace` alongside: no failure (at 8
+  parallel x 12, ~1 in 100 daemon connects still refused: the daemon process itself died under extreme load).

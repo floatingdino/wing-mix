@@ -68,6 +68,12 @@ struct Shared {
     /// `DE`s received.
     des: Mutex<u64>,
     des_cv: Condvar,
+    /// Held while an own write is applied to the mirror and sent, and while the reader applies console values:
+    /// the value `send_value` reads back is the one just written, never a console event that slipped in between.
+    apply: Mutex<()>,
+    /// Nodes with an own write in flight -> the `DE` count at which the console has processed it. Console values
+    /// for such a node that arrive before then were produced before our write and would roll the mirror back.
+    pending: Mutex<std::collections::HashMap<NodeId, u64>>,
 }
 
 /// One native-protocol connection plus the mirror store.
@@ -171,6 +177,8 @@ impl NativeClient {
             stop: AtomicBool::new(false),
             des: Mutex::new(0),
             des_cv: Condvar::new(),
+            apply: Mutex::new(()),
+            pending: Mutex::new(Default::default()),
         });
         let mut w = Writer {
             stream,
@@ -245,6 +253,7 @@ impl NativeClient {
             w.enc.select(CH_CONTROL, &mut w.buf);
             w.flush()?;
             *lock(&self.shared.des) = 0;
+            lock(&self.shared.pending).clear();
             self.shared.alive.store(true, SeqCst);
         }
         self.spawn_reader(rd)?;
@@ -374,17 +383,28 @@ impl NativeClient {
         r
     }
 
-    /// Send the mirror's current value of `id` to the console (after a local [`Self::set_local`]).
+    /// Guard to hold across "apply an own write to the mirror, then [`Self::send_value`]" so that no console
+    /// event is applied to the mirror in between (it would be sent instead of the written value).
+    pub fn write_guard(&self) -> MutexGuard<'_, ()> {
+        lock(&self.shared.apply)
+    }
+
+    /// Send the mirror's current value of `id` to the console (after a local write to the mirror; hold
+    /// [`Self::write_guard`] around both). The node counts as pending until the console has answered a barrier
+    /// sent right behind the write: console events for it that arrive earlier predate the write and are ignored.
     pub fn send_value(&self, id: NodeId) -> io::Result<()> {
         let store = self.store.clone();
-        self.write_with(|enc, buf| {
+        let target = self.write_with(|enc, buf| {
             let _ = enc.control(&Token::NavHash(Schema::get().hash(id)), buf);
             with_value_token(&store, id, |t| {
                 let _ = enc.control(&t, buf);
             });
-            0
-        })
-        .map(|_| ())
+            let _ = enc.control(&Token::NavHash(0), buf);
+            let _ = enc.control(&Token::DataRequest, buf);
+            1
+        })?;
+        lock(&self.shared.pending).insert(id, target);
+        Ok(())
     }
 
     /// Send a raw value token for `id` (used by test drivers).
@@ -489,25 +509,37 @@ fn reader_loop(
             Ok(0) => break,
             Ok(n) => {
                 dec.feed(&buf[..n]);
-                let mut des = 0u64;
                 while let Some(r) = dec.next_control() {
                     let Ok(t) = r else { continue };
                     match t {
                         Token::NavHash(h) => cursor = store.by_hash(h),
-                        Token::End => des += 1,
+                        Token::End => {
+                            *lock(&shared.des) += 1;
+                            shared.des_cv.notify_all();
+                        }
                         t if t.is_value() => {
                             if let Some(id) = cursor {
-                                let _ = apply_value(&store, id, &t, ORIGIN_REMOTE);
+                                let _g = lock(&shared.apply);
+                                let stale = {
+                                    let mut pend = lock(&shared.pending);
+                                    match pend.get(&id) {
+                                        Some(&target) if *lock(&shared.des) < target => true,
+                                        Some(_) => {
+                                            pend.remove(&id);
+                                            false
+                                        }
+                                        None => false,
+                                    }
+                                };
+                                if !stale {
+                                    let _ = apply_value(&store, id, &t, ORIGIN_REMOTE);
+                                }
                             }
                         }
                         _ => {}
                     }
                 }
                 while dec.next_meter().is_some() {}
-                if des > 0 {
-                    *lock(&shared.des) += des;
-                    shared.des_cv.notify_all();
-                }
             }
             Err(e)
                 if matches!(
