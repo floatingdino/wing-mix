@@ -1719,7 +1719,7 @@ impl Daemon {
             objective: if builtin {
                 None
             } else {
-                score.as_ref().map(|s| s.objective as f64)
+                score.as_ref().map(|s| s.objective)
             },
             values,
         })
