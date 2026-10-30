@@ -54,7 +54,7 @@ nothing else happens.
 | `list_consoles` | `discover` (bool, default true: UDP broadcast `WING?` to port 2222), `wait_ms` (800), `probe` (`ip[:port]`, unicast) | `{"consoles":[{"kind":"sim"},{"kind":"wing","ip","name","model","serial","firmware"}]}` |
 | `connect_console` | `console`: `sim`, `wing` (+`ip`), `x32` (+`ip`, port default 10023; M061) or an IP (= wing); `port` (2222); `scene` (role key, default `default`); `sim`: see below | `{"kind","name","key","scene","inputs"}`. Replaces any previous console (ends its session; a sim input is dropped with it). The remit policy is the console's own default (`data/remit/<surface>-default.toml`) or `--policy`; a policy whose `surface` does not match the console is refused (the connect fails). `wing-mixd --console sim\|wing:<ip>[:port]\|x32:<ip>[:port]` connects at start. |
 | `disconnect_console` | | |
-| `select_input` | `source`: `device` / `file` / `sim`; `device` (name or unique substring; default input), `path` (WAV, `file`), `sample_rate`, `taps` | `{"kind","description","sample_rate","taps"}` |
+| `select_input` | `source`: `device` / `file` / `sim` / `stream`; `device` (name or unique substring; default input), `path` (WAV, `file`), `addr` + `channels` (`stream`), `sample_rate`, `taps` | `{"kind","description","sample_rate","taps"}` |
 | `load_reference` | `path` (audio file, or a TargetProfile `.json`), `section` (index), `stems` (bool), `wait` (bool) | `{"loading":true}` at once, or with `wait` the loaded target `{"kind":"reference","label","info"}` |
 | `load_description` | `text`, `base` (`current` or a profile `.json`), `genre`, `llm` (bool), `model`, `wait` | as above, `info` lists the applied terms, conflicts, unrecognised phrases |
 | `list_roles` | | `{"key","strips":[{"strip","name","detected","effective","confidence","evidence","confirmed","needs_confirmation"}]}` |
@@ -92,6 +92,14 @@ actuator thread immediately), so they never wait behind a plan being computed; t
 
 The sim renders on its own thread; `select_input {"source":"sim"}` analyses its main 1, solo bus and every input
 post fader. The multitrack loops.
+
+### Stream input (M052)
+
+`{"cmd":"select_input","source":"stream","addr":"127.0.0.1:40000","channels":27,"sample_rate":48000,"taps":[..]}`:
+the daemon connects to `addr` (TCP) and reads raw interleaved little-endian f32 frames, `channels` per frame
+(default: the highest tap channel). Live semantics as for a device: frames that do not fit the ring are dropped and
+counted (`dropped_frames`); EOF ends the input (the stall watchdog then holds/STOPs). Used by the end-to-end harness
+(docs/milestones/e2e.md) to feed a headless wing-sim's USB outputs; usable for any network audio bridge.
 
 ### Taps (`select_input`)
 

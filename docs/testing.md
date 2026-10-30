@@ -40,3 +40,12 @@ let out: Vec<f32> = c.captured(1);                              // USB out lane 
 ## Examples
 `crates/mix-wing/tests/live_audio.rs`: meters follow a USB sine, the synthetic song drives 12+ meters, USB out
 capture sees ch1 -> main -> USB out 1.
+
+## End to end (M052)
+`apps/wing-mixd/tests/e2e/` drives the `wing-mixd` binary through its socket against a `SimConsole` (WING path) and
+the embedded sim; `tools/e2e/run.sh` runs the slow variants and writes `target/e2e/report.md`. Building blocks:
+`bridge.rs` (drains `SimConsole::take_captured()` and serves the USB outs to the daemon's `stream` input),
+`observer.rs` (second native client: change log with timestamps, solo log, engineer moves), `audit.rs` (state
+diffs, remit re-evaluation, ramp speed, wing-sim `save` snapshot diffs via its control socket). Strip taps on the
+WING path use user signals (`source.usr.k/user.{grp,in,tap,lr}` = CH n, POST, L+R) patched to USB 5..: with only
+main + solo the planner has nothing to work with. See docs/milestones/e2e.md.
