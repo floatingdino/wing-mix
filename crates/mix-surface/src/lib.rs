@@ -1,14 +1,23 @@
-//! mix-surface: generic console model, Surface trait, Remit, journal.
+//! mix-surface: the generic console model, the [`Surface`] trait, the Remit policy engine and the change journal.
 //!
-//! Scaffold only (M001); implemented by later backlog tasks.
+//! - [`model`]: strips, kinds, roles, processing blocks, param classes and specs, topology.
+//! - [`surface`]: the [`Surface`] trait every adapter implements (topology, read/write, subscribe, solo, meters,
+//!   RTA) and its event/solo/meter types.
+//! - [`remit`]: policy loader, evaluator, role detection (docs/research/remit.md).
+//! - [`journal`]: undo/redo journal of applied changes and confirmations.
+//! - [`testkit`]: `FakeSurface` (in-memory, records writes) and the shared conformance suite adapters run.
+//!
+//! Nothing in this crate is specific to one console; adapters (mix-wing, mix-sim) translate.
 
-/// Crate name, used by the scaffold smoke test.
-pub const NAME: &str = "mix-surface";
+pub mod journal;
+pub mod model;
+pub mod remit;
+pub mod surface;
+pub mod testkit;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn scaffold_name() {
-        assert_eq!(super::NAME, "mix-surface");
-    }
-}
+pub use journal::Journal;
+pub use model::{Block, ParamClass, ParamSpec, Role, Strip, StripKind, Topology};
+pub use surface::{Surface, SurfaceError, SurfaceEvent};
+
+pub use mix_core::ids::{ParamId, StripId};
+pub use mix_core::value::Value;

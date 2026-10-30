@@ -159,7 +159,10 @@ mod tests {
 
         let sys = ParamId::new("system/clock/source");
         assert!(sys.strip().is_none());
-        assert_eq!(ParamId::of(&StripId::new("main", 1), "fader").as_str(), "main.1/fader");
+        assert_eq!(
+            ParamId::of(&StripId::new("main", 1), "fader").as_str(),
+            "main.1/fader"
+        );
     }
 
     #[test]

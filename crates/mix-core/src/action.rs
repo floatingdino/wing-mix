@@ -18,7 +18,11 @@ pub struct ParamChange {
 
 impl ParamChange {
     pub fn new(param: impl Into<ParamId>, to: impl Into<Value>) -> Self {
-        ParamChange { param: param.into(), from: None, to: to.into() }
+        ParamChange {
+            param: param.into(),
+            from: None,
+            to: to.into(),
+        }
     }
 }
 
@@ -32,7 +36,10 @@ pub struct Action {
 
 impl Action {
     pub fn new(label: impl Into<String>) -> Self {
-        Action { label: label.into(), changes: Vec::new() }
+        Action {
+            label: label.into(),
+            changes: Vec::new(),
+        }
     }
 
     pub fn with(mut self, change: ParamChange) -> Self {
