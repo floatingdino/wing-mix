@@ -103,6 +103,9 @@ struct LiveView: View {
                         }
                     }
                     Text(rtaLine).font(.callout).foregroundStyle(.secondary)
+                    if let b = snap?.session?.changeBudget {
+                        Text(b.display).font(.callout).foregroundStyle(.secondary)
+                    }
                     ForEach(Array(trips.enumerated()), id: \.offset) { _, t in
                         Text(String(format: "trip at %.1f s: ", t.atS ?? 0) + model.names.humanize(t.trip?.display ?? "?"))
                             .font(.callout).foregroundStyle(.secondary)

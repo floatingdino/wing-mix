@@ -595,6 +595,18 @@ pub fn run(
         r.daemon_distance = (ds(a), ds(b));
     }
     r.budget = budget_line(&snap);
+    // M067: the daemon's event log of the run, for diagnosis (E2E_EVENTS_DIR)
+    if let Ok(dir) = std::env::var("E2E_EVENTS_DIR") {
+        let _ = std::fs::create_dir_all(&dir);
+        let body: String = d
+            .events()
+            .iter()
+            .filter(|e| e.v["type"] != "progress")
+            .map(|e| format!("{}\n", e.v))
+            .collect();
+        let file = o.name.replace([' ', '[', ']', '+', ','], "_");
+        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{file}.jsonl")), body);
+    }
     let moves = snap["moves"].as_array().cloned().unwrap_or_default();
     r.batches = moves.len();
     r.kept = moves.iter().filter(|m| m["outcome"] == "kept").count();
