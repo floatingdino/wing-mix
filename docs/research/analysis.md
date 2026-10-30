@@ -150,6 +150,12 @@ candidates; ≪ target → over-compressed.
 - Adaptive threshold: `SF(t) > α·median(SF[t−w, t+w]) + δ`, w ≈ 100 ms (offline) / causal 200 ms (live);
   peak-pick with 50 ms minimum spacing. **Onset rate** = onsets/s over the short-term window, also per low/mid/high
   band to separate kick-driven from hat-driven density.
+- **Strength gate (M038, implemented in `mix-analysis`):** a candidate must also reach 0.45 of the *reference level*, the peak
+  flux of recently accepted onsets (peak hold, decay τ = 8 s). Without it a kick/snare track counts the bleed of the other
+  kit pieces as onsets (synthetic kit: 2.7 Hz kick for 1.3 Hz, 3.3 Hz snare for 1.1 Hz; now 1.4 / 1.13). Log compression
+  makes strong bleed (> -20 dB) still pass; the gate is for typical close-mic bleed.
+- **Noise floor (M038, `Loudness::noise_floor_dbfs`):** p10 of the ~43 ms block mean-square level over blocks without an
+  onset (none in the block or the ~64 ms after one); all blocks if none qualifies; not subject to the loudness gate.
 - Concept refs: Bello et al., "A tutorial on onset detection in music signals", IEEE TSAP 2005; Böck & Widmer,
   SuperFlux, DAFx 2013 (max-filter variant, if vibrato false positives matter).
 
