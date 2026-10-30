@@ -109,9 +109,77 @@ pub const VIDEO_MIX_CHANNELS: [u32; 2] = [55, 56];
 /// Recorded tracks that are not console inputs: 43 (empty), FOH L/R and video mix L/R.
 pub const NON_INPUT_CHANNELS: [u32; 5] = [43, 52, 53, 55, 56];
 
+/// Recorded channel that is silent (ignore it).
+pub const EMPTY_CHANNEL: u32 = 43;
+
 /// True for recorded console inputs (everything except [`NON_INPUT_CHANNELS`]).
 pub fn is_input(channel: u32) -> bool {
     !NON_INPUT_CHANNELS.contains(&channel)
+}
+
+/// Which human-made stereo mix a recorded track belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HumanMix {
+    /// The engineer's live main mix (recorded channels 52/53).
+    Foh,
+    /// The separate video/stream mix (recorded channels 55/56).
+    Video,
+}
+
+impl HumanMix {
+    /// Recorded channels `[left, right]`.
+    pub fn channels(self) -> [u32; 2] {
+        match self {
+            Self::Foh => FOH_CHANNELS,
+            Self::Video => VIDEO_MIX_CHANNELS,
+        }
+    }
+}
+
+/// Side of a stereo mix track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Side {
+    L,
+    R,
+}
+
+/// What a recorded track is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrackKind {
+    /// A console input (own WING channel).
+    Input,
+    /// One side of the FOH or video mix; not a console input.
+    HumanMix(HumanMix, Side),
+    /// Silent slot (43).
+    Empty,
+}
+
+/// Kind of a recorded channel number (see fixtures/README.md "Non-input tracks").
+pub fn kind_of(channel: u32) -> TrackKind {
+    match channel {
+        EMPTY_CHANNEL => TrackKind::Empty,
+        52 => TrackKind::HumanMix(HumanMix::Foh, Side::L),
+        53 => TrackKind::HumanMix(HumanMix::Foh, Side::R),
+        55 => TrackKind::HumanMix(HumanMix::Video, Side::L),
+        56 => TrackKind::HumanMix(HumanMix::Video, Side::R),
+        _ => TrackKind::Input,
+    }
+}
+
+/// A stereo mix over a timeline window (samples +-1.0; sides padded with silence to `frames`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StereoMix {
+    pub mix: HumanMix,
+    pub sample_rate: u32,
+    pub start: f64,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+}
+
+impl StereoMix {
+    pub fn frames(&self) -> usize {
+        self.left.len()
+    }
 }
 
 /// Representative 30 s windows `(name, start seconds, duration)`, chosen from `fixture scan --step 10`
@@ -172,7 +240,55 @@ pub fn db(power: f64) -> f64 {
     10.0 * power.max(1e-12).log10()
 }
 
+impl AudioTrack {
+    pub fn kind(&self) -> TrackKind {
+        kind_of(self.channel)
+    }
+}
+
 impl Fixture {
+    /// Tracks that are console inputs (not FOH/video mix, not the empty slot).
+    pub fn inputs(&self) -> impl Iterator<Item = &AudioTrack> {
+        self.tracks.iter().filter(|t| t.kind() == TrackKind::Input)
+    }
+
+    /// Both sides of a human mix, if the recording has them.
+    fn mix_tracks(&self, mix: HumanMix) -> Option<[usize; 2]> {
+        let [l, r] = mix.channels();
+        Some([self.track_for_channel(l)?, self.track_for_channel(r)?])
+    }
+
+    /// Read the FOH or video mix over `dur` seconds from `start` (only those two tracks are touched).
+    /// `Ok(None)` when the recording has no such mix.
+    pub fn human_mix(
+        &self,
+        mix: HumanMix,
+        start: f64,
+        dur: f64,
+    ) -> Result<Option<StereoMix>, FixtureError> {
+        if start < 0.0 || dur <= 0.0 {
+            return Err(FixtureError::Range(
+                "start >= 0 and dur > 0 required".into(),
+            ));
+        }
+        let Some([l, r]) = self.mix_tracks(mix) else {
+            return Ok(None);
+        };
+        let sr = self.sample_rate();
+        let frames = (dur * sr as f64).round() as usize;
+        let (a, b) = std::thread::scope(|s| {
+            let h = s.spawn(|| read_window(&self.tracks[r], start, frames));
+            let a = read_window(&self.tracks[l], start, frames);
+            (a, h.join().expect("reader thread panicked"))
+        });
+        Ok(Some(pad_mix(mix, sr, start, frames, a?, b?)))
+    }
+
+    /// The FOH mix (the engineer's live mix) over a window; see [`Self::human_mix`].
+    pub fn foh_mix(&self, start: f64, dur: f64) -> Result<Option<StereoMix>, FixtureError> {
+        self.human_mix(HumanMix::Foh, start, dur)
+    }
+
     /// Open the project in `root` and probe every referenced WAV header (no audio is read).
     pub fn open(root: &Path) -> Result<Self, FixtureError> {
         let text = std::fs::read_to_string(root.join(PROJECT_FILE))
@@ -328,7 +444,39 @@ fn scan_track(t: &AudioTrack, step: f64) -> Result<Vec<f32>, FixtureError> {
     Ok(out)
 }
 
+fn pad_mix(
+    mix: HumanMix,
+    sample_rate: u32,
+    start: f64,
+    frames: usize,
+    mut left: Vec<f32>,
+    mut right: Vec<f32>,
+) -> StereoMix {
+    left.resize(frames, 0.0);
+    right.resize(frames, 0.0);
+    StereoMix {
+        mix,
+        sample_rate,
+        start,
+        left,
+        right,
+    }
+}
+
 impl Excerpt {
+    /// The FOH/video mix sides out of an already-read excerpt of `fixture` (no further I/O).
+    pub fn human_mix(&self, fixture: &Fixture, mix: HumanMix) -> Option<StereoMix> {
+        let [l, r] = fixture.mix_tracks(mix)?;
+        Some(pad_mix(
+            mix,
+            self.sample_rate,
+            self.start,
+            self.frames,
+            self.audio.get(l)?.clone(),
+            self.audio.get(r)?.clone(),
+        ))
+    }
+
     /// Write each track as `<ch:02>-<label>.wav` (24-bit mono) into `dir`; returns the paths.
     pub fn write_wavs(&self, fixture: &Fixture, dir: &Path) -> Result<Vec<PathBuf>, FixtureError> {
         std::fs::create_dir_all(dir).map_err(|e| FixtureError::Io(e.to_string()))?;
@@ -490,6 +638,111 @@ mod tests {
         // B's file starts at timeline 0.5 s, so bin 0 is half-filled (zero-padded), not silent.
         assert!(m.mean_square[1][0] > 0.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn kinds() {
+        assert_eq!(kind_of(3), TrackKind::Input);
+        assert_eq!(kind_of(40), TrackKind::Input);
+        assert_eq!(kind_of(43), TrackKind::Empty);
+        assert_eq!(kind_of(52), TrackKind::HumanMix(HumanMix::Foh, Side::L));
+        assert_eq!(kind_of(53), TrackKind::HumanMix(HumanMix::Foh, Side::R));
+        assert_eq!(kind_of(55), TrackKind::HumanMix(HumanMix::Video, Side::L));
+        assert_eq!(kind_of(56), TrackKind::HumanMix(HumanMix::Video, Side::R));
+        for c in 0..70 {
+            assert_eq!(is_input(c), kind_of(c) == TrackKind::Input, "{c}");
+        }
+        for m in [HumanMix::Foh, HumanMix::Video] {
+            let [l, r] = m.channels();
+            assert_eq!(kind_of(l), TrackKind::HumanMix(m, Side::L));
+            assert_eq!(kind_of(r), TrackKind::HumanMix(m, Side::R));
+        }
+    }
+
+    /// Channels 1, 43, 52, 53, 55, 56 with constant values `ch * 1000` (counts), 1 kHz, 2 s.
+    fn synth_mixes(dir: &Path) -> Fixture {
+        std::fs::create_dir_all(dir.join("Media")).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 1000,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut rpp = String::from("<REAPER_PROJECT 0.1 \"x\" 1\n  SAMPLERATE 44100 0 0\n");
+        for ch in [1u32, 43, 52, 53, 55, 56] {
+            let name = format!("{ch:02}-250101_0000.wav");
+            let mut w = hound::WavWriter::create(dir.join("Media").join(&name), spec).unwrap();
+            for _ in 0..2000 {
+                w.write_sample(if ch == 43 { 0 } else { ch as i32 * 1000 })
+                    .unwrap();
+            }
+            w.finalize().unwrap();
+            rpp += &format!(
+                "  <TRACK {{{ch}}}\n    NAME T{ch}\n    <ITEM\n      POSITION 0\n      LENGTH 2\n      <SOURCE WAVE\n        FILE \"Media/{name}\"\n      >\n    >\n  >\n"
+            );
+        }
+        rpp += ">\n";
+        std::fs::write(dir.join(PROJECT_FILE), rpp).unwrap();
+        Fixture::open(dir).unwrap()
+    }
+
+    #[test]
+    fn synthetic_track_kinds_and_human_mixes() {
+        let dir = std::env::temp_dir().join(format!("mixfix-kinds-{}", std::process::id()));
+        let f = synth_mixes(&dir);
+        assert_eq!(f.tracks.len(), 6);
+        let kinds: Vec<_> = f.tracks.iter().map(|t| t.kind()).collect();
+        assert_eq!(kinds.iter().filter(|k| **k == TrackKind::Input).count(), 1);
+        assert_eq!(f.inputs().map(|t| t.channel).collect::<Vec<_>>(), vec![1]);
+        let k = 1.0 / 8_388_608.0;
+        let foh = f.foh_mix(0.5, 1.0).unwrap().unwrap();
+        assert_eq!(
+            (foh.mix, foh.frames(), foh.sample_rate),
+            (HumanMix::Foh, 1000, 1000)
+        );
+        assert!((foh.left[0] - 52_000.0 * k).abs() < 1e-9);
+        assert!((foh.right[999] - 53_000.0 * k).abs() < 1e-9);
+        let vid = f.human_mix(HumanMix::Video, 0.0, 0.5).unwrap().unwrap();
+        assert!((vid.left[0] - 55_000.0 * k).abs() < 1e-9);
+        assert!((vid.right[0] - 56_000.0 * k).abs() < 1e-9);
+        // past the end: padded with silence to the requested length
+        let late = f.foh_mix(1.5, 1.0).unwrap().unwrap();
+        assert_eq!(late.frames(), 1000);
+        assert!(late.left[499] != 0.0 && late.left[500] == 0.0);
+        // from an existing excerpt, identical to the direct read
+        let e = f.excerpt(0.5, 1.0).unwrap();
+        assert_eq!(e.human_mix(&f, HumanMix::Foh).unwrap(), foh);
+        assert!(f.foh_mix(-1.0, 1.0).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn real_track_kinds_if_present() {
+        let Some(root) = locate() else {
+            eprintln!("skip: fixtures absent");
+            return;
+        };
+        let f = Fixture::open(&root).unwrap();
+        for c in NON_INPUT_CHANNELS {
+            assert!(f.track_for_channel(c).is_some(), "ch {c} missing");
+        }
+        assert_eq!(f.inputs().count(), 23);
+        let foh = f.foh_mix(3900.0, 1.0).unwrap().unwrap();
+        assert_eq!(foh.frames(), 48000);
+        assert!(foh.left.iter().any(|&x| x.abs() > 1e-4), "FOH silent");
+    }
+
+    #[test]
+    #[ignore = "slow: run with make check-full"]
+    fn real_foh_and_video_30s() {
+        let Some(root) = locate() else { return };
+        let f = Fixture::open(&root).unwrap();
+        for m in [HumanMix::Foh, HumanMix::Video] {
+            let mix = f.human_mix(m, 3900.0, 30.0).unwrap().unwrap();
+            assert_eq!(mix.frames(), 30 * 48000);
+            let p = mix.left.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / mix.frames() as f64;
+            assert!(db(p) > -40.0, "{m:?} {} dB", db(p));
+        }
     }
 
     #[test]
