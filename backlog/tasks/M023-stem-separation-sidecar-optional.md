@@ -2,7 +2,7 @@
 id: M023
 title: Stem separation sidecar (optional)
 stage: S2
-status: review
+status: done
 owner: task-agent-M023
 depends: [M022]
 branch: task/M023
@@ -28,3 +28,4 @@ Coordinator note: implement mix-reference's `StemTargetProvider` hook (see M022 
   Design: client = `run_sidecar(cmd, Request, timeout, progress, cancel)`: spawns in its own process group, JSON lines, ignores non-protocol stdout, timeout default `timeout_for(d)=3d+60 s`, cancel via AtomicBool, SIGKILL of the whole group on every exit path (tested: grandchild dies on timeout and cancel). `StemSeparator` (impl StemTargetProvider, id `stems-<model>@<version>`): resamples to 44.1 kHz float WAV, runs sidecar, commits stems atomically into `<cache>/<blake3>-<model>@<version>/` (second run needs no sidecar), reports a pinned-version mismatch as error. Stem stats (level rel. mix, ERB rel., crest, width, onset rate) are taken over the mix's gated windows in the focus section, so they are section-aware. `profile_with_stems(path, section, cache, Result<StemSeparator, why>)` falls back to a plain profile on absent/failed sidecar and returns `StemsStatus::{Used, Unavailable, Failed}`; with no sidecar the profile equals `profile_file` (tested). Python: `python -m wingmix_stems` (protocol.py is stdlib-only; demucs/umx backends are lazy imports; `WINGMIX_STEMS_BACKEND=mock` is the band-split test backend with failure injection via WINGMIX_STEMS_MOCK_MODE=error|crash|hang). State dir: `$WINGMIX_STATE_DIR` or `~/Library/Application Support/WingMix`; install marker `<state>/stems/installed.json`; cache `<state>/stems-cache`.
   Real-model verification (needs approval, leave unchecked): `tools/stems/install.sh --approved --model htdemucs` then `cargo run -p wing-mix-cli -- profile <ref.wav> --stems --cache-dir /tmp/pc` (expect "stems: htdemucs@4.1.0"; check time per song, MPS vs CPU fallback, RAM ~3 GB). Unverified without the install: demucs_backend.py / umx_backend.py (py_compile only), pyproject dependency resolution (torch/numpy pins), `uv run --project` in offline mode (UV_OFFLINE=1 is set by SidecarCommand::uv; if it blocks first resolution, drop it).
   Proposed follow-ups: pairwise stem masking (`StemTargets.masking` is empty); GUI hook for StemsStatus + progress + cancel flag; Cargo/CI skip is automatic when python3 is absent (tests return early); consider per-stem tolerances/`MatchWeights.stems` use in M-engine.
+- 2026-10-30 coordinator: cherry-picked onto rewritten main, make check passes. done (mock-verified). Real-model check pending HUMAN-ACTIONS #3. Follow-ups: stem masking pairs → M031; GUI StemsStatus → M051.
