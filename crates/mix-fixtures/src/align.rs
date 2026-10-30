@@ -803,6 +803,79 @@ mod tests {
         assert!(a.segment_cost(4.0, 28.0) < 0.2);
     }
 
+    /// Chord sequence with uneven durations (3/4/5 s), so offsets a chord apart do not match as well.
+    fn long_song(transpose: usize, from: usize, to: usize) -> Vec<f32> {
+        long_song_with(transpose, from, to, [3.0, 4.0, 5.0], 3)
+    }
+
+    fn long_song_with(
+        transpose: usize,
+        from: usize,
+        to: usize,
+        durs: [f64; 3],
+        stride: usize,
+    ) -> Vec<f32> {
+        const CHORDS: &[&[usize]] = &[
+            &[0, 4, 7],
+            &[9, 0, 4],
+            &[5, 9, 0],
+            &[7, 11, 2],
+            &[2, 5, 9],
+            &[4, 7, 11],
+            &[0, 4, 7],
+            &[5, 9, 0],
+            &[7, 11, 2],
+            &[9, 0, 4],
+        ];
+        let mut out = Vec::new();
+        for i in from..to {
+            let dur = durs[(i * 7 + i / 3) % 3];
+            out.extend(song(
+                &[CHORDS[(i * stride + i / 5) % CHORDS.len()]],
+                dur,
+                transpose,
+                1.0,
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn locate_finds_cut_and_repeated_song() {
+        // Record: 30 chords (~120 s). Live: other material, chords 0..22 up 3 semitones, chords 8..16 again, other.
+        let reference = long_song(0, 0, 30);
+        let mut live = song(OTHER, 5.0, 0, 1.0);
+        let at = live.len() as f64 / ALIGN_RATE as f64;
+        live.extend(long_song(3, 0, 22));
+        live.extend(long_song(3, 8, 16));
+        live.extend(song(OTHER, 5.0, 0, 1.0));
+        let r = fine_chroma(&reference, ALIGN_RATE);
+        let mt = fine_chroma(&live, ALIGN_RATE);
+        let m = locate(&r, &mt).unwrap();
+        assert_eq!(m.transpose, 3);
+        assert!(m.confidence() > 0.6, "{m:?}");
+        let segs = m.segments();
+        let main = segs
+            .iter()
+            .find(|s| (s.2 - at).abs() < 0.3)
+            .unwrap_or_else(|| panic!("no segment at offset {at}: {segs:?}"));
+        assert!(main.0 < 1.0 && main.1 > 60.0, "{main:?}");
+        assert!((m.start_s - at).abs() < 0.3, "start {} vs {at}", m.start_s);
+        // A reference range inside the played part maps by the offset.
+        let (a, b) = map_range(&segs, 20.0, 40.0).unwrap();
+        assert!((a - (at + 20.0)).abs() < 0.3 && (b - (at + 40.0)).abs() < 0.3);
+    }
+
+    #[test]
+    fn locate_has_low_confidence_for_an_absent_song() {
+        // Another song from the same chord vocabulary (different order and rhythm), in two keys.
+        let reference = long_song(0, 0, 30);
+        let mut live = long_song_with(0, 0, 30, [2.5, 6.0, 3.5], 7);
+        live.extend(long_song_with(5, 0, 30, [2.5, 6.0, 3.5], 7));
+        let m = locate(&fine_chroma(&reference, ALIGN_RATE), &fine_chroma(&live, ALIGN_RATE));
+        assert!(m.as_ref().is_none_or(|m| m.confidence() < 0.3), "{m:?}");
+    }
+
     #[test]
     fn map_time_interpolates_and_extrapolates() {
         let a = [(0.0, 100.0), (10.0, 120.0), (20.0, 130.0)];
