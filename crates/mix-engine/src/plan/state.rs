@@ -256,54 +256,58 @@ impl StripSettings {
                     .unwrap_or(if p == "lowcut" { 24 } else { 12 }),
             })
         };
-        let eq = (st.has(id, "eq/on") && st.str(id, "eq/model").is_none_or(|m| m == "STD")).then(|| {
-            let mut bands = Vec::new();
-            let mut slots = vec![BandSlot::Low];
-            slots.extend((1..=8).map(BandSlot::Peak));
-            slots.push(BandSlot::High);
-            for slot in slots {
-                let p = slot.prefix();
-                let (Some(g), Some(fr)) = (f(&format!("eq/{p}.gain")), f(&format!("eq/{p}.freq"))) else {
-                    continue;
-                };
-                let kind = match slot {
-                    BandSlot::Peak(_) => BandKind::Peq,
-                    _ => band_kind(st.str(id, &format!("eq/{p}.type"))),
-                };
-                bands.push((
-                    slot,
-                    EqBand {
-                        gain_db: g,
-                        freq_hz: fr,
-                        q: f(&format!("eq/{p}.q")).unwrap_or(0.7),
-                        kind,
-                    },
-                ));
-            }
-            EqSettings {
-                on: b("eq/on").unwrap_or(false),
-                mix_pct: f("eq/mix").unwrap_or(100.0),
-                bands,
-                tilt_db: f("eq/tilt"),
-            }
-        });
-        let dynamics = (st.has(id, "dyn/on") && st.str(id, "dyn/model").is_none_or(|m| m == "COMP"))
-            .then(|| {
-                Some(DynSettings {
-                    on: b("dyn/on")?,
-                    threshold_db: f("dyn/threshold")?,
-                    ratio: st
-                        .str(id, "dyn/ratio")
-                        .and_then(|s| s.parse().ok())
-                        .or_else(|| f("dyn/ratio"))?,
-                    knee: f("dyn/knee").unwrap_or(0.0).clamp(0.0, 5.0) as u8,
-                    makeup_db: f("dyn/makeup").unwrap_or(0.0),
-                    mix_pct: f("dyn/mix").unwrap_or(100.0),
-                    peak_detector: st.str(id, "dyn/detector") == Some("PEAK"),
-                    attack_ms: f("dyn/attack").unwrap_or(10.0),
-                })
+        let eq =
+            (st.has(id, "eq/on") && st.str(id, "eq/model").is_none_or(|m| m == "STD")).then(|| {
+                let mut bands = Vec::new();
+                let mut slots = vec![BandSlot::Low];
+                slots.extend((1..=8).map(BandSlot::Peak));
+                slots.push(BandSlot::High);
+                for slot in slots {
+                    let p = slot.prefix();
+                    let (Some(g), Some(fr)) =
+                        (f(&format!("eq/{p}.gain")), f(&format!("eq/{p}.freq")))
+                    else {
+                        continue;
+                    };
+                    let kind = match slot {
+                        BandSlot::Peak(_) => BandKind::Peq,
+                        _ => band_kind(st.str(id, &format!("eq/{p}.type"))),
+                    };
+                    bands.push((
+                        slot,
+                        EqBand {
+                            gain_db: g,
+                            freq_hz: fr,
+                            q: f(&format!("eq/{p}.q")).unwrap_or(0.7),
+                            kind,
+                        },
+                    ));
+                }
+                EqSettings {
+                    on: b("eq/on").unwrap_or(false),
+                    mix_pct: f("eq/mix").unwrap_or(100.0),
+                    bands,
+                    tilt_db: f("eq/tilt"),
+                }
+            });
+        let dynamics = (st.has(id, "dyn/on")
+            && st.str(id, "dyn/model").is_none_or(|m| m == "COMP"))
+        .then(|| {
+            Some(DynSettings {
+                on: b("dyn/on")?,
+                threshold_db: f("dyn/threshold")?,
+                ratio: st
+                    .str(id, "dyn/ratio")
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| f("dyn/ratio"))?,
+                knee: f("dyn/knee").unwrap_or(0.0).clamp(0.0, 5.0) as u8,
+                makeup_db: f("dyn/makeup").unwrap_or(0.0),
+                mix_pct: f("dyn/mix").unwrap_or(100.0),
+                peak_detector: st.str(id, "dyn/detector") == Some("PEAK"),
+                attack_ms: f("dyn/attack").unwrap_or(10.0),
             })
-            .flatten();
+        })
+        .flatten();
         let gate = (st.has(id, "gate/on") && st.str(id, "gate/model").is_none_or(|m| m == "GATE"))
             .then(|| {
                 Some(GateSettings {

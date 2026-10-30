@@ -21,10 +21,14 @@
 //!   dynamics (PLR, LRA, PSR, band crest/range) shift by the strips' own changes weighted by their power share plus
 //!   the change in shares (a louder compressed vocal makes the mix denser).
 
+#![allow(clippy::needless_range_loop)] // per-band DSP arithmetic over parallel arrays
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use mix_core::bands::{erb40_centres_hz, erb40_edges_hz, BROAD6_EDGES_HZ, LOW_MONO_HZ, N_BROAD, N_ERB};
+use mix_core::bands::{
+    erb40_centres_hz, erb40_edges_hz, BROAD6_EDGES_HZ, LOW_MONO_HZ, N_BROAD, N_ERB,
+};
 use mix_core::features::Features;
 use mix_core::ids::StripId;
 use mix_surface::model::{Block, StripKind};
@@ -69,12 +73,27 @@ impl LevelStats {
             Z / (2.0 * K)
         }
         .clamp(1.0, 12.0);
-        LevelStats {
+        // mean exactly so that the discretised distribution's mean power is the RMS
+        let mut st = LevelStats {
             rms_db,
             peak_db,
-            mu: rms_db - K * sigma * sigma,
+            mu: 0.0,
             sigma,
+        };
+        st.mu = rms_db - st.mean_power_db(0.0);
+        st
+    }
+
+    /// Mean power (dB) of the discretised distribution with mean `mu`.
+    fn mean_power_db(&self, mu: f64) -> f64 {
+        let (mut num, mut den) = (0.0, 0.0);
+        for k in 0..LEVEL_POINTS {
+            let z = -3.0 + 6.0 * k as f64 / (LEVEL_POINTS - 1) as f64;
+            let w = (-0.5 * z * z).exp();
+            num += w * p(mu + z * self.sigma);
+            den += w;
         }
+        db(num / den)
     }
 
     /// Power-weighted mean of a linear amplitude gain `g(level)` (returned in dB), distribution shifted by `shift`.
@@ -189,11 +208,13 @@ fn band_powers(f: &Features, gain_db: f64) -> ([f64; N_ERB], [f64; N_ERB]) {
     let mut s = [0.0; N_ERB];
     for b in 0..N_ERB {
         m[b] = p(f.spectrum.erb_mid_rel_db[b] as f64 + l);
-        s[b] = f
-            .spectrum
-            .erb_side_rel_db
-            .get(b)
-            .map_or(0.0, |&x| if x <= mix_core::DB_FLOOR + 1.0 { 0.0 } else { p(x as f64 + l) });
+        s[b] = f.spectrum.erb_side_rel_db.get(b).map_or(0.0, |&x| {
+            if x <= mix_core::DB_FLOOR + 1.0 {
+                0.0
+            } else {
+                p(x as f64 + l)
+            }
+        });
     }
     (m, s)
 }
@@ -226,7 +247,9 @@ impl<'a> MixModel<'a> {
         }
         let broad: [Vec<usize>; N_BROAD] = std::array::from_fn(|i| {
             (0..N_ERB)
-                .filter(|&b| centres[b] >= BROAD6_EDGES_HZ[i] && centres[b] < BROAD6_EDGES_HZ[i + 1])
+                .filter(|&b| {
+                    centres[b] >= BROAD6_EDGES_HZ[i] && centres[b] < BROAD6_EDGES_HZ[i + 1]
+                })
                 .collect()
         });
         let low = (0..N_ERB).filter(|&b| centres[b] < LOW_MONO_HZ).collect();
@@ -295,8 +318,13 @@ impl<'a> MixModel<'a> {
         let peak_tap = f.loudness.sample_peak_dbfs as f64;
         let mut st = LevelStats::new(rms_tap - fader - pan_pow, peak_tap - fader - pan_peak);
         for _ in 0..4 {
-            let g = st.mean_gain_db(0.0, |l| dyn_amp(self.transfer, s, l) * gate_amp(self.transfer, s, l));
-            let gp = 20.0 * dyn_amp_peak(self.transfer, s, st.peak_db - 3.0).max(1e-9).log10();
+            let g = st.mean_gain_db(0.0, |l| {
+                dyn_amp(self.transfer, s, l) * gate_amp(self.transfer, s, l)
+            });
+            let gp = 20.0
+                * dyn_amp_peak(self.transfer, s, st.peak_db - 3.0)
+                    .max(1e-9)
+                    .log10();
             st = LevelStats::new(
                 rms_tap - fader - pan_pow - g,
                 peak_tap - fader - pan_peak - gp,
@@ -307,7 +335,13 @@ impl<'a> MixModel<'a> {
 
     /// Detector level shift (dB) of `new` vs `old` from blocks before the dynamics (filter, EQ), weighted by the
     /// strip's spectrum.
-    fn pre_dyn_shift(&self, o: &StripObs, eq_d: &[f64; N_ERB], cut_d: &[f64; N_ERB], dyn_block: &Block) -> f64 {
+    fn pre_dyn_shift(
+        &self,
+        o: &StripObs,
+        eq_d: &[f64; N_ERB],
+        cut_d: &[f64; N_ERB],
+        dyn_block: &Block,
+    ) -> f64 {
         let mut d = [0.0; N_ERB];
         let s = &o.settings;
         for b in 0..N_ERB {
@@ -325,7 +359,11 @@ impl<'a> MixModel<'a> {
         db((0..N_ERB).map(|b| o.mid[b] * p(d[b])).sum::<f64>() / tot)
     }
 
-    fn cached_delta(&self, o: &StripObs, new: StripSettings) -> (StripDelta, [f64; N_ERB], [f64; N_ERB]) {
+    fn cached_delta(
+        &self,
+        o: &StripObs,
+        new: StripSettings,
+    ) -> (StripDelta, [f64; N_ERB], [f64; N_ERB]) {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         let v = cache.entry(o.tap.strip.clone()).or_default();
         if let Some(i) = v.iter().position(|e| e.0 == new) {
@@ -342,7 +380,11 @@ impl<'a> MixModel<'a> {
         (d, mid, side)
     }
 
-    fn strip_delta(&self, o: &StripObs, new: &StripSettings) -> (StripDelta, [f64; N_ERB], [f64; N_ERB]) {
+    fn strip_delta(
+        &self,
+        o: &StripObs,
+        new: &StripSettings,
+    ) -> (StripDelta, [f64; N_ERB], [f64; N_ERB]) {
         let old = &o.settings;
         let t = self.transfer;
         let bus = !is_input(o.kind);
@@ -362,11 +404,17 @@ impl<'a> MixModel<'a> {
         };
         // An inaudible strip (fader at -oo / muted) carries no measurable source: nothing to scale.
         let (lo, ln) = (old.level_db(), new.level_db());
-        let fader_d = if lo <= -100.0 { 0.0 } else { ln.max(-144.0) - lo };
+        let fader_d = if lo <= -100.0 {
+            0.0
+        } else {
+            ln.max(-144.0) - lo
+        };
 
         // dynamics (compressor + gate): mean, peak and range gain changes
         let (mut dyn_mean, mut dyn_peak, mut dyn_range) = (0.0, 0.0, 0.0);
-        if old.dynamics != new.dynamics || old.gate != new.gate || eq_d.iter().any(|&x| x != 0.0)
+        if old.dynamics != new.dynamics
+            || old.gate != new.gate
+            || eq_d.iter().any(|&x| x != 0.0)
             || cut_d.iter().any(|&x| x != 0.0)
         {
             let shift = self.pre_dyn_shift(o, &eq_d, &cut_d, &Block::Dyn);
@@ -395,7 +443,8 @@ impl<'a> MixModel<'a> {
                 * 0.5)
                 .clamp(0.5, 15.0);
             let spread = |s: &StripSettings, sh: f64, gsh: f64| {
-                st.mean_gain_db(half, |l| amp(s, l, sh, gsh)) - st.mean_gain_db(-half, |l| amp(s, l, sh, gsh))
+                st.mean_gain_db(half, |l| amp(s, l, sh, gsh))
+                    - st.mean_gain_db(-half, |l| amp(s, l, sh, gsh))
             };
             dyn_range = spread(new, shift, gate_shift) - spread(old, 0.0, 0.0);
         }
@@ -422,9 +471,15 @@ impl<'a> MixModel<'a> {
             }
             mid_db[b] = db(mid[b]) - db(o.mid[b]);
         }
-        let kw_old: f64 = (0..N_ERB).map(|b| self.kw[b] * (o.mid[b] + o.side[b])).sum();
+        let kw_old: f64 = (0..N_ERB)
+            .map(|b| self.kw[b] * (o.mid[b] + o.side[b]))
+            .sum();
         let kw_new: f64 = (0..N_ERB).map(|b| self.kw[b] * (mid[b] + side[b])).sum();
-        let level_db = if kw_old > 0.0 { db(kw_new / kw_old) } else { 0.0 };
+        let level_db = if kw_old > 0.0 {
+            db(kw_new / kw_old)
+        } else {
+            0.0
+        };
         (
             StripDelta {
                 mid_db,
@@ -482,7 +537,11 @@ impl<'a> MixModel<'a> {
             }
             let tot_old: f64 = o.mid.iter().zip(&o.side).map(|(a, b)| a + b).sum();
             let tot_new: f64 = mid.iter().zip(&side).map(|(a, b)| a + b).sum();
-            let d_rms = if tot_old > 0.0 { db(tot_new / tot_old) } else { 0.0 };
+            let d_rms = if tot_old > 0.0 {
+                db(tot_new / tot_old)
+            } else {
+                0.0
+            };
             shares.push(Share {
                 band_old: std::array::from_fn(|i| self.broad[i].iter().map(|&b| o.mid[b]).sum()),
                 band_new: std::array::from_fn(|i| self.broad[i].iter().map(|&b| mid[b]).sum()),
@@ -499,7 +558,10 @@ impl<'a> MixModel<'a> {
             if &new != old {
                 let mut g = [new.level_db() - old.level_db(); N_ERB];
                 if let (Some(a), Some(b)) = (&old.eq, &new.eq) {
-                    let (x, y) = (self.transfer.eq_erb_db(a, true), self.transfer.eq_erb_db(b, true));
+                    let (x, y) = (
+                        self.transfer.eq_erb_db(a, true),
+                        self.transfer.eq_erb_db(b, true),
+                    );
                     for i in 0..N_ERB {
                         g[i] += y[i] - x[i];
                     }
@@ -515,7 +577,11 @@ impl<'a> MixModel<'a> {
         }
         for b in 0..N_ERB {
             mm[b] = mm[b].max(MAIN_FLOOR * self.main_mid[b]);
-            ms[b] = ms[b].max(if self.main_side[b] > 0.0 { MAIN_FLOOR * self.main_side[b] } else { 0.0 });
+            ms[b] = ms[b].max(if self.main_side[b] > 0.0 {
+                MAIN_FLOOR * self.main_side[b]
+            } else {
+                0.0
+            });
         }
         let main = self.main_features(&mm, &ms, l_add, r_add, &shares);
         Prediction {
@@ -525,9 +591,18 @@ impl<'a> MixModel<'a> {
         }
     }
 
-    fn strip_features(&self, o: &StripObs, d: &StripDelta, mid: &[f64; N_ERB], side: &[f64; N_ERB]) -> StripTap {
+    fn strip_features(
+        &self,
+        o: &StripObs,
+        d: &StripDelta,
+        mid: &[f64; N_ERB],
+        side: &[f64; N_ERB],
+    ) -> StripTap {
         let mut t = o.tap.clone();
-        if d.mid_db.iter().all(|&x| x == 0.0) && d.dyn_peak_db == 0.0 && d.dyn_range_db == 0.0 && *mid == o.mid
+        if d.mid_db.iter().all(|&x| x == 0.0)
+            && d.dyn_peak_db == 0.0
+            && d.dyn_range_db == 0.0
+            && *mid == o.mid
             && *side == o.side
         {
             return t;
@@ -536,7 +611,11 @@ impl<'a> MixModel<'a> {
         let dl = d.level_db as f32;
         let tot_old: f64 = o.mid.iter().zip(&o.side).map(|(a, b)| a + b).sum();
         let tot_new: f64 = mid.iter().zip(side).map(|(a, b)| a + b).sum();
-        let d_rms = if tot_old > 0.0 { db(tot_new / tot_old) as f32 } else { 0.0 };
+        let d_rms = if tot_old > 0.0 {
+            db(tot_new / tot_old) as f32
+        } else {
+            0.0
+        };
         let broadband = d_rms - d.dyn_mean_db as f32;
         let d_peak = broadband + d.dyn_peak_db as f32;
         f.loudness.momentary_lufs += dl;
@@ -588,10 +667,20 @@ impl<'a> MixModel<'a> {
             .map(|b| self.kw[b] * (self.main_mid[b] + self.main_side[b]))
             .sum();
         let kw_new: f64 = (0..N_ERB).map(|b| self.kw[b] * (mm[b] + ms[b])).sum();
-        let dl = if kw_old > 0.0 { db(kw_new / kw_old) } else { 0.0 };
-        let tot_old: f64 = (0..N_ERB).map(|b| self.main_mid[b] + self.main_side[b]).sum();
+        let dl = if kw_old > 0.0 {
+            db(kw_new / kw_old)
+        } else {
+            0.0
+        };
+        let tot_old: f64 = (0..N_ERB)
+            .map(|b| self.main_mid[b] + self.main_side[b])
+            .sum();
         let tot_new: f64 = (0..N_ERB).map(|b| mm[b] + ms[b]).sum();
-        let d_rms = if tot_old > 0.0 { db(tot_new / tot_old) } else { 0.0 };
+        let d_rms = if tot_old > 0.0 {
+            db(tot_new / tot_old)
+        } else {
+            0.0
+        };
 
         // Dynamics. Peaks: the main's (band) peak power moves with the power sum of the strips' (band) peak powers
         // (peaks of independent sources add roughly in power), anchored on the measured main; PLR/PSR/crest
@@ -603,7 +692,8 @@ impl<'a> MixModel<'a> {
         let mut bpk_new = [0.0f64; N_BROAD];
         let mut d_lra = 0.0;
         let mut d_range = [0.0f64; N_BROAD];
-        let new_b: [f64; N_BROAD] = std::array::from_fn(|i| self.broad[i].iter().map(|&b| mm[b]).sum());
+        let new_b: [f64; N_BROAD] =
+            std::array::from_fn(|i| self.broad[i].iter().map(|&b| mm[b]).sum());
         for sh in shares {
             let sf = &sh.obs.tap.features;
             let g = sh.obs.tap.gain_to_main_db as f64;
@@ -625,10 +715,15 @@ impl<'a> MixModel<'a> {
                 d_lra += w.min(1.0) * sh.delta.dyn_range_db;
             }
         }
-        let d_tp = if pk_old > 0.0 { db(pk_new / pk_old) } else { dl };
+        let d_tp = if pk_old > 0.0 {
+            db(pk_new / pk_old)
+        } else {
+            dl
+        };
         let d_plr = d_tp - dl;
         let mut d_crest = [0.0f64; N_BROAD];
-        let main_b: [f64; N_BROAD] = std::array::from_fn(|i| self.broad[i].iter().map(|&b| self.main_mid[b]).sum());
+        let main_b: [f64; N_BROAD] =
+            std::array::from_fn(|i| self.broad[i].iter().map(|&b| self.main_mid[b]).sum());
         for i in 0..N_BROAD {
             if bpk_old[i] > 0.0 && main_b[i] > 0.0 && new_b[i] > 0.0 {
                 d_crest[i] = db(bpk_new[i] / bpk_old[i]) - db(new_b[i] / main_b[i]);
@@ -654,7 +749,8 @@ impl<'a> MixModel<'a> {
         }
         for i in 0..N_BROAD {
             f.dynamics.crest_db[i] += d_crest[i].clamp(-12.0, 12.0) as f32;
-            f.dynamics.range_db[i] = (f.dynamics.range_db[i] + d_range[i].clamp(-12.0, 12.0) as f32).max(0.0);
+            f.dynamics.range_db[i] =
+                (f.dynamics.range_db[i] + d_range[i].clamp(-12.0, 12.0) as f32).max(0.0);
         }
         let l = window_loudness(&f) as f64;
         for b in 0..N_ERB {
@@ -666,10 +762,19 @@ impl<'a> MixModel<'a> {
         let dm: [f64; N_ERB] = std::array::from_fn(|b| db(mm[b]) - db(self.main_mid[b]));
         f.spectrum.tilt_db_per_oct += self.slope(&dm) as f32;
         if let Some(st) = f.stereo.as_mut() {
-            stereo_update(st, &self.main_mid, &self.main_side, mm, ms, &self.broad, &self.low);
+            stereo_update(
+                st,
+                &self.main_mid,
+                &self.main_side,
+                mm,
+                ms,
+                &self.broad,
+                &self.low,
+            );
             // L/R balance from the per-strip L/R power changes
             if l_add != 0.0 || r_add != 0.0 {
-                let tot: f64 = 2.0 * (self.main_mid.iter().sum::<f64>() + self.main_side.iter().sum::<f64>());
+                let tot: f64 =
+                    2.0 * (self.main_mid.iter().sum::<f64>() + self.main_side.iter().sum::<f64>());
                 let rho = p(st.balance_db as f64);
                 let (l0, r0) = (tot * rho / (1.0 + rho), tot / (1.0 + rho));
                 let (l1, r1) = ((l0 + l_add).max(1e-30), (r0 + r_add).max(1e-30));
@@ -758,7 +863,8 @@ fn stereo_update(
     broad: &[Vec<usize>; N_BROAD],
     low: &[usize],
 ) {
-    let sum = |v: &[f64; N_ERB], idx: &mut dyn Iterator<Item = usize>| idx.map(|b| v[b]).sum::<f64>();
+    let sum =
+        |v: &[f64; N_ERB], idx: &mut dyn Iterator<Item = usize>| idx.map(|b| v[b]).sum::<f64>();
     let all = || 0..N_ERB;
     // width: side/mid ratio change
     let wd = |idx: &dyn Fn() -> Box<dyn Iterator<Item = usize>>, cur: f32| -> f32 {
@@ -771,7 +877,8 @@ fn stereo_update(
             // no measured side: absolute from the model
             return if b1 > 0.0 { db(b1 / a1) as f32 } else { cur };
         }
-        (cur as f64 + db(b1 / b0) - db(a1 / a0)).clamp(mix_core::DB_FLOOR as f64, -mix_core::DB_FLOOR as f64) as f32
+        (cur as f64 + db(b1 / b0) - db(a1 / a0))
+            .clamp(mix_core::DB_FLOOR as f64, -mix_core::DB_FLOOR as f64) as f32
     };
     let corr = |idx: &dyn Fn() -> Box<dyn Iterator<Item = usize>>, cur: f32| -> f32 {
         let (a0, b0) = (sum(m0, &mut idx()), sum(s0, &mut idx()));
@@ -782,16 +889,23 @@ fn stereo_update(
         // implied side/mid ratio of the measured correlation, scaled by the change
         let c = (cur as f64).clamp(-0.999, 0.999);
         let r0 = (1.0 - c) / (1.0 + c);
-        let r1 = if b0 > 0.0 { r0 * (b1 / b0) / (a1 / a0) } else { b1 / a1 };
+        let r1 = if b0 > 0.0 {
+            r0 * (b1 / b0) / (a1 / a0)
+        } else {
+            b1 / a1
+        };
         ((1.0 - r1) / (1.0 + r1)) as f32
     };
     st.width_db = wd(&|| Box::new(all()), st.width_db);
     st.correlation = corr(&|| Box::new(all()), st.correlation);
-    st.low_mono_correlation = corr(&|| Box::new(low.to_vec().into_iter()), st.low_mono_correlation);
+    st.low_mono_correlation = corr(&|| Box::new(low.iter().copied()), st.low_mono_correlation);
     for i in 0..N_BROAD {
         let idx = broad[i].clone();
         st.band_width_db[i] = wd(&|| Box::new(idx.clone().into_iter()), st.band_width_db[i]);
-        st.band_correlation[i] = corr(&|| Box::new(idx.clone().into_iter()), st.band_correlation[i]);
+        st.band_correlation[i] = corr(
+            &|| Box::new(idx.clone().into_iter()),
+            st.band_correlation[i],
+        );
     }
 }
 
@@ -812,7 +926,7 @@ mod tests {
             num += w * p(s.mu + z * s.sigma);
             den += w;
         }
-        assert!((db(num / den) + 24.0).abs() < 0.7, "{}", db(num / den));
+        assert!((db(num / den) + 24.0).abs() < 1e-6, "{}", db(num / den));
         assert!(s.sigma > 1.0 && s.sigma < 12.0);
     }
 

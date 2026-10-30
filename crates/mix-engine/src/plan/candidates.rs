@@ -121,7 +121,12 @@ impl Gen<'_> {
         let v = self.state.coerce(&id, v)?;
         let cur = self.state.get(&id);
         if cur.is_some_and(|c| {
-            c.approx_eq(&v, self.state.spec(&id).map_or(1e-6, |s| s.tolerance().max(1e-3)))
+            c.approx_eq(
+                &v,
+                self.state
+                    .spec(&id)
+                    .map_or(1e-6, |s| s.tolerance().max(1e-3)),
+            )
         }) {
             return None;
         }
@@ -144,7 +149,14 @@ impl Gen<'_> {
     // Move builders
 
     /// Fader by `delta` dB (capped at the step limit).
-    pub fn fader(&self, s: &StripId, delta: f64, problem: &Problem, why: &str, mult: f64) -> Option<Candidate> {
+    pub fn fader(
+        &self,
+        s: &StripId,
+        delta: f64,
+        problem: &Problem,
+        why: &str,
+        mult: f64,
+    ) -> Option<Candidate> {
         let st = self.settings(s);
         let cur = st.fader_db?;
         if cur <= -100.0 || st.mute {
@@ -157,7 +169,11 @@ impl Gen<'_> {
         let c = self.change(pid(s, "fader"), fv(cur + d))?;
         let to = c.to.as_f64().unwrap_or(cur);
         Some(Candidate {
-            phase: if self.kind(s) == StripKind::Main { 8 } else { 6 },
+            phase: if self.kind(s) == StripKind::Main {
+                8
+            } else {
+                6
+            },
             strip: s.clone(),
             label: format!("{s} fader {:+.1} dB", to - cur),
             changes: vec![c],
@@ -169,7 +185,14 @@ impl Gen<'_> {
     }
 
     /// Pan to `to`.
-    pub fn pan(&self, s: &StripId, to: f64, problem: &Problem, why: &str, mult: f64) -> Option<Candidate> {
+    pub fn pan(
+        &self,
+        s: &StripId,
+        to: f64,
+        problem: &Problem,
+        why: &str,
+        mult: f64,
+    ) -> Option<Candidate> {
         let cur = self.settings(s).pan?;
         let c = self.change(pid(s, "pan"), fv(to))?;
         let to = c.to.as_f64().unwrap_or(cur);
@@ -222,7 +245,10 @@ impl Gen<'_> {
                 .filter(|(_, b)| b.kind == BandKind::Peq && b.gain_db.abs() >= 0.25)
                 .filter(|(_, b)| (b.freq_hz / freq).log2().abs() <= lim.max_freq_step_oct)
                 .min_by(|a, b| {
-                    (a.1.freq_hz / freq).log2().abs().total_cmp(&(b.1.freq_hz / freq).log2().abs())
+                    (a.1.freq_hz / freq)
+                        .log2()
+                        .abs()
+                        .total_cmp(&(b.1.freq_hz / freq).log2().abs())
                 })
                 .map(|(sl, b)| (*sl, Some(*b)));
             match near {
@@ -233,7 +259,10 @@ impl Gen<'_> {
                         .iter()
                         .filter(|(sl, b)| matches!(sl, BandSlot::Peak(_)) && b.gain_db.abs() < 0.25)
                         .min_by(|a, b| {
-                            (a.1.freq_hz / freq).log2().abs().total_cmp(&(b.1.freq_hz / freq).log2().abs())
+                            (a.1.freq_hz / freq)
+                                .log2()
+                                .abs()
+                                .total_cmp(&(b.1.freq_hz / freq).log2().abs())
                         })?;
                     (free.0, None)
                 }
@@ -265,10 +294,19 @@ impl Gen<'_> {
                     lim.max_boost_db_peq
                 };
                 to_gain = (from_gain + delta).clamp(-lim.max_cut_db_peq, max_boost);
-                let q = if to_gain > 0.0 { q.min(lim.boost_q_max) } else { q };
+                let q = if to_gain > 0.0 {
+                    q.min(lim.boost_q_max)
+                } else {
+                    q
+                };
                 if shelf.is_some() {
                     if self.state.str(s, &format!("eq/{p}.type")) != Some("SHV") {
-                        changes.push(self.change(pid(s, &format!("eq/{p}.type")), Value::Enum("SHV".into()))?);
+                        changes.push(
+                            self.change(
+                                pid(s, &format!("eq/{p}.type")),
+                                Value::Enum("SHV".into()),
+                            )?,
+                        );
                     }
                 } else if let Some(c) = self.change(pid(s, &format!("eq/{p}.q")), fv(q)) {
                     changes.push(c);
@@ -283,7 +321,11 @@ impl Gen<'_> {
         }
         let d = to_gain - from_gain;
         let boost = d > 0.0 && to_gain > 0.0;
-        let penalty = if boost { self.kb.eq.policy.boost_penalty } else { 1.0 };
+        let penalty = if boost {
+            self.kb.eq.policy.boost_penalty
+        } else {
+            1.0
+        };
         cost += d.abs() / 3.0 * penalty + 0.1 * changes.len() as f64;
         let what = if boost {
             "boost"
@@ -295,7 +337,13 @@ impl Gen<'_> {
         Some(Candidate {
             phase: eq_phase(boost),
             strip: s.clone(),
-            label: format!("{s} EQ {p} {what} {:+.1} dB at {:.0} Hz", d, band_existing.filter(|_| shelf.is_none() && from_gain.abs() >= 0.25).map_or(freq, |b| b.freq_hz)),
+            label: format!(
+                "{s} EQ {p} {what} {:+.1} dB at {:.0} Hz",
+                d,
+                band_existing
+                    .filter(|_| shelf.is_none() && from_gain.abs() >= 0.25)
+                    .map_or(freq, |b| b.freq_hz)
+            ),
             changes,
             problem: problem.id.clone(),
             rules: rules.to_vec(),
@@ -309,9 +357,9 @@ impl Gen<'_> {
         let st = self.settings(s);
         let lc = st.lowcut?;
         let src = (self.source_of)(s).and_then(|id| self.kb.source(&id).cloned());
-        let (lo, hi, start) = src
-            .as_ref()
-            .map_or((40.0, 120.0, 80.0), |x| (x.hpf.freq_hz.lo(), x.hpf.freq_hz.hi(), x.hpf.start_hz));
+        let (lo, hi, start) = src.as_ref().map_or((40.0, 120.0, 80.0), |x| {
+            (x.hpf.freq_hz.lo(), x.hpf.freq_hz.hi(), x.hpf.start_hz)
+        });
         let mut changes = Vec::new();
         let target = if (lo..=hi).contains(&lc.freq_hz) {
             lc.freq_hz
@@ -341,14 +389,21 @@ impl Gen<'_> {
             rules: problem.rules.clone(),
             why: format!(
                 "{why}; sources.toml hpf for {} is {lo:.0}-{hi:.0} Hz",
-                src.as_ref().map_or("this source".to_string(), |x| x.id.clone())
+                src.as_ref()
+                    .map_or("this source".to_string(), |x| x.id.clone())
             ),
             cost,
         })
     }
 
     /// Compressor: switch on with the source's preset, or deepen/lighten an active one.
-    pub fn compressor(&self, s: &StripId, more: bool, problem: &Problem, why: &str) -> Vec<Candidate> {
+    pub fn compressor(
+        &self,
+        s: &StripId,
+        more: bool,
+        problem: &Problem,
+        why: &str,
+    ) -> Vec<Candidate> {
         let mut out = Vec::new();
         let st = self.settings(s);
         let Some(d) = st.dynamics else {
@@ -358,7 +413,11 @@ impl Gen<'_> {
             return out;
         };
         let stats = *obs.stats();
-        let rule = if more { "dyn_too_dynamic" } else { "dyn_squashed" };
+        let rule = if more {
+            "dyn_too_dynamic"
+        } else {
+            "dyn_squashed"
+        };
         let mut rules = vec![rule.to_string()];
         rules.extend(problem.rules.iter().cloned());
         if !d.on {
@@ -378,10 +437,13 @@ impl Gen<'_> {
                 _ => stats.rms_db,
             };
             for frac in [0.5, 0.0] {
-                let off = pr.threshold_offset_db.lo() + frac * (pr.threshold_offset_db.hi() - pr.threshold_offset_db.lo());
+                let off = pr.threshold_offset_db.lo()
+                    + frac * (pr.threshold_offset_db.hi() - pr.threshold_offset_db.lo());
                 let thr = (base + off).clamp(-60.0, 0.0);
                 let ratio = pr.ratio.mid();
-                let knee = pr.knee_db.map_or(0.0, |k| k.mid() / wing_blocks::dynamics::KNEE_DB_PER_STEP as f64);
+                let knee = pr.knee_db.map_or(0.0, |k| {
+                    k.mid() / wing_blocks::dynamics::KNEE_DB_PER_STEP as f64
+                });
                 // makeup: loudness_match (dynamics.toml rule makeup_after_change)
                 let t = self.model.transfer();
                 let probe = super::state::DynSettings {
@@ -395,7 +457,11 @@ impl Gen<'_> {
                     attack_ms: pr.attack_ms.mid(),
                 };
                 let gr = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&probe, l) / 20.0));
-                let makeup = if pr.makeup.as_deref() == Some("loudness_match") { -gr } else { 0.0 };
+                let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
+                    -gr
+                } else {
+                    0.0
+                };
                 let mut changes = Vec::new();
                 let mut push = |id: &str, v: Value| {
                     if let Some(c) = self.change(pid(s, id), v) {
@@ -442,11 +508,19 @@ impl Gen<'_> {
                     makeup_db: mk,
                     ..d
                 };
-                let g_old = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&mk(d.threshold_db, d.ratio, 0.0), l) / 20.0));
-                let g_new = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&mk(thr, r, 0.0), l) / 20.0));
+                let g_old = stats.mean_gain_db(0.0, |l| {
+                    10f64.powf(t.comp_gain_db(&mk(d.threshold_db, d.ratio, 0.0), l) / 20.0)
+                });
+                let g_new = stats.mean_gain_db(0.0, |l| {
+                    10f64.powf(t.comp_gain_db(&mk(thr, r, 0.0), l) / 20.0)
+                });
                 let makeup = (d.makeup_db + g_old - g_new).clamp(-6.0, 12.0);
                 let mut changes = Vec::new();
-                for (id, v) in [("dyn/threshold", thr), ("dyn/ratio", r), ("dyn/makeup", makeup)] {
+                for (id, v) in [
+                    ("dyn/threshold", thr),
+                    ("dyn/ratio", r),
+                    ("dyn/makeup", makeup),
+                ] {
                     if let Some(c) = self.change(pid(s, id), fv(v)) {
                         changes.push(c);
                     }
@@ -488,7 +562,12 @@ impl Gen<'_> {
                 .filter(|o| (self.source_of)(&o.tap.strip).as_deref() == Some(source.as_str()))
                 .map(|o| o.tap.strip.clone())
                 .collect(),
-            Subject::Mix => self.model.strips.iter().map(|o| o.tap.strip.clone()).collect(),
+            Subject::Mix => self
+                .model
+                .strips
+                .iter()
+                .map(|o| o.tap.strip.clone())
+                .collect(),
         }
     }
 
@@ -504,7 +583,9 @@ impl Gen<'_> {
             .collect();
         v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let tot: f64 = v.iter().map(|x| x.1).sum();
-        v.into_iter().map(|(s, e)| (s, e / tot.max(1e-300))).collect()
+        v.into_iter()
+            .map(|(s, e)| (s, e / tot.max(1e-300)))
+            .collect()
     }
 
     /// Candidates for one problem.
@@ -542,7 +623,11 @@ impl Gen<'_> {
 
     fn level(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
         let members = self.members(p);
-        let why = format!("{}: move the level towards target ({:+.1} LU off)", p.scope.subject.label(), dev);
+        let why = format!(
+            "{}: move the level towards target ({:+.1} LU off)",
+            p.scope.subject.label(),
+            dev
+        );
         // whole group (keeps the internal balance) and each member alone
         for k in [1.0, 0.5] {
             let d = -dev * k;
@@ -560,7 +645,11 @@ impl Gen<'_> {
                     out.push(Candidate {
                         phase: 6,
                         strip,
-                        label: format!("{} faders {:+.1} dB", p.scope.subject.label(), d.clamp(-self.cfg.max_fader_step_db, self.cfg.max_fader_step_db)),
+                        label: format!(
+                            "{} faders {:+.1} dB",
+                            p.scope.subject.label(),
+                            d.clamp(-self.cfg.max_fader_step_db, self.cfg.max_fader_step_db)
+                        ),
                         changes,
                         problem: p.id.clone(),
                         rules: p.rules.clone(),
@@ -591,7 +680,9 @@ impl Gen<'_> {
         let Some(band) = &p.scope.band else { return };
         let idx = centre_band(band.lo_hz, band.hi_hz);
         let members: Vec<StripId> = match &p.scope.subject {
-            Subject::Mix if !p.contributors.is_empty() => p.contributors.iter().map(|c| c.strip.clone()).collect(),
+            Subject::Mix if !p.contributors.is_empty() => {
+                p.contributors.iter().map(|c| c.strip.clone()).collect()
+            }
             _ => self.members(p),
         };
         let ranked = self.ranked(&members, &idx);
@@ -608,27 +699,64 @@ impl Gen<'_> {
                 share * 100.0
             );
             // amount on this strip so that the band moves by ~target_d given its share
-            let need = 10.0 * (1.0 + (10f64.powf(target_d / 10.0) - 1.0) / share.max(0.05)).max(0.03).log10();
-            let rule = if dev > 0.0 { "mix_band_excess" } else { "mix_band_deficit" };
+            let need = 10.0
+                * (1.0 + (10f64.powf(target_d / 10.0) - 1.0) / share.max(0.05))
+                    .max(0.03)
+                    .log10();
+            let rule = if dev > 0.0 {
+                "mix_band_excess"
+            } else {
+                "mix_band_deficit"
+            };
             let mut rules = vec![rule.to_string()];
             rules.extend(p.rules.iter().cloned());
             let q_cut = q_of(self.kb, "broad").max(q_of(self.kb, "medium").min(1.4));
             for amount in [need, need * 0.5, target_d] {
                 let a = amount.clamp(-lim.max_step_db, lim.max_step_db);
                 for f in [peak, centre] {
-                    out.extend(self.eq(s, f, a, if a > 0.0 { q_of(self.kb, "broad") } else { q_cut }, None, p, &rules, &why, 1.0));
+                    out.extend(self.eq(
+                        s,
+                        f,
+                        a,
+                        if a > 0.0 {
+                            q_of(self.kb, "broad")
+                        } else {
+                            q_cut
+                        },
+                        None,
+                        p,
+                        &rules,
+                        &why,
+                        1.0,
+                    ));
                 }
             }
             // air / sub: shelves
             if band.lo_hz >= 8000.0 {
-                out.extend(self.eq(s, 10000.0, target_d.clamp(-3.0, 3.0), 0.7, Some(BandSlot::High), p, &rules, &why, 1.0));
+                out.extend(self.eq(
+                    s,
+                    10000.0,
+                    target_d.clamp(-3.0, 3.0),
+                    0.7,
+                    Some(BandSlot::High),
+                    p,
+                    &rules,
+                    &why,
+                    1.0,
+                ));
             }
             // below the source's useful range: low cut (cleanup_filter before EQ)
             if dev > 0.0 && band.hi_hz <= 300.0 {
                 out.extend(self.lowcut(s, p, &why));
             }
             // balance alternative: the strip's fader (changes more than the band)
-            out.extend(self.fader(s, need.clamp(-3.0, 3.0), p, &format!("{why} (level instead of EQ)"), 1.5));
+            out.extend(self.fader(
+                s,
+                need.clamp(-3.0, 3.0),
+                p,
+                &format!("{why} (level instead of EQ)"),
+                1.5,
+            ));
         }
     }
 
@@ -638,7 +766,17 @@ impl Gen<'_> {
         if let Some((main, st)) = &self.model.main_strip {
             if st.eq.is_some() {
                 for g in [-dev.signum() * 1.5, -dev.signum() * 3.0] {
-                    if let Some(mut c) = self.eq(main, 5000.0, g, 0.7, Some(BandSlot::High), p, &rules, "eq.toml mix_tilt: whole-spectrum slope on the main EQ", 1.2) {
+                    if let Some(mut c) = self.eq(
+                        main,
+                        5000.0,
+                        g,
+                        0.7,
+                        Some(BandSlot::High),
+                        p,
+                        &rules,
+                        "eq.toml mix_tilt: whole-spectrum slope on the main EQ",
+                        1.2,
+                    ) {
                         c.phase = 8;
                         out.push(c);
                     }
@@ -647,9 +785,24 @@ impl Gen<'_> {
         }
         // brightest/darkest contributors' high shelves
         let hi = centre_band(3000.0, 16000.0);
-        let all: Vec<StripId> = self.model.strips.iter().map(|o| o.tap.strip.clone()).collect();
+        let all: Vec<StripId> = self
+            .model
+            .strips
+            .iter()
+            .map(|o| o.tap.strip.clone())
+            .collect();
         for (s, _) in self.ranked(&all, &hi).iter().take(self.cfg.contributors) {
-            out.extend(self.eq(s, 6000.0, -dev.signum() * 2.0, 0.7, Some(BandSlot::High), p, &rules, "eq.toml mix_tilt: shelf on the strongest high-frequency contributors", 1.0));
+            out.extend(self.eq(
+                s,
+                6000.0,
+                -dev.signum() * 2.0,
+                0.7,
+                Some(BandSlot::High),
+                p,
+                &rules,
+                "eq.toml mix_tilt: shelf on the strongest high-frequency contributors",
+                1.0,
+            ));
         }
     }
 
@@ -700,21 +853,46 @@ impl Gen<'_> {
         let more = p.kind == ProblemKind::TooDynamic;
         let members: Vec<StripId> = match &p.scope.subject {
             Subject::Mix => {
-                let all: Vec<StripId> = self.model.strips.iter().map(|o| o.tap.strip.clone()).collect();
+                let all: Vec<StripId> = self
+                    .model
+                    .strips
+                    .iter()
+                    .map(|o| o.tap.strip.clone())
+                    .collect();
                 let idx: Vec<usize> = (0..N_ERB).collect();
-                self.ranked(&all, &idx).into_iter().take(4).map(|x| x.0).collect()
+                self.ranked(&all, &idx)
+                    .into_iter()
+                    .take(4)
+                    .map(|x| x.0)
+                    .collect()
             }
             _ => self.members(p),
         };
-        let why = format!("{} {}", p.scope.subject.label(), if more { "too dynamic" } else { "over-compressed" });
+        let why = format!(
+            "{} {}",
+            p.scope.subject.label(),
+            if more {
+                "too dynamic"
+            } else {
+                "over-compressed"
+            }
+        );
         for s in members {
             out.extend(self.compressor(&s, more, p, &why));
         }
     }
 
     fn masking(&self, p: &Problem, out: &mut Vec<Candidate>) {
-        let (Subject::Strip { strip: masked, source: ms }, Some(Subject::Strip { strip: masker, source: mk })) =
-            (&p.scope.subject, &p.scope.other)
+        let (
+            Subject::Strip {
+                strip: masked,
+                source: ms,
+            },
+            Some(Subject::Strip {
+                strip: masker,
+                source: mk,
+            }),
+        ) = (&p.scope.subject, &p.scope.other)
         else {
             return;
         };
@@ -737,7 +915,11 @@ impl Gen<'_> {
                 masker, masked, band.name, st.id, yielding
             );
             for a in &st.actions {
-                let tgt = if a.target.as_deref() == Some("<keeping>") { keeping } else { yielding };
+                let tgt = if a.target.as_deref() == Some("<keeping>") {
+                    keeping
+                } else {
+                    yielding
+                };
                 let gain = match a.params.get("gain_db") {
                     Some(Param::Range(r)) => r.mid(),
                     Some(Param::Num(x)) => *x,
@@ -754,12 +936,21 @@ impl Gen<'_> {
                         out.extend(self.fader(tgt, lvl, p, &why, st.cost));
                     }
                     "Pan" if band.lo_hz >= 200.0 => {
-                        let keep_centre = ["lead_vocal", "kick", "snare_top", "bass_di", "bass_amp"];
-                        if [ms, mk].iter().any(|s| s.as_deref().is_some_and(|x| keep_centre.contains(&x))) && tgt == masked {
+                        let keep_centre =
+                            ["lead_vocal", "kick", "snare_top", "bass_di", "bass_amp"];
+                        if [ms, mk]
+                            .iter()
+                            .any(|s| s.as_deref().is_some_and(|x| keep_centre.contains(&x)))
+                            && tgt == masked
+                        {
                             continue;
                         }
                         if let Some(cur) = self.settings(tgt).pan {
-                            let to = if cur.abs() < 1.0 { 30.0 } else { (cur + cur.signum() * 30.0).clamp(-60.0, 60.0) };
+                            let to = if cur.abs() < 1.0 {
+                                30.0
+                            } else {
+                                (cur + cur.signum() * 30.0).clamp(-60.0, 60.0)
+                            };
                             out.extend(self.pan(tgt, to, p, &why, st.cost));
                         }
                     }
@@ -770,17 +961,41 @@ impl Gen<'_> {
     }
 
     fn source_problem(&self, p: &Problem, out: &mut Vec<Candidate>) {
-        let Subject::Strip { strip, source: Some(src) } = &p.scope.subject else { return };
-        let Some(source) = self.kb.source(src) else { return };
-        for sp in source.problems.iter().filter(|sp| p.rules.contains(&sp.id) || p.id.contains(&sp.id)) {
+        let Subject::Strip {
+            strip,
+            source: Some(src),
+        } = &p.scope.subject
+        else {
+            return;
+        };
+        let Some(source) = self.kb.source(src) else {
+            return;
+        };
+        for sp in source
+            .problems
+            .iter()
+            .filter(|sp| p.rules.contains(&sp.id) || p.id.contains(&sp.id))
+        {
             let a = &sp.action;
-            let why = format!("sources.toml {}/{}{}", source.id, sp.id, sp.note.as_ref().map_or(String::new(), |n| format!(": {n}")));
+            let why = format!(
+                "sources.toml {}/{}{}",
+                source.id,
+                sp.id,
+                sp.note.as_ref().map_or(String::new(), |n| format!(": {n}"))
+            );
             let rules = vec![sp.id.clone()];
             match a.block.as_str() {
                 "Eq" => {
-                    let f = p.scope.band.as_ref().map_or(sp.freq_hz.geo_mid(), |b| b.peak_hz as f64).clamp(sp.freq_hz.lo(), sp.freq_hz.hi());
+                    let f = p
+                        .scope
+                        .band
+                        .as_ref()
+                        .map_or(sp.freq_hz.geo_mid(), |b| b.peak_hz as f64)
+                        .clamp(sp.freq_hz.lo(), sp.freq_hz.hi());
                     let gains: Vec<f64> = match a.params.get("gain_db") {
-                        Some(Param::Range(r)) => vec![r.mid(), r.lo().max(-self.cfg.max_eq_step_db).min(r.hi())],
+                        Some(Param::Range(r)) => {
+                            vec![r.mid(), r.lo().max(-self.cfg.max_eq_step_db).min(r.hi())]
+                        }
                         Some(Param::Num(x)) => vec![*x],
                         _ => vec![-2.0],
                     };
@@ -794,7 +1009,9 @@ impl Gen<'_> {
                         out.extend(self.eq(strip, f, g, q, shelf, p, &rules, &why, 1.0));
                     }
                 }
-                "Filter" if a.kind.as_deref() != Some("lpf") => out.extend(self.lowcut(strip, p, &why)),
+                "Filter" if a.kind.as_deref() != Some("lpf") => {
+                    out.extend(self.lowcut(strip, p, &why))
+                }
                 _ => {}
             }
         }

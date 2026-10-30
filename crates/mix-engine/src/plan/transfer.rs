@@ -85,7 +85,9 @@ impl WingTransfer {
         let mut p = EqParams::defaults(variant);
         p.on = eq.on;
         p.mix = eq.mix_pct as f32;
-        let bp = |b: &super::state::EqBand| BandParams::new(b.gain_db as f32, b.freq_hz as f32, b.q as f32);
+        let bp = |b: &super::state::EqBand| {
+            BandParams::new(b.gain_db as f32, b.freq_hz as f32, b.q as f32)
+        };
         let ty = |k: BandKind| match k {
             BandKind::Peq => BandType::Peq,
             _ => BandType::Shv,
@@ -117,7 +119,11 @@ impl TransferModel for WingTransfer {
         if !eq.on {
             return [0.0; N_ERB];
         }
-        let variant = if bus { EqVariant::Bus } else { EqVariant::Channel };
+        let variant = if bus {
+            EqVariant::Bus
+        } else {
+            EqVariant::Channel
+        };
         let mut e = StdEq::new(variant);
         e.prepare(self.sample_rate, 64);
         e.set_params(&Self::eq_params(eq, variant));
@@ -144,7 +150,11 @@ impl TransferModel for WingTransfer {
         if let Some(c) = high {
             p.hc_on = c.on;
             p.hc_freq = c.freq_hz as f32;
-            p.hc_slope = if c.slope == 6 { HcSlope::Db6 } else { HcSlope::Db12 };
+            p.hc_slope = if c.slope == 6 {
+                HcSlope::Db6
+            } else {
+                HcSlope::Db12
+            };
         }
         let mut fb = FilterBlock::new();
         fb.prepare(self.sample_rate, 64);
@@ -214,7 +224,14 @@ pub fn k_weight_db(f: f64) -> f64 {
         -1.690_659_293_182_41,
         0.732_480_774_215_85,
     );
-    let s2 = Coeffs::from_raw(1.0, -2.0, 1.0, 1.0, -1.990_047_454_833_98, 0.990_072_250_366_21);
+    let s2 = Coeffs::from_raw(
+        1.0,
+        -2.0,
+        1.0,
+        1.0,
+        -1.990_047_454_833_98,
+        0.990_072_250_366_21,
+    );
     s1.magnitude_db(fs, f) + s2.magnitude_db(fs, f)
 }
 

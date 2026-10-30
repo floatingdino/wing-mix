@@ -39,22 +39,23 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 
 use mix_core::action::{Action, ParamChange};
+use mix_core::bands::N_ERB;
 use mix_core::features::Features;
 use mix_core::ids::{ParamId, StripId};
 use mix_core::profile::TargetProfile;
+use mix_core::units::Unit;
 use mix_core::value::Value;
-use mix_core::bands::N_ERB;
 use mix_knowledge::KnowledgeBase;
 use mix_surface::model::{ParamSpec, StripKind};
 use mix_surface::remit::{
-    evaluate, evaluate_inspection, Envelope, InspectionKind, Policy, RemitContext, RemitSession, Verdict,
-    WriteRequest,
+    evaluate, evaluate_inspection, Envelope, InspectionKind, Policy, RemitContext, RemitSession,
+    Verdict, WriteRequest,
 };
-use mix_core::units::Unit;
 use serde::{Deserialize, Serialize};
 
 use crate::diagnosis::{
-    diagnose, window_loudness, Diagnosis, DiagnosisConfig, DiagnosisInput, Problem, ProblemKind, StripTap, Subject,
+    diagnose, window_loudness, Diagnosis, DiagnosisConfig, DiagnosisInput, Problem, ProblemKind,
+    StripTap, Subject,
 };
 pub use candidates::{Candidate, CandidateConfig, PHASES};
 pub use predict::{MixModel, Prediction, StripDelta};
@@ -193,7 +194,7 @@ pub enum PlanStep {
         /// The remit classifies solo as conditional.
         needs_confirmation: bool,
     },
-    Move(PlannedMove),
+    Move(Box<PlannedMove>),
 }
 
 /// The steps of one workflow phase.
@@ -220,10 +221,13 @@ pub struct Plan {
 impl Plan {
     /// Moves in execution order.
     pub fn moves(&self) -> impl Iterator<Item = &PlannedMove> {
-        self.phases.iter().flat_map(|p| p.steps.iter()).filter_map(|s| match s {
-            PlanStep::Move(m) => Some(m),
-            _ => None,
-        })
+        self.phases
+            .iter()
+            .flat_map(|p| p.steps.iter())
+            .filter_map(|s| match s {
+                PlanStep::Move(m) => Some(m.as_ref()),
+                _ => None,
+            })
     }
 
     /// Steps in execution order.
@@ -263,14 +267,32 @@ fn target_referenced(p: &Problem) -> bool {
     use ProblemKind::*;
     let kind = matches!(
         p.kind,
-        Level | Tonal | Harshness | Tilt | TooDynamic | Squashed | Punch | Width | LowEndMono | StereoBalance
-            | Phase | Depth
+        Level
+            | Tonal
+            | Harshness
+            | Tilt
+            | TooDynamic
+            | Squashed
+            | Punch
+            | Width
+            | LowEndMono
+            | StereoBalance
+            | Phase
+            | Depth
     );
-    kind && matches!(p.scope.subject, Subject::Stem { .. } | Subject::Strip { .. }) && p.evidence.measured.is_some()
+    kind && matches!(
+        p.scope.subject,
+        Subject::Stem { .. } | Subject::Strip { .. }
+    ) && p.evidence.measured.is_some()
 }
 
 fn score_of(d: &Diagnosis, w: f64) -> PlanScore {
-    let load: f32 = d.problems.iter().filter(|p| target_referenced(p)).map(|p| p.score()).sum();
+    let load: f32 = d
+        .problems
+        .iter()
+        .filter(|p| target_referenced(p))
+        .map(|p| p.score())
+        .sum();
     PlanScore {
         objective: d.distance as f64 + w * load as f64,
         distance: d.distance,
@@ -284,8 +306,18 @@ fn score_of(d: &Diagnosis, w: f64) -> PlanScore {
 /// crowd out the problems the objective measures.
 fn select_problems<'d>(d: &'d Diagnosis, cfg: &PlanConfig) -> Vec<&'d Problem> {
     let is_target = |p: &Problem| matches!(p.scope.subject, Subject::Mix) || target_referenced(p);
-    let mut v: Vec<&Problem> = d.problems.iter().filter(|p| is_target(p)).take(cfg.max_problems).collect();
-    v.extend(d.problems.iter().filter(|p| !is_target(p)).take(cfg.max_heuristic));
+    let mut v: Vec<&Problem> = d
+        .problems
+        .iter()
+        .filter(|p| is_target(p))
+        .take(cfg.max_problems)
+        .collect();
+    v.extend(
+        d.problems
+            .iter()
+            .filter(|p| !is_target(p))
+            .take(cfg.max_heuristic),
+    );
     v
 }
 
@@ -343,7 +375,12 @@ struct Checked {
     confirm: Vec<String>,
 }
 
-fn check_remit(remit: &Remit<'_>, state: &ConsoleState, mut c: Candidate, allow_conditional: bool) -> Result<Checked, String> {
+fn check_remit(
+    remit: &Remit<'_>,
+    state: &ConsoleState,
+    mut c: Candidate,
+    allow_conditional: bool,
+) -> Result<Checked, String> {
     let mut confirm = Vec::new();
     let mut kept = Vec::new();
     for ch in c.changes.drain(..) {
@@ -403,7 +440,11 @@ fn strip_mid_of(t: &StripTap) -> [f64; N_ERB] {
 }
 
 /// Plan with the WING transfer model.
-pub fn plan(input: &PlanInput<'_>, kb: &KnowledgeBase, cfg: &PlanConfig) -> Result<Plan, PlanError> {
+pub fn plan(
+    input: &PlanInput<'_>,
+    kb: &KnowledgeBase,
+    cfg: &PlanConfig,
+) -> Result<Plan, PlanError> {
     let t = WingTransfer::new(input.target.analysis.sample_rate.max(8000) as f64);
     plan_with(input, kb, cfg, &t)
 }
@@ -416,9 +457,17 @@ pub fn plan_with(
     transfer: &dyn TransferModel,
 ) -> Result<Plan, PlanError> {
     let model = MixModel::new(input.main, input.strips, input.state, transfer);
-    let fx: Vec<StripTap> = input.strips.iter().filter(|s| s.fx_return).cloned().collect();
-    let source_of: BTreeMap<StripId, Option<String>> =
-        input.strips.iter().map(|s| (s.strip.clone(), s.source.clone())).collect();
+    let fx: Vec<StripTap> = input
+        .strips
+        .iter()
+        .filter(|s| s.fx_return)
+        .cloned()
+        .collect();
+    let source_of: BTreeMap<StripId, Option<String>> = input
+        .strips
+        .iter()
+        .map(|s| (s.strip.clone(), s.source.clone()))
+        .collect();
     let stems: Vec<mix_core::profile::StemKind> = input
         .target
         .stems
@@ -449,8 +498,11 @@ pub fn plan_with(
     let mut tried_bad: BTreeSet<String> = BTreeSet::new();
 
     for _ in 0..cfg.max_moves {
-        let strip_mids: BTreeMap<StripId, [f64; N_ERB]> =
-            pred.strips.iter().map(|t| (t.strip.clone(), strip_mid_of(t))).collect();
+        let strip_mids: BTreeMap<StripId, [f64; N_ERB]> = pred
+            .strips
+            .iter()
+            .map(|t| (t.strip.clone(), strip_mid_of(t)))
+            .collect();
         let mid_fn = |s: &StripId| strip_mids.get(s).copied();
         let src_fn = |s: &StripId| source_of.get(s).cloned().flatten();
         let gen = candidates::Gen {
@@ -468,45 +520,59 @@ pub fn plan_with(
             if matches!(p.kind, ProblemKind::Sibilance) {
                 unsupported.insert("sibilance (de-esser not modelled)");
             }
-            if matches!(p.kind, ProblemKind::Punch | ProblemKind::Phase | ProblemKind::StereoBalance) {
+            if matches!(
+                p.kind,
+                ProblemKind::Punch | ProblemKind::Phase | ProblemKind::StereoBalance
+            ) {
                 unsupported.insert("punch/phase/balance problems have no candidate moves yet");
             }
             for c in gen.for_problem(p) {
-                let key = format!("{:?}", c.changes.iter().map(|x| (&x.param, &x.to)).collect::<Vec<_>>());
+                let key = format!(
+                    "{:?}",
+                    c.changes
+                        .iter()
+                        .map(|x| (&x.param, &x.to))
+                        .collect::<Vec<_>>()
+                );
                 if !seen.insert(key.clone()) || tried_bad.contains(&key) {
                     continue;
                 }
                 match check_remit(&input.remit, &state, c, cfg.allow_conditional) {
                     Ok(k) => cands.push(k),
                     Err(e) => {
-                        let reason = e.split(": ").nth(1).unwrap_or(&e).split(' ').next().unwrap_or("").to_string();
+                        let reason = e
+                            .split(": ")
+                            .nth(1)
+                            .unwrap_or(&e)
+                            .split(' ')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
                         *remit_drops.entry(reason).or_default() += 1;
                     }
                 }
             }
         }
-        let dbg = std::env::var_os("MIX_PLAN_DEBUG").is_some();
-        let (mut tp, mut td) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
-        let ncand = cands.len();
         // score
         let mut best: Option<(f64, Checked, Prediction, Diagnosis, PlanScore)> = None;
         for k in cands {
             let mut st2 = state.clone();
             st2.apply(&k.cand.changes);
-            let t0 = std::time::Instant::now();
             let p2 = model.predict(&st2);
-            let t1 = std::time::Instant::now();
             let d2 = run(&p2)?;
-            tp += t1 - t0;
-            td += t1.elapsed();
             let s2 = score_of(&d2, w);
             let benefit = cur.objective - s2.objective;
             let net = benefit - cfg.cost_weight * k.cand.cost;
+
             if net <= cfg.min_score {
                 if benefit <= 0.0 {
                     tried_bad.insert(format!(
                         "{:?}",
-                        k.cand.changes.iter().map(|x| (&x.param, &x.to)).collect::<Vec<_>>()
+                        k.cand
+                            .changes
+                            .iter()
+                            .map(|x| (&x.param, &x.to))
+                            .collect::<Vec<_>>()
                     ));
                 }
                 continue;
@@ -515,10 +581,9 @@ pub fn plan_with(
                 best = Some((net, k, p2, d2, s2));
             }
         }
-        if dbg {
-            eprintln!("plan step: {ncand} candidates, predict {tp:?}, diagnose {td:?}");
-        }
-        let Some((net, k, p2, d2, s2)) = best else { break };
+        let Some((net, k, p2, d2, s2)) = best else {
+            break;
+        };
         let c = k.cand;
         let target = diag.problems.iter().find(|p| p.id == c.problem);
         let problem = target.map(|p| ProblemChange {
@@ -526,7 +591,11 @@ pub fn plan_with(
             feature: p.evidence.feature.clone(),
             unit: p.evidence.unit.clone(),
             deviation_before: p.evidence.deviation,
-            deviation_after: d2.problems.iter().find(|q| q.id == p.id).map(|q| q.evidence.deviation),
+            deviation_after: d2
+                .problems
+                .iter()
+                .find(|q| q.id == p.id)
+                .map(|q| q.evidence.deviation),
             tolerance: p.evidence.tolerance,
         });
         let touched: BTreeSet<StripId> = c.changes.iter().filter_map(|x| x.param.strip()).collect();
@@ -551,7 +620,8 @@ pub fn plan_with(
                 " Predicted: {} {:+.1} -> {} {}",
                 pc.feature,
                 pc.deviation_before,
-                pc.deviation_after.map_or("within tolerance".to_string(), |x| format!("{x:+.1}")),
+                pc.deviation_after
+                    .map_or("within tolerance".to_string(), |x| format!("{x:+.1}")),
                 pc.unit
             ));
         }
@@ -634,21 +704,38 @@ fn merge_limit(param: &ParamId, cfg: &PlanConfig) -> Option<f64> {
 /// Merge runs of consecutive moves (in execution order) that set the same numeric params of the same strip in the
 /// same phase, while the combined change stays within one step (the greedy search takes small steps; the
 /// actuator does not need to stop between them).
-fn merge_steps(eff: Vec<(usize, usize, &PlannedMove)>, cfg: &PlanConfig) -> Vec<(usize, PlannedMove)> {
+fn merge_steps(
+    eff: Vec<(usize, usize, &PlannedMove)>,
+    cfg: &PlanConfig,
+) -> Vec<(usize, PlannedMove)> {
     let mut out: Vec<(usize, PlannedMove)> = Vec::new();
     for (ph, _, m) in eff {
         if let Some((pph, prev)) = out.last_mut() {
             let same_params = *pph == ph
                 && prev.strip == m.strip
                 && prev.action.changes.len() == m.action.changes.len()
-                && prev.action.changes.iter().zip(&m.action.changes).all(|(a, b)| a.param == b.param);
+                && prev
+                    .action
+                    .changes
+                    .iter()
+                    .zip(&m.action.changes)
+                    .all(|(a, b)| a.param == b.param);
             let within = same_params
-                && prev.action.changes.iter().zip(&m.action.changes).all(|(a, b)| {
-                    match (merge_limit(&a.param, cfg), a.from.as_ref().and_then(|v| v.as_f64()), b.to.as_f64()) {
-                        (Some(lim), Some(x0), Some(x1)) => (x1 - x0).abs() <= lim + 1e-9,
-                        _ => false,
-                    }
-                });
+                && prev
+                    .action
+                    .changes
+                    .iter()
+                    .zip(&m.action.changes)
+                    .all(|(a, b)| {
+                        match (
+                            merge_limit(&a.param, cfg),
+                            a.from.as_ref().and_then(|v| v.as_f64()),
+                            b.to.as_f64(),
+                        ) {
+                            (Some(lim), Some(x0), Some(x1)) => (x1 - x0).abs() <= lim + 1e-9,
+                            _ => false,
+                        }
+                    });
             if within {
                 for (a, b) in prev.action.changes.iter_mut().zip(&m.action.changes) {
                     a.to = b.to.clone();
@@ -658,15 +745,28 @@ fn merge_steps(eff: Vec<(usize, usize, &PlannedMove)>, cfg: &PlanConfig) -> Vec<
                     .changes
                     .iter()
                     .map(|c| {
-                        let (x0, x1) = (c.from.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0), c.to.as_f64().unwrap_or(0.0));
-                        format!("{} {:+.1}", c.param.as_str().split_once('/').map_or(c.param.as_str(), |x| x.1), x1 - x0)
+                        let (x0, x1) = (
+                            c.from.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            c.to.as_f64().unwrap_or(0.0),
+                        );
+                        format!(
+                            "{} {:+.1}",
+                            c.param
+                                .as_str()
+                                .split_once('/')
+                                .map_or(c.param.as_str(), |x| x.1),
+                            x1 - x0
+                        )
                     })
                     .collect();
                 prev.action.label = format!("{} {}", prev.strip, desc.join(", "));
                 prev.explanation = format!("{} Then: {}", prev.explanation, m.explanation);
                 prev.predicted.objective_after = m.predicted.objective_after;
                 prev.predicted.distance_after = m.predicted.distance_after;
-                if let (Some(a), Some(b)) = (prev.predicted.problem.as_mut(), m.predicted.problem.as_ref()) {
+                if let (Some(a), Some(b)) = (
+                    prev.predicted.problem.as_mut(),
+                    m.predicted.problem.as_ref(),
+                ) {
                     if a.id == b.id {
                         a.deviation_after = b.deviation_after;
                     }
@@ -719,7 +819,11 @@ fn order(
     }
     eff.sort_by_key(|x| (x.0, x.1));
     let eff = merge_steps(eff, cfg);
-    let orders: BTreeMap<String, u32> = kb.phases().iter().map(|p| (p.id.clone(), p.order)).collect();
+    let orders: BTreeMap<String, u32> = kb
+        .phases()
+        .iter()
+        .map(|p| (p.id.clone(), p.order))
+        .collect();
     let mut out: Vec<PhasePlan> = Vec::new();
     let mut inspected: BTreeSet<(usize, StripId)> = BTreeSet::new();
     let mut solo_denied: BTreeSet<StripId> = BTreeSet::new();
@@ -736,9 +840,14 @@ fn order(
         let is_input = input
             .state
             .strip(&m.strip)
-            .map_or(true, |s| matches!(s.kind, StripKind::Input | StripKind::Aux));
+            .is_none_or(|s| matches!(s.kind, StripKind::Input | StripKind::Aux));
         if SOLO_PHASES.contains(&ph) && is_input && inspected.insert((ph, m.strip.clone())) {
-            let d = evaluate_inspection(input.remit.policy, input.remit.ctx, InspectionKind::Solo, &m.strip);
+            let d = evaluate_inspection(
+                input.remit.policy,
+                input.remit.ctx,
+                InspectionKind::Solo,
+                &m.strip,
+            );
             match d.class {
                 Verdict::Forbidden => {
                     solo_denied.insert(m.strip.clone());
@@ -750,17 +859,22 @@ fn order(
                         name,
                         m.strip,
                         m.action.label,
-                        kb.phases().iter().find(|p| p.id == name).map_or("", |p| p.goal.as_str())
+                        kb.phases()
+                            .iter()
+                            .find(|p| p.id == name)
+                            .map_or("", |p| p.goal.as_str())
                     ),
                     dwell_s: cfg.inspect_dwell_s,
                     needs_confirmation: v == Verdict::Conditional,
                 }),
             }
         }
-        pp.steps.push(PlanStep::Move(m));
+        pp.steps.push(PlanStep::Move(Box::new(m)));
     }
     for s in solo_denied {
-        notes.push(format!("solo inspection of {s} not allowed by the remit: moves planned without it"));
+        notes.push(format!(
+            "solo inspection of {s} not allowed by the remit: moves planned without it"
+        ));
     }
     out
 }

@@ -6,18 +6,22 @@
 
 use std::collections::BTreeMap;
 
-use mix_analysis::{analyse_buffer, AnalyserConfig, OfflineAnalysis, OfflineOptions, ProfileBuilder};
+use mix_analysis::{
+    analyse_buffer, AnalyserConfig, OfflineAnalysis, OfflineOptions, ProfileBuilder,
+};
 use mix_core::features::Features;
 use mix_core::ids::StripId;
 use mix_core::profile::{ProfileSource, StemKind, StemTargets, TargetProfile};
 use mix_engine::diagnosis::stem_masking::stem_of;
 use mix_engine::diagnosis::{diagnose, Diagnosis, DiagnosisConfig, DiagnosisInput, StripTap};
+use mix_engine::plan::{plan, ConsoleState, Plan, PlanConfig, PlanInput, PlanStep, Remit};
 use mix_knowledge::KnowledgeBase;
 use mix_sim::scenes::{FixturePair, Scene};
 use mix_sim::synth::{SongSpec, TRACKS};
-use mix_engine::plan::{plan, ConsoleState, Plan, PlanConfig, PlanInput, PlanStep, Remit};
 use mix_sim::{SimSurface, TapPoint};
-use mix_surface::remit::{detect_topology, effective_roles, Policy, RemitContext, RemitSession, ScoringDetector};
+use mix_surface::remit::{
+    detect_topology, effective_roles, Policy, RemitContext, RemitSession, ScoringDetector,
+};
 use mix_surface::Surface;
 
 /// Song length rendered by the harness (s).
@@ -56,7 +60,10 @@ pub fn render(sim: &SimSurface) -> Render {
     let strips = (1..=TRACKS.len() as u8)
         .map(|ch| {
             let t = r.tap(TapPoint::InputPost(ch)).unwrap();
-            (StripId::new("input", ch as u32), interleave(&t.left, &t.right))
+            (
+                StripId::new("input", ch as u32),
+                interleave(&t.left, &t.right),
+            )
         })
         .collect();
     Render {
@@ -212,7 +219,8 @@ impl Fixture {
 /// The default WING remit policy and its context for `sim`.
 pub fn remit_parts(sim: &SimSurface) -> (Policy, RemitContext) {
     let policy = Policy::load(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/remit/wing-default.toml"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/remit/wing-default.toml"),
     )
     .expect("policy");
     let ctx = context(&policy, sim);
@@ -235,6 +243,7 @@ pub fn context(policy: &Policy, sim: &SimSurface) -> RemitContext {
 }
 
 /// Plan for the `scene` console of `fx` measured in `m`.
+#[allow(clippy::too_many_arguments)]
 pub fn make_plan(
     fx: &Fixture,
     sim: &SimSurface,
