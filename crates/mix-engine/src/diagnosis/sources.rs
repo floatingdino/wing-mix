@@ -55,8 +55,11 @@ pub(crate) fn is_active(cx: &Ctx<'_>, f: &Features) -> bool {
 }
 
 /// One active, non-FX strip.
+#[derive(Clone)]
 struct Src<'a> {
     tap: &'a StripTap,
+    /// M067: confidence factor of checks on this strip (1, or `meter_confidence` for a meter-refined estimate).
+    conf: f32,
     /// Loudness at the main (LUFS).
     level: f32,
     /// Absolute ERB band power at the main (dB).
@@ -93,7 +96,7 @@ impl Src<'_> {
 }
 
 pub(crate) fn check(cx: &mut Ctx<'_>) {
-    if cx.input.strips.iter().all(|s| s.estimated) {
+    if cx.input.strips.iter().all(|s| s.estimated && !s.meter_refined) {
         cx.note("no strip taps: level balance, masking, sibilance and source checks skipped");
         return;
     }
@@ -104,16 +107,21 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
         .as_ref()
         .map(|s| s.stems.keys().copied().collect())
         .unwrap_or_default();
-    let srcs: Vec<Src<'_>> = cx
+    // M067: meter-refined estimates (level and activity from the console's meters) join the level checks
+    let meter_conf = cx.cfg.meter_confidence;
+    let all: Vec<Src<'_>> = cx
         .input
         .strips
         .iter()
-        .filter(|s| !s.fx_return && !s.estimated && is_active(cx, &s.features))
+        .filter(|s| {
+            !s.fx_return && (!s.estimated || s.meter_refined) && is_active(cx, &s.features)
+        })
         .map(|s| {
             let level = window_loudness(&s.features) + s.gain_to_main_db;
             let rel = &s.features.spectrum.erb_mid_rel_db;
             Src {
                 tap: s,
+                conf: if s.estimated { meter_conf } else { 1.0 },
                 level,
                 erb_abs: std::array::from_fn(|b| rel[b] + level),
                 stem: s
@@ -142,6 +150,7 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
             let rel = &s.features.spectrum.erb_mid_rel_db;
             Src {
                 tap: s,
+                conf: 1.0,
                 level,
                 erb_abs: std::array::from_fn(|b| rel[b] + level),
                 stem: None,
@@ -161,7 +170,7 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
             Some("Gate"),
         );
     }
-    if srcs.is_empty() {
+    if all.is_empty() {
         cx.note("no active strip taps");
         return;
     }
@@ -170,15 +179,26 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
             "no stem targets: source levels use generic knowledge-base ranges (low confidence)",
         );
     }
-    let mut groups: BTreeMap<StemKind, Vec<usize>> = BTreeMap::new();
-    for (i, s) in srcs.iter().enumerate() {
-        if let Some(k) = s.stem {
-            groups.entry(k).or_default().push(i);
+    let group = |srcs: &[Src<'_>]| {
+        let mut groups: BTreeMap<StemKind, Vec<usize>> = BTreeMap::new();
+        for (i, s) in srcs.iter().enumerate() {
+            if let Some(k) = s.stem {
+                groups.entry(k).or_default().push(i);
+            }
         }
+        groups
+    };
+    levels(cx, &all, &group(&all));
+    balance(cx, &all);
+    if all.iter().any(|s| s.tap.estimated) {
+        cx.note("strips without a tap: levels from the console meters (spectra from priors, lower confidence)");
     }
-
-    levels(cx, &srcs, &groups);
-    balance(cx, &srcs);
+    // spectral, placement, dynamics and source checks need a measured signal
+    let srcs: Vec<Src<'_>> = all.into_iter().filter(|s| !s.tap.estimated).collect();
+    if srcs.is_empty() {
+        return;
+    }
+    let groups = group(&srcs);
     placement(cx, &srcs);
     if cx.cfg.comp_opportunities {
         compression(cx, &srcs);
@@ -261,7 +281,7 @@ fn balance(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) {
             cx.push(
                 Draft::new(ProblemKind::Level, Scope::of(s.subject()), e)
                     .weight(BALANCE_WEIGHT)
-                    .confidence(0.6 * quality_factor(&s.tap.features))
+                    .confidence(0.6 * quality_factor(&s.tap.features) * s.conf)
                     .blocks(&["Fader"])
                     .explain(explanation),
             );
@@ -352,6 +372,11 @@ fn compression(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) {
             continue;
         }
         let gr = pr.target_gr_db.map_or(3.0, |r| r.lo()) as f32;
+        // M067: the console's meters show the strip's compressor already working at the preset's reduction
+        if s.tap.dyn_gr_db.is_some_and(|m| m >= 0.5 * gr) {
+            continue;
+        }
+        let gr = pr.target_gr_db.map_or(3.0, |r| r.lo()) as f32;
         let mut e = Evidence::new("gr_db", "db", 0.0, gr, gr * 0.5);
         e.measured = None;
         let explanation = format!(
@@ -424,7 +449,8 @@ fn levels(cx: &mut Ctx<'_>, srcs: &[Src<'_>], groups: &BTreeMap<StemKind, Vec<us
             "{k:?} stem sits {:+.1} LU relative to the mix vs target {:+.1} LU",
             rel, e.target
         );
-        let conf = cx.target_conf * 0.75 * cx.quality;
+        let member_conf = idx.iter().map(|&i| srcs[i].conf).fold(1.0f32, f32::min);
+        let conf = cx.target_conf * 0.75 * cx.quality * member_conf;
         let rules = cx.rules_for(&subject, "level_dev_lu", e.deviation as f64, &Bag::new());
         cx.push(
             Draft::new(ProblemKind::Level, Scope::of(subject), e)
@@ -466,7 +492,7 @@ fn levels(cx: &mut Ctx<'_>, srcs: &[Src<'_>], groups: &BTreeMap<StemKind, Vec<us
             s.level - main_l,
             e.target
         );
-        let conf = 0.35 * quality_factor(&s.tap.features);
+        let conf = 0.35 * quality_factor(&s.tap.features) * s.conf;
         cx.push(
             Draft::new(ProblemKind::Level, Scope::of(s.subject()), e)
                 .weight(0.7)

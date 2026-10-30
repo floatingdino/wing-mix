@@ -58,6 +58,7 @@ pub mod config;
 pub mod event;
 pub mod guard;
 pub mod io;
+pub mod meters;
 pub mod section;
 pub mod strips;
 
@@ -232,6 +233,8 @@ struct Sample {
     measurement: Measurement,
     /// What the meter delivered.
     raw: Measurement,
+    /// M067: the console's meters over the same window.
+    meters: meters::MeterStats,
 }
 
 /// Pending confirmation.
@@ -300,6 +303,8 @@ pub struct Controller<'k> {
     solo_pfl: Option<bool>,
     /// No sweep could start last time (no solo, remit, engineer solo, refusal): estimates stay estimates for now.
     sweep_blocked: bool,
+    /// M067: console meter frames over the measurement window.
+    meter_window: meters::MeterWindow,
 }
 
 impl<'k> Controller<'k> {
@@ -316,6 +321,11 @@ impl<'k> Controller<'k> {
         let sr = target.analysis.sample_rate.max(8000) as f64;
         let surface_rx = surface.subscribe();
         let section = SectionDetector::new(cfg.section);
+        let meter_window = if cfg.strips.meters {
+            meters::MeterWindow::subscribe(&*surface)
+        } else {
+            meters::MeterWindow::manual()
+        };
         Controller {
             kb,
             target,
@@ -364,6 +374,7 @@ impl<'k> Controller<'k> {
             inspect_values: None,
             solo_pfl: None,
             sweep_blocked: false,
+            meter_window,
             cfg,
         }
     }
@@ -476,6 +487,16 @@ impl<'k> Controller<'k> {
         &self.coverage
     }
 
+    /// M067: the console's meters over the last measurement window.
+    pub fn meter_stats(&self) -> Option<&meters::MeterStats> {
+        self.last.as_ref().map(|s| &s.meters)
+    }
+
+    /// Main + every strip of the last measurement (taps, solo-measured, estimated).
+    pub fn measurement(&self) -> Option<&Measurement> {
+        self.last.as_ref().map(|s| &s.measurement)
+    }
+
     /// Strips measured through the solo bus (M062).
     pub fn strip_book(&self) -> &StripBook {
         &self.book
@@ -502,6 +523,7 @@ impl<'k> Controller<'k> {
         }
         self.drain_actuator();
         self.drain_surface();
+        self.meter_window.drain();
         self.poll_section(meter);
         self.step(exec, meter);
         self.maybe_sweep(exec);
@@ -741,11 +763,13 @@ impl<'k> Controller<'k> {
                     unreachable!()
                 };
                 meter.restart();
+                self.meter_window.restart();
                 self.state = State::Measuring { purpose };
             }
             State::Measuring { .. } if meter.window_s() + 1e-9 >= self.cfg.window_s => {
                 let Some(m) = meter.measure() else {
                     meter.restart();
+                    self.meter_window.restart();
                     return;
                 };
                 let State::Measuring { purpose } =
@@ -753,8 +777,10 @@ impl<'k> Controller<'k> {
                 else {
                     unreachable!()
                 };
-                let Some(sample) = self.evaluate(m) else {
+                let stats = self.meter_window.stats();
+                let Some(sample) = self.evaluate(m, stats) else {
                     meter.restart();
+                    self.meter_window.restart();
                     self.state = State::Measuring { purpose };
                     return;
                 };
@@ -765,10 +791,10 @@ impl<'k> Controller<'k> {
         }
     }
 
-    fn evaluate(&mut self, raw: Measurement) -> Option<Sample> {
+    fn evaluate(&mut self, raw: Measurement, meters: meters::MeterStats) -> Option<Sample> {
         // M035: gate problems are answered by the console's gate state
         let state = ConsoleState::capture(&*self.surface).ok();
-        let m = self.augment(&raw, state.as_ref());
+        let m = self.augment(&raw, state.as_ref(), &meters);
         let progress = state
             .as_ref()
             .map(|st| {
@@ -806,13 +832,25 @@ impl<'k> Controller<'k> {
             diagnosis: d,
             measurement: m,
             raw,
+            meters,
         })
     }
 
     /// M062: the meter's taps plus, for every eligible strip without one, its solo measurement (re-referenced to
     /// the current settings) or a prior.
-    fn augment(&mut self, raw: &Measurement, state: Option<&ConsoleState>) -> Measurement {
+    fn augment(
+        &mut self,
+        raw: &Measurement,
+        state: Option<&ConsoleState>,
+        meters: &meters::MeterStats,
+    ) -> Measurement {
         self.tapped = raw.strips.iter().map(|t| t.strip.clone()).collect();
+        // M067: the meters' gain reduction of every strip (a working compressor answers a compression opportunity)
+        let mut raw = raw.clone();
+        for t in &mut raw.strips {
+            t.dyn_gr_db = meters.strips.get(&t.strip).and_then(|m| m.dyn_gr_db);
+        }
+        let raw = &raw;
         let c = &self.cfg.strips;
         let Some(state) = state else {
             return raw.clone();
@@ -834,7 +872,10 @@ impl<'k> Controller<'k> {
             return raw.clone();
         }
         let ids: Vec<StripId> = missing.iter().map(|e| e.strip.clone()).collect();
-        let solo = self.book.taps_for(&ids, state, &raw.main, &*self.transfer);
+        let mut solo = self.book.taps_for(&ids, state, &raw.main, &*self.transfer);
+        for t in &mut solo {
+            t.dyn_gr_db = meters.strips.get(&t.strip).and_then(|m| m.dyn_gr_db);
+        }
         let have: std::collections::BTreeSet<StripId> =
             solo.iter().map(|t| t.strip.clone()).collect();
         let rest: Vec<strips::Eligible> = missing
@@ -846,8 +887,17 @@ impl<'k> Controller<'k> {
         cov.solo_measured = solo.len();
         m.strips.extend(solo);
         if c.priors {
-            let est = strips::priors(&raw.main, &m.strips, &rest, self.kb, c.min_prior_share);
+            let mt = (c.meters && meters.frames > 0).then_some(meters);
+            let est = strips::priors(
+                &raw.main,
+                &m.strips,
+                &rest,
+                self.kb,
+                c.min_prior_share,
+                mt,
+            );
             cov.estimated = est.len();
+            cov.meter_refined = est.iter().filter(|t| t.meter_refined).count();
             m.strips.extend(est);
         }
         cov.unknown = missing.len() - cov.solo_measured - cov.estimated;
@@ -862,10 +912,14 @@ impl<'k> Controller<'k> {
             return;
         }
         self.book.merge();
-        let Some(raw) = self.last.as_ref().map(|s| s.raw.clone()) else {
+        let Some((raw, mt)) = self
+            .last
+            .as_ref()
+            .map(|s| (s.raw.clone(), s.meters.clone()))
+        else {
             return;
         };
-        if let Some(s) = self.evaluate(raw) {
+        if let Some(s) = self.evaluate(raw, mt) {
             self.best = s.score.objective;
             self.last = Some(s);
         }

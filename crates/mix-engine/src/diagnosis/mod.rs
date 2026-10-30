@@ -72,6 +72,12 @@ pub struct StripTap {
     /// strips but measure nothing) and the planner's effect model use it, every strip/stem check skips it (a prior
     /// would only confirm itself), and the planner moves nothing on it but its fader.
     pub estimated: bool,
+    /// M067: an [estimated](Self::estimated) tap whose level and activity come from the console's meters over the
+    /// measurement window ([`crate::control::meters`]); its spectrum is still the prior. Level and kit-balance checks
+    /// run on it with [`DiagnosisConfig::meter_confidence`]; spectral, masking and source checks skip it.
+    pub meter_refined: bool,
+    /// M067: mean compressor gain reduction while the strip played (console meters), when known.
+    pub dyn_gr_db: Option<f32>,
 }
 
 /// sources.toml id of a strip from mix-sources' classifier (M035: the authority for source type in diagnosis and
@@ -108,6 +114,8 @@ impl StripTap {
             gain_to_main_db: 0.0,
             fx_return: false,
             estimated: false,
+            meter_refined: false,
+            dyn_gr_db: None,
         }
     }
 
@@ -201,6 +209,9 @@ pub struct DiagnosisConfig {
     /// compressor preset, as `TooDynamic` problems without a measurement (feature `gr_db`); the planner counts
     /// them while the strip's compressor is off. Off in plain diagnosis (a console fact, not a mix deviation).
     pub comp_opportunities: bool,
+    /// M067: confidence factor of level checks that involve a [meter-refined](StripTap::meter_refined) strip (its
+    /// level is a peak-meter reading scaled into the main, not a loudness measurement).
+    pub meter_confidence: f32,
 }
 
 impl Default for DiagnosisConfig {
@@ -216,6 +227,7 @@ impl Default for DiagnosisConfig {
             stem_sum_tolerance_lu: 1.0,
             gate_opportunities: false,
             comp_opportunities: false,
+            meter_confidence: 0.5,
         }
     }
 }

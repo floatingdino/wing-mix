@@ -38,6 +38,7 @@ use mix_surface::model::StripKind;
 use mix_surface::Surface;
 use serde::{Deserialize, Serialize};
 
+use super::meters::MeterStats;
 use crate::diagnosis::{classify_source, window_loudness, Diagnosis, StripTap, Subject};
 use crate::plan::{ConsoleState, MixModel, TransferModel};
 
@@ -73,6 +74,9 @@ pub struct StripConfig {
     /// Share of the main the estimated strips get at least when the measured strips already account for all of
     /// it (bleed and coherent sums make measured taps add up to more than the main).
     pub min_prior_share: f64,
+    /// M067: refine the priors with the console's meters (level re the main, activity, gain reduction) when the
+    /// surface has them ([`super::meters`]).
+    pub meters: bool,
 }
 
 impl Default for StripConfig {
@@ -91,6 +95,7 @@ impl Default for StripConfig {
             respect_engineer_solo: true,
             fader_floor_db: -60.0,
             min_prior_share: 0.1,
+            meters: true,
         }
     }
 }
@@ -219,6 +224,9 @@ pub struct Coverage {
     pub tapped: usize,
     pub solo_measured: usize,
     pub estimated: usize,
+    /// M067: of the estimated, how many have levels from the console's meters.
+    #[serde(default)]
+    pub meter_refined: usize,
     /// Neither measured nor estimable (no source type) or silent in solo.
     pub unknown: usize,
     pub sweeps: u32,
@@ -367,33 +375,117 @@ fn db(x: f64) -> f64 {
     10.0 * x.max(1e-30).log10()
 }
 
-/// Estimated taps for `missing` strips: kb level (+ fader offset re the others' median), prototype spectrum, mono,
-/// scaled so their power fills what the `measured` taps leave of `main` (at least `min_share` of it). Strips
-/// without a knowledge-base source type get none.
+/// Offset (dB) to add to a strip's meter level re the main to get its loudness re the main, per source family, from
+/// the strips measured by a tap or in solo that the meters also saw (peak meters read percussive and bass-heavy
+/// sources hotter than their K-weighted loudness). The `""` entry is the median over every family.
+pub fn meter_offsets(
+    main: &Features,
+    measured: &[StripTap],
+    meters: &MeterStats,
+    kb: &KnowledgeBase,
+) -> BTreeMap<String, f64> {
+    let main_l = window_loudness(main) as f64;
+    let mut by: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for t in measured.iter().filter(|t| !t.fx_return && !t.estimated) {
+        let Some(m) = meters.rel_to_main_db(&t.strip) else {
+            continue;
+        };
+        let l = window_loudness(&t.features) as f64 + t.gain_to_main_db as f64 - main_l;
+        if !l.is_finite() || l < -60.0 {
+            continue;
+        }
+        let off = l - m as f64;
+        by.entry(String::new()).or_default().push(off);
+        if let Some(f) = t.source.as_deref().and_then(|s| kb.source(s)) {
+            by.entry(f.family.as_str().to_string())
+                .or_default()
+                .push(off);
+        }
+    }
+    by.into_iter()
+        .filter(|(k, v)| v.len() >= if k.is_empty() { 1 } else { 2 })
+        .map(|(k, mut v)| {
+            v.sort_by(f64::total_cmp);
+            (k, v[v.len() / 2])
+        })
+        .collect()
+}
+
+/// Loudness minus peak-meter level (dB) a source family typically shows (playing frames, both re the main):
+/// percussive and bass sources read hot on peak meters, sustained vocals cool. mix-sim seed 7 (16 strips, every one
+/// tapped): drums -0.4..-6 (median -2.6), bass -2.8, guitar -3.8, keys -1.7..+4.4 (median -0.8), vocals +2.3..+2.9.
+pub fn meter_crest_prior(family: Option<mix_knowledge::Family>) -> f64 {
+    use mix_knowledge::Family as F;
+    match family {
+        Some(F::Drums | F::Bass) => -2.5,
+        Some(F::Guitar) => -2.0,
+        Some(F::Vocal | F::Speech) => 2.5,
+        _ => 0.0,
+    }
+}
+
+/// Estimated taps for `missing` strips, scaled so their power fills what the `measured` taps leave of `main` (at
+/// least `min_share` of it); prototype spectrum (mono). Level: with console `meters` (M067), the strip's metered
+/// level re the main (+ the [`meter_offsets`] of its family) and its activity; a strip the meters saw silent gets
+/// no estimate. Without meters, the kb level (+ fader offset re the others' median); strips without a
+/// knowledge-base source type then get none.
 pub fn priors(
     main: &Features,
     measured: &[StripTap],
     missing: &[Eligible],
     kb: &KnowledgeBase,
     min_share: f64,
+    meters: Option<&MeterStats>,
 ) -> Vec<StripTap> {
-    let with_src: Vec<(&Eligible, f64)> = missing
+    let offsets = meters
+        .map(|m| meter_offsets(main, measured, m, kb))
+        .unwrap_or_default();
+    let metered = |e: &Eligible| -> Option<f64> {
+        let rel = meters?.rel_to_main_db(&e.strip)? as f64;
+        let fam = e
+            .source
+            .as_deref()
+            .and_then(|s| kb.source(s))
+            .map(|s| s.family);
+        // measured strips of the family say how much its peaks read over its loudness; else the crest prior
+        // (relative to the measured strips' overall offset, which the scaling into the main absorbs anyway)
+        let off = fam
+            .and_then(|f| offsets.get(f.as_str()))
+            .copied()
+            .unwrap_or_else(|| offsets.get("").copied().unwrap_or(0.0) + meter_crest_prior(fam));
+        Some(rel + off)
+    };
+    let with_src: Vec<(&Eligible, Option<f64>, Option<f64>)> = missing
         .iter()
+        .filter(|e| !meters.is_some_and(|m| m.silent(&e.strip)))
         .filter_map(|e| {
-            let s = kb.source(e.source.as_deref()?)?;
-            Some((e, s.level_rel_mix_lu.mid()))
+            let kb_rel = e
+                .source
+                .as_deref()
+                .and_then(|s| kb.source(s))
+                .map(|s| s.level_rel_mix_lu.mid());
+            let m = metered(e);
+            (kb_rel.is_some() || m.is_some()).then_some((e, kb_rel, m))
         })
         .collect();
     if with_src.is_empty() {
         return Vec::new();
     }
-    let mut faders: Vec<f64> = with_src.iter().map(|(e, _)| e.fader_db).collect();
+    let mut faders: Vec<f64> = with_src
+        .iter()
+        .filter(|x| x.1.is_some())
+        .map(|(e, ..)| e.fader_db)
+        .collect();
     faders.sort_by(f64::total_cmp);
-    let median = faders[faders.len() / 2];
+    let median = faders.get(faders.len() / 2).copied().unwrap_or(0.0);
     let main_l = window_loudness(main) as f64;
     let rel: Vec<f64> = with_src
         .iter()
-        .map(|(e, kb_rel)| kb_rel + (e.fader_db - median).clamp(-12.0, 12.0))
+        .map(|(e, kb_rel, m)| match (m, kb_rel) {
+            (Some(m), _) => *m,
+            (None, Some(k)) => k + (e.fader_db - median).clamp(-12.0, 12.0),
+            (None, None) => unreachable!(),
+        })
         .collect();
     // power bookkeeping on the loudness scale (dB re the main)
     let measured_p: f64 = measured
@@ -424,7 +516,7 @@ pub fn priors(
     with_src
         .iter()
         .zip(&rel)
-        .map(|((e, _), r)| {
+        .map(|((e, _, m), r)| {
             let bands = prototype_bands(e.source.as_deref().unwrap_or(""));
             let share: [f64; N_ERB] = std::array::from_fn(|b| {
                 let k = band_of(centres[b]);
@@ -440,6 +532,10 @@ pub fn priors(
             f.spectrum.erb_side_rel_db.clear();
             f.stereo = None;
             shift_level(&mut f, (r + scale) as f32);
+            let sm = m.and(meters.and_then(|x| x.strips.get(&e.strip)));
+            if let Some(sm) = sm {
+                f.quality.gated_fraction = (1.0 - sm.active).clamp(0.0, 1.0);
+            }
             StripTap {
                 strip: e.strip.clone(),
                 name: e.name.clone(),
@@ -448,6 +544,8 @@ pub fn priors(
                 gain_to_main_db: 0.0,
                 fx_return: false,
                 estimated: true,
+                meter_refined: sm.is_some(),
+                dyn_gr_db: sm.and_then(|x| x.dyn_gr_db),
             }
         })
         .collect()
@@ -686,7 +784,7 @@ mod tests {
             el(3, Some("bass_di")),
             el(4, None),
         ];
-        let pr = priors(&main, &[], &missing, kb(), 0.1);
+        let pr = priors(&main, &[], &missing, kb(), 0.1, None);
         assert_eq!(pr.len(), 3, "no prior without a source type");
         assert!(pr
             .iter()
@@ -730,7 +828,7 @@ mod tests {
         // a louder fader is a louder prior
         let mut m2 = missing.clone();
         m2[0].fader_db = -4.0;
-        let pr2 = priors(&main, &[], &m2, kb(), 0.1);
+        let pr2 = priors(&main, &[], &m2, kb(), 0.1, None);
         let v =
             |pr: &[StripTap]| window_loudness(&pr[0].features) - window_loudness(&pr[1].features);
         assert!((v(&pr2) - v(&pr) - 6.0).abs() < 1e-3);
@@ -751,6 +849,7 @@ mod tests {
             &[el(2, Some("kick"))],
             kb(),
             0.1,
+            None,
         );
         let l = window_loudness(&pr[0].features) - ml;
         assert!((l as f64 - db(0.25)).abs() < 0.05, "{l}");
@@ -758,9 +857,92 @@ mod tests {
         let mut f = main.clone();
         shift_level(&mut f, 1.0);
         let tap = StripTap::new(StripId::new("input", 9), "VOX", f, kb());
-        let pr = priors(&main, &[tap], &[el(2, Some("kick"))], kb(), 0.1);
+        let pr = priors(&main, &[tap], &[el(2, Some("kick"))], kb(), 0.1, None);
         let l = window_loudness(&pr[0].features) - ml;
         assert!((l as f64 - db(0.1)).abs() < 0.05, "{l}");
+    }
+
+    fn stats(levels: &[(StripId, f32, f32)]) -> MeterStats {
+        use super::super::meters::StripMeter;
+        MeterStats {
+            strips: levels
+                .iter()
+                .map(|(s, l, act)| {
+                    (
+                        s.clone(),
+                        StripMeter {
+                            out_db: *l,
+                            active: *act,
+                            dyn_gr_db: Some(2.0),
+                            gate_gr_db: None,
+                            frames: 100,
+                        },
+                    )
+                })
+                .collect(),
+            frames: 100,
+        }
+    }
+
+    #[test]
+    fn meters_refine_prior_levels_activity_and_silence() {
+        let target = synth::profile_with_stems();
+        let main = synth::features_matching(&target, Window::Session);
+        let id = |c| StripId::new("input", c);
+        let missing = vec![
+            el(1, Some("lead_vocal")),
+            el(2, Some("kick")),
+            el(3, Some("bass_di")),
+            el(4, None),
+            el(5, Some("keys_synth")),
+        ];
+        let m = stats(&[
+            (StripId::new("main", 1), -10.0, 1.0),
+            (id(1), -16.0, 0.8),
+            (id(2), -14.0, 1.0),
+            (id(3), -128.0, 0.0),
+            (id(4), -20.0, 0.25),
+        ]);
+        let pr = priors(&main, &[], &missing, kb(), 0.1, Some(&m));
+        let get = |c: u32| pr.iter().find(|t| t.strip == id(c));
+        // the bass is metered silent: no share; the unnamed-type strip has a metered level: a share
+        assert!(get(3).is_none(), "silent strip estimated");
+        assert!(get(4).is_some_and(|t| t.meter_refined && t.source.is_none()));
+        // the keys strip has no meter reading: kb prior, not meter-refined
+        assert!(get(5).is_some_and(|t| !t.meter_refined));
+        // levels follow the meters (+ the family crest prior): vocal vs kick = -2 dB metered + 2.5 + 2.5
+        let l = |c| window_loudness(&get(c).unwrap().features);
+        let want = (-16.0 - -14.0) + meter_crest_prior(Some(mix_knowledge::Family::Vocal))
+            - meter_crest_prior(Some(mix_knowledge::Family::Drums));
+        assert!(((l(1) - l(2)) as f64 - want).abs() < 1e-3, "{} vs {want}", l(1) - l(2));
+        // activity and gain reduction come along
+        let v = get(1).unwrap();
+        assert!((v.features.quality.gated_fraction - 0.2).abs() < 1e-6);
+        assert_eq!(v.dyn_gr_db, Some(2.0));
+        assert!((get(4).unwrap().features.quality.gated_fraction - 0.75).abs() < 1e-6);
+        // still scaled into the main
+        let ml = window_loudness(&main) as f64;
+        let tot: f64 = pr
+            .iter()
+            .map(|t| p(window_loudness(&t.features) as f64 - ml))
+            .sum();
+        assert!(db(tot).abs() < 0.05);
+        // a measured strip of the family calibrates its meter offset (two needed)
+        let mut f = main.clone();
+        shift_level(&mut f, -9.0);
+        let t1 = StripTap::new(id(6), "SN", f.clone(), kb());
+        let t2 = StripTap::new(id(7), "HH", f, kb());
+        let (mut t1, mut t2) = (t1, t2);
+        t1.source = Some("snare_top".into());
+        t2.source = Some("hihat".into());
+        let m2 = stats(&[
+            (StripId::new("main", 1), -10.0, 1.0),
+            (id(6), -13.0, 1.0),
+            (id(7), -13.0, 1.0),
+        ]);
+        let off = meter_offsets(&main, &[t1, t2], &m2, kb());
+        assert!((off["drums"] - (-6.0)).abs() < 0.01, "{off:?}");
+        assert!((off[""] - (-6.0)).abs() < 0.01, "{off:?}");
     }
 
     #[test]

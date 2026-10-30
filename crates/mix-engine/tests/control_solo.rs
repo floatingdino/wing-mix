@@ -237,3 +237,29 @@ fn solo_only_converges_comparably_to_multichannel() {
         "solo-only reduction {red_s:.2} vs multichannel {red_m:.2}"
     );
 }
+
+#[test]
+#[ignore = "M067 probe"]
+fn probe_meter_vs_taps() {
+    let fx = fixture();
+    let mut r = rig(&fx.pair.degraded, all_strips(), config(Mode::Observe));
+    r.run(2.5 * SECONDS);
+    let m = r.ctl.measurement().unwrap().clone();
+    let st = r.ctl.meter_stats().unwrap().clone();
+    let ml = mix_engine::diagnosis::window_loudness(&m.main);
+    for t in &m.strips {
+        let l = mix_engine::diagnosis::window_loudness(&t.features) - ml;
+        let mr = st.rel_to_main_db(&t.strip);
+        let sm = st.strips.get(&t.strip);
+        eprintln!(
+            "{:10} {:14} loud {:+6.1} meter {:?} off {:?} active {:?} gr {:?}",
+            t.strip.as_str(),
+            t.source.clone().unwrap_or_default(),
+            l,
+            mr,
+            mr.map(|x| l - x),
+            sm.map(|x| x.active),
+            sm.and_then(|x| x.dyn_gr_db)
+        );
+    }
+}
