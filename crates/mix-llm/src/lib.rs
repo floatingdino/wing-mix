@@ -24,7 +24,8 @@ use serde::Deserialize;
 pub const NAME: &str = "mix-llm";
 
 /// Short replacement for the CLI's default system prompt (see [`LlmConfig::system_prompt`]).
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a component inside an audio-mixing tool. Answer only with JSON \
+pub const DEFAULT_SYSTEM_PROMPT: &str =
+    "You are a component inside an audio-mixing tool. Answer only with JSON \
 matching the requested schema. No prose, no tools.";
 
 /// Why a call produced no answer.
@@ -545,7 +546,9 @@ mod tests {
     fn system_prompt_replaces_default() {
         // Counts argv lines equal to the flag/value; only passes if both reach the child.
         let body = r#"n=$(printf '%s\n' "$@" | grep -c -x -e '--system-prompt' -e 'sys prompt here'); printf '{"is_error":false,"structured_output":{"x":%s}}' "$n""#;
-        let b = fake("sp", body, |c| c.system_prompt = Some("sys prompt here".into()));
+        let b = fake("sp", body, |c| {
+            c.system_prompt = Some("sys prompt here".into())
+        });
         assert_eq!(b.ask::<Out>("t", "{}", &schema()).unwrap().x, 2);
         let b = fake("nosp", body, |c| c.system_prompt = None);
         assert_eq!(b.ask::<Out>("t", "{}", &schema()).unwrap().x, 0);

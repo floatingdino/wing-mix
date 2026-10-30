@@ -1436,7 +1436,12 @@ name = "wing-mix-cli"
 version = "0.1.0"
 dependencies = [
  "mix-capture",
+ "mix-core",
+ "mix-describe",
  "mix-fixtures",
+ "mix-knowledge",
+ "mix-llm",
+ "serde_json",
 ]
 
 [[package]]

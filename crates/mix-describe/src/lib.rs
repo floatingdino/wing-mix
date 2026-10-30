@@ -80,7 +80,7 @@ fn tokens(s: &str) -> Vec<String> {
 fn clauses(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur: Vec<String> = Vec::new();
-    for chunk in text.split(|c| matches!(c, ',' | ';' | '.' | '+' | '&' | '\n' | '/')) {
+    for chunk in text.split([',', ';', '.', '+', '&', '\n', '/']) {
         for tok in chunk.split_whitespace() {
             if matches!(tok.to_lowercase().as_str(), "and" | "but" | "plus" | "with") {
                 if !cur.is_empty() {

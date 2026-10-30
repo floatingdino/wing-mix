@@ -204,7 +204,7 @@ fn validate<'a>(
     }
     for d in raw.deltas {
         let scope = norm_scope(&d.scope);
-        if !features.iter().any(|f| *f == d.feature) || scope.is_err() || !d.delta.is_finite() {
+        if !features.contains(&d.feature) || scope.is_err() || !d.delta.is_finite() {
             res.rejected
                 .push(format!("llm delta `{}` ({}) rejected", d.feature, d.delta));
             continue;

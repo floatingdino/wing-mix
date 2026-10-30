@@ -56,6 +56,7 @@ crates/mix-reference  reference ingest, sectioning, TargetProfile building, stem
 crates/mix-knowledge  mixing knowledge base (data/knowledge/*.toml) + typed access
 crates/mix-engine     diagnosis, planning, effect prediction, closed-loop controller
 crates/mix-actuator   move scheduler (ramps, batches, solo workflow), safety limits, undo/panic
+crates/mix-describe   text description -> TargetProfile (rules from vocabulary.toml; mix-llm for unknown phrasing)
 crates/mix-llm        Claude Code CLI bridge (optional)
 apps/wing-mixd        daemon; apps/wing-mix-cli: headless CLI (analyse, match, dry-run against sim)
 apps/WingMix          SwiftUI app
