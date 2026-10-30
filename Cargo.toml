@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mix-core",
+    "crates/mix-surface",
+    "crates/mix-wing",
+    "crates/mix-sim",
+    "crates/mix-analysis",
+    "crates/mix-capture",
+    "crates/mix-reference",
+    "crates/mix-knowledge",
+    "crates/mix-engine",
+    "crates/mix-actuator",
+    "crates/mix-llm",
+    "apps/wing-mixd",
+    "apps/wing-mix-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# wing-simulator crates, pinned to a rev (see docs/ARCHITECTURE.md). To co-develop locally, uncomment the [patch]
+# section below (it redirects every wing-simulator git dependency to ../wing-simulator).
+wing-proto = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+wing-model = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+wing-dsp = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+wing-blocks = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+wing-engine = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+
+# [patch."https://github.com/floatingdino/wing-simulator"]
+# wing-proto = { path = "../wing-simulator/crates/wing-proto" }
+# wing-model = { path = "../wing-simulator/crates/wing-model" }
+# wing-dsp = { path = "../wing-simulator/crates/wing-dsp" }
+# wing-blocks = { path = "../wing-simulator/crates/wing-blocks" }
+# wing-engine = { path = "../wing-simulator/crates/wing-engine" }
+
+# Offline closed-loop tests render the real wing-simulator DSP; unoptimised it is far too slow.
+[profile.dev.package.wing-blocks]
+opt-level = 2
+[profile.dev.package.wing-dsp]
+opt-level = 2
+[profile.dev.package.wing-engine]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1

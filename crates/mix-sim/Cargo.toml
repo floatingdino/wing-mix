@@ -1,0 +1,12 @@
+[package]
+name = "mix-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wing-model.workspace = true
+wing-dsp.workspace = true
+wing-blocks.workspace = true
+wing-engine.workspace = true
