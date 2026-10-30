@@ -62,6 +62,19 @@ public struct DaemonStatus: Decodable, Sendable, Equatable {
     public var session: Session?
     public var safety: Safety?
     public var lastError: String?
+    /// External tools (`uv`, `claude`) and where the daemon found them (nil path = missing).
+    public var tools: [String: Tool]?
+
+    public struct Tool: Decodable, Sendable, Equatable {
+        public var path: String?
+        public var `for`: String?
+    }
+
+    /// A tool the daemon could not find (`uv`, `claude`), nil when it is there or the daemon does not report tools.
+    public func missingTool(_ name: String) -> Tool? {
+        guard let t = tools?[name], t.path == nil else { return nil }
+        return t
+    }
 
     public static func decode(_ data: Data) throws -> DaemonStatus {
         try Wire.decoder.decode(DaemonStatus.self, from: data)

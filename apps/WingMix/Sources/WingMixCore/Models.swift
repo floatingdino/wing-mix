@@ -249,9 +249,17 @@ public struct ConsoleEntry: Decodable, Sendable, Equatable, Identifiable, Hashab
     public var model: String?
     public var serial: String?
     public var firmware: String?
-    public var id: String { kind == "sim" ? "sim" : (ip ?? name ?? kind) }
+    /// Native port when not 2222 (a wing-sim on this Mac lists its port).
+    public var port: Int?
+    /// A wing-sim running on this Mac (found through its status file).
+    public var local: Bool?
+    /// Scene the console reports (local wing-sim), used as the role-confirmation key.
+    public var scene: String?
+    public var id: String { kind == "sim" ? "sim" : (local == true ? "local" : (ip ?? name ?? kind)) }
     public var title: String {
-        kind == "sim" ? "Embedded simulator (wing-sim)" : "\(name ?? "WING") \(model.map { "(\($0))" } ?? "")"
+        if kind == "sim" { return "Embedded simulator (wing-sim)" }
+        if local == true { return "wing-sim on this Mac (\(name ?? "WING"))" }
+        return "\(name ?? "WING") \(model.map { "(\($0))" } ?? "")"
     }
 }
 
@@ -298,12 +306,21 @@ public struct RoleStrip: Decodable, Sendable, Equatable, Identifiable {
     public var evidence: [String]
     public var confirmed: String?
     public var needsConfirmation: Bool
+    /// Routing context only: the strip is not controllable on this console (e.g. the embedded sim's aux inputs).
+    public var context: Bool?
     public var id: String { strip }
     /// What the Remit screen offers: the confirmed role, else the detected one.
     public var proposed: String { confirmed ?? detected }
 }
 
 public struct RoleList: Decodable, Sendable, Equatable {
+    public struct ConsoleInfo: Decodable, Sendable, Equatable {
+        public var kind: String
+        public var name: String?
+        public var scene: String?
+    }
     public var key: String
+    /// Which console and scene the roles reflect.
+    public var console: ConsoleInfo?
     public var strips: [RoleStrip]
 }

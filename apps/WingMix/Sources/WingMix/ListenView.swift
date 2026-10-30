@@ -1,5 +1,15 @@
+import AppKit
 import SwiftUI
 import WingMixCore
+
+/// docs/user/setup-wing-simulator.md: the local checkout when the app knows it, else the repository on GitHub.
+func setupGuideURL() -> URL {
+    if let root = Bundle.main.object(forInfoDictionaryKey: DaemonPaths.repoRootKey) as? String, !root.isEmpty {
+        let f = URL(filePath: root).appending(path: "docs/user/setup-wing-simulator.md")
+        if FileManager.default.fileExists(atPath: f.path(percentEncoded: false)) { return f }
+    }
+    return URL(string: "https://github.com/floatingdino/wing-mix/blob/main/docs/user/setup-wing-simulator.md")!
+}
 
 /// Screen 2: which console and which audio input, and which console signal each channel pair carries.
 struct ListenView: View {
@@ -23,34 +33,52 @@ struct ListenView: View {
                 HStack {
                     ChoicePicker(title: "Console", selection: $model.selectedConsole,
                                  options: [("Embedded simulator", "sim")]
-                                     + model.consoles.filter { $0.kind != "sim" }.map { ("\($0.title)  \($0.ip ?? "")", $0.ip ?? $0.id) }
+                                     + model.consoles.filter { $0.kind != "sim" }.map {
+                                         ($0.local == true ? $0.title : "\($0.title)  \($0.ip ?? "")", $0.local == true ? "local" : ($0.ip ?? $0.id))
+                                     }
                                      + [("WING by IP address...", "ip")])
                     .frame(maxWidth: 420)
                     Button {
                         Task { await model.discoverConsoles() }
                     } label: {
-                        Label(model.discovering ? "Searching..." : "Discover WINGs", systemImage: "dot.radiowaves.left.and.right")
+                        Label(model.discovering ? "Searching..." : "Find consoles", systemImage: "dot.radiowaves.left.and.right")
                     }
                     .disabled(model.discovering)
                 }
                 if model.selectedConsole == "ip" {
                     TextBox(placeholder: "192.168.1.20", text: $model.wingIP).frame(width: 200)
                 }
+                if model.selectedConsole == "local" {
+                    Text("Your running wing-sim, over its native protocol on this Mac (127.0.0.1). Roles and moves use the scene it has loaded right now.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 if model.selectedConsole == "sim" {
                     HStack {
                         ChoicePicker(title: "Scene", selection: $model.simScene,
-                                     options: [("Degraded (needs mixing)", "degraded"), ("Factory", "factory"), ("Reference", "reference")])
+                                     options: [("Degraded demo (needs mixing)", "degraded"), ("Factory", "factory"),
+                                               ("Reference demo", "reference"), ("Scene file (.snap)...", "file")])
                             .frame(width: 280)
                         TextBox(placeholder: "Multitrack WAV (empty = built-in synthetic song)", text: $model.simMultitrack)
+                    }
+                    if model.simScene == "file" {
+                        HStack {
+                            TextBox(placeholder: "/path/to/MyShow.snap (e.g. a copy of your wing-sim state.snap)", text: $model.simScenePath)
+                            Button("Choose...") { chooseSnap() }
+                        }
+                    } else {
+                        Text("Demo scenes are not your console: to see your own buses, pick your running wing-sim or load your scene file.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 HStack {
                     Button(model.isConnectedToConsole ? "Reconnect" : "Connect") { Task { await model.connectConsole() } }
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.selectedConsole == "ip" && model.wingIP.isEmpty)
+                        .disabled((model.selectedConsole == "ip" && model.wingIP.isEmpty)
+                            || (model.selectedConsole == "sim" && model.simScene == "file" && model.simScenePath.isEmpty))
                     if model.isConnectedToConsole {
                         Button("Disconnect") { Task { await model.disconnectConsole() } }
-                        Label("Connected to \(model.status?.console?.name ?? "console")", systemImage: "checkmark.circle.fill")
+                        Label("Connected to \(model.status?.console?.name ?? "console") · scene \(model.status?.console?.scene ?? "?")",
+                              systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     }
                 }
@@ -76,6 +104,12 @@ struct ListenView: View {
                         Button("Refresh") { Task { await model.refreshDevices() } }
                     }
                     if let e = model.deviceError { Text(e).foregroundStyle(.red).font(.caption) }
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle").foregroundStyle(.secondary)
+                        Text("The device's input channels are the console's USB outputs. Patch Main 1 L/R and the monitor/solo bus to unused USB outs, then enter those channels here.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Link("Setup guide", destination: setupGuideURL()).font(.caption)
+                    }
                     tapEditor
                 }
                 HStack {
@@ -116,12 +150,37 @@ struct ListenView: View {
                         .buttonStyle(.borderless)
                         .disabled(t.tap == "main")
                 }
+                patchLine(t)
+            }
+            if model.status?.console?.kind == "wing" {
+                Button("Check console USB patch") { Task { await model.refreshUsbPatch() } }.buttonStyle(.link)
             }
             Button { model.taps.append(TapSpec(tap: "solo", channel: nextChannel, stereo: true)) } label: {
                 Label("Add tap", systemImage: "plus.circle")
             }
             .buttonStyle(.borderless)
         }
+    }
+
+    /// What the console sends to this tap's USB outs, and a warning when it is not what the tap claims.
+    @ViewBuilder func patchLine(_ t: TapSpec) -> some View {
+        let chans = t.stereo ? [t.channel, t.channel + 1] : [t.channel]
+        let got = chans.compactMap { c in model.usbPatch[c].map { "USB \(c) ← \(UsbPatch.describe(grp: $0.grp, input: $0.input))" } }
+        if !got.isEmpty {
+            Text(got.joined(separator: ",  ")).font(.caption).foregroundStyle(.secondary).padding(.leading, 4)
+        }
+        if let w = UsbPatch.warning(tap: t.tap, channels: chans, patch: model.usbPatch) {
+            Label(w, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    func chooseSnap() {
+        let p = NSOpenPanel()
+        p.allowedContentTypes = []
+        p.allowsOtherFileTypes = true
+        p.canChooseDirectories = false
+        p.message = "Choose a WING scene (.snap)"
+        if p.runModal() == .OK, let u = p.url { model.simScenePath = u.path(percentEncoded: false) }
     }
 
     var nextChannel: Int { min(maxChannels, (model.taps.map { $0.channel + ($0.stereo ? 2 : 1) }.max() ?? 1)) }

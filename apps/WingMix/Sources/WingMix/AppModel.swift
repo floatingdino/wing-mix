@@ -70,17 +70,35 @@ final class AppModel {
     var selectedConsole = "sim"
     var wingIP = ""
     var simScene = "degraded"
+    /// `simScene == "file"`: a scene file (.snap) loaded into the embedded simulator.
+    var simScenePath = ""
     var simMultitrack = ""
     /// Strip names given to the embedded sim (demo/screenshots); empty = the sim's own.
     var simNames: [String] = []
     var inputSource: InputSource = .sim
     var selectedDevice = ""
     var taps: [TapSpec] = [.defaultMain]
+    /// What the console patches to the USB outs used by `taps` (device channel = USB out number).
+    var usbPatch: [Int: (grp: String, input: Int)] = [:]
 
     // Remit
     var roles: RoleList?
     var roleOverrides: [String: String] = [:]
     var showOnlyUnconfirmed = false
+    /// Bulk editing (M065): selected strip ids, the shift-click anchor, the change list awaiting confirmation and
+    /// the batch that undoes the last applied bulk change.
+    var selectedStrips: Set<String> = []
+    var selectionAnchor: String?
+    var pendingBulk: [RoleBulk.Change] = []
+    var pendingBulkTitle = ""
+    var lastBulkUndo: JSONValue?
+    var lastBulkSummary = ""
+    var bulkRole = "monitor"
+    var bulkNameMatch = ""
+    var bulkRangeKind = "bus"
+    var bulkRangeFrom = 8
+    var bulkRangeTo = 16
+    var acceptThreshold = 0.85
 
     // Live
     var mode: MixMode = .observe
@@ -344,8 +362,12 @@ final class AppModel {
 
     func connectConsole() async {
         var args: [String: JSONValue]
-        if selectedConsole == "sim" {
-            var sim: [String: JSONValue] = ["scene": .string(simScene), "speed": 1]
+        if selectedConsole == "local", let e = consoles.first(where: { $0.local == true }) {
+            args = ["console": "wing", "ip": .string(e.ip ?? "127.0.0.1"), "scene": .string(e.scene ?? "running")]
+            if let p = e.port { args["port"] = .number(Double(p)) }
+        } else if selectedConsole == "sim" {
+            let scene = simScene == "file" ? simScenePath : simScene
+            var sim: [String: JSONValue] = ["scene": .string(scene), "speed": 1]
             if !simMultitrack.isEmpty { sim["multitrack"] = .string(simMultitrack) }
             if !simNames.isEmpty { sim["names"] = .array(simNames.map { .string($0) }) }
             args = ["console": "sim", "sim": .object(sim)]
@@ -361,6 +383,8 @@ final class AppModel {
     func disconnectConsole() async {
         await send("disconnect_console")
         roles = nil
+        selectedStrips = []
+        lastBulkUndo = nil
         await refreshStatus()
     }
 
@@ -374,14 +398,87 @@ final class AppModel {
         }
         await send("select_input", args)
         await refreshStatus()
+        await refreshUsbPatch()
     }
 
     // Remit
 
     func refreshRoles() async {
         guard let list = await fetch(RoleList.self, "list_roles") else { return }
+        if roles?.key != list.key {
+            selectedStrips = []
+            lastBulkUndo = nil
+        }
         roles = list
         roleOverrides = roleOverrides.filter { k, _ in list.strips.contains { $0.strip == k } }
+        selectedStrips = selectedStrips.filter { k in list.strips.contains { $0.strip == k } }
+    }
+
+    // Bulk role editing
+
+    /// Show `changes` for confirmation (nothing is sent yet).
+    func proposeBulk(_ title: String, _ changes: [RoleBulk.Change]) {
+        guard !changes.isEmpty else {
+            lastError = "\(title): nothing to change for the selection"
+            return
+        }
+        pendingBulkTitle = title
+        pendingBulk = changes
+    }
+
+    func cancelBulk() {
+        pendingBulk = []
+    }
+
+    /// Apply the confirmed change list as one `confirm_roles` batch; keep its undo.
+    func applyBulk() async {
+        let changes = pendingBulk
+        pendingBulk = []
+        guard !changes.isEmpty else { return }
+        let reply = await send("confirm_roles", ["roles": RoleBulk.batch(changes)])
+        if reply != nil {
+            lastBulkUndo = RoleBulk.undoBatch(fromReply: reply)
+            lastBulkSummary = "\(pendingBulkTitle): \(changes.count) strip\(changes.count == 1 ? "" : "s")"
+            for c in changes { roleOverrides[c.strip] = nil }
+        }
+        await refreshRoles()
+    }
+
+    /// Undo the last bulk change in one step.
+    func undoBulk() async {
+        guard let undo = lastBulkUndo else { return }
+        if await send("confirm_roles", ["roles": undo]) != nil {
+            lastBulkUndo = nil
+            lastBulkSummary = ""
+        }
+        await refreshRoles()
+    }
+
+    /// Click on a row: plain = only this one, Cmd = toggle, Shift = range from the anchor (in `order`).
+    func clickStrip(_ strip: String, command: Bool, shift: Bool, order: [String]) {
+        if shift, let a = selectionAnchor {
+            selectedStrips.formUnion(RoleBulk.span(order, from: a, to: strip))
+        } else if command {
+            if selectedStrips.contains(strip) { selectedStrips.remove(strip) } else { selectedStrips.insert(strip) }
+            selectionAnchor = strip
+        } else {
+            selectedStrips = selectedStrips == [strip] ? [] : [strip]
+            selectionAnchor = strip
+        }
+    }
+
+    /// USB-out patch of the device channels the taps use (WING / wing-sim only; the embedded sim has fixed taps).
+    func refreshUsbPatch() async {
+        guard status?.console?.kind == "wing" else {
+            usbPatch = [:]
+            return
+        }
+        let chans = Array(Set(taps.flatMap { $0.stereo ? [$0.channel, $0.channel + 1] : [$0.channel] })).sorted()
+        guard !chans.isEmpty, let r = try? await client.request("params", ["ids": .array(UsbPatch.paramIds(chans).map { .string($0) })]) else {
+            usbPatch = [:]
+            return
+        }
+        usbPatch = UsbPatch.parse(r, channels: chans)
     }
 
     /// Persist `roles` (strip -> role) via `confirm_roles`.
