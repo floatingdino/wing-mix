@@ -40,12 +40,10 @@ public struct ControlClient: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Send one request line and return the raw reply line; blocking (use `request` from async code).
-    public func sendLine(_ line: String, timeout: TimeInterval? = nil) throws(ControlError) -> String {
-        let timeout = timeout ?? self.timeout
+    /// Connect a Unix stream socket with send/receive timeouts. The caller closes the descriptor.
+    static func openSocket(path socketPath: String, timeout: TimeInterval) throws(ControlError) -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw .io(Self.errnoText("socket")) }
-        defer { close(fd) }
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         var tv = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - timeout.rounded(.down)) * 1e6))
@@ -56,7 +54,10 @@ public struct ControlClient: Sendable {
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(socketPath.utf8)
         let capacity = MemoryLayout.size(ofValue: addr.sun_path)
-        guard pathBytes.count < capacity else { throw .pathTooLong(socketPath) }
+        guard pathBytes.count < capacity else {
+            close(fd)
+            throw .pathTooLong(socketPath)
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in
             raw.copyBytes(from: pathBytes)
             raw[pathBytes.count] = 0
@@ -67,7 +68,19 @@ public struct ControlClient: Sendable {
                 connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard rc == 0 else { throw .io(Self.errnoText("connect \(socketPath)")) }
+        guard rc == 0 else {
+            let e = Self.errnoText("connect \(socketPath)")
+            close(fd)
+            throw .io(e)
+        }
+        return fd
+    }
+
+    /// Send one request line and return the raw reply line; blocking (use `request` from async code).
+    public func sendLine(_ line: String, timeout: TimeInterval? = nil) throws(ControlError) -> String {
+        let timeout = timeout ?? self.timeout
+        let fd = try Self.openSocket(path: socketPath, timeout: timeout)
+        defer { close(fd) }
 
         let request = Array((line.trimmingCharacters(in: .whitespacesAndNewlines) + "\n").utf8)
         var sent = 0
@@ -126,7 +139,7 @@ public struct ControlClient: Sendable {
         }
     }
 
-    private static func errnoText(_ what: String) -> String {
+    static func errnoText(_ what: String) -> String {
         "\(what): \(String(cString: strerror(errno)))"
     }
 }

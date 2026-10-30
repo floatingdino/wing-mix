@@ -139,9 +139,16 @@ public struct SafetyTrip: Decodable, Sendable, Equatable {
     public var reverted: JSONValue?
 }
 
+/// The console RTA the feedback guard listens to (`safety.rta_feed`; WING sessions only).
+public struct RtaFeed: Decodable, Sendable, Equatable {
+    public var frames: Int?
+    public var source: String?
+}
+
 public struct SnapshotSafety: Decodable, Sendable, Equatable {
     public var status: DaemonStatus.SafetyStatus?
     public var trips: [SafetyTrip] = []
+    public var rtaFeed: RtaFeed?
 }
 
 public struct SnapshotSession: Decodable, Sendable, Equatable {
@@ -165,6 +172,8 @@ public struct Snapshot: Decodable, Sendable, Equatable {
     public var atS: Double?
     public var mode: String?
     public var liveContext: String?
+    /// A target is loaded, so the live-context transform is active (otherwise only stored).
+    public var liveContextApplied: Bool?
     public var console: DaemonStatus.Console?
     public var target: SnapshotTarget?
     public var loudness: Loudness?
@@ -182,7 +191,7 @@ public struct Snapshot: Decodable, Sendable, Equatable {
     public var touched: [TouchedParam]
 
     enum CodingKeys: String, CodingKey {
-        case atS, mode, liveContext, console, target, loudness, spectrum, session, score, curve, problems, diagnosisNotes, plan,
+        case atS, mode, liveContext, liveContextApplied, console, target, loudness, spectrum, session, score, curve, problems, diagnosisNotes, plan,
              pending, moves, log, safety, touched
     }
 
@@ -191,6 +200,7 @@ public struct Snapshot: Decodable, Sendable, Equatable {
         atS = try c.decodeIfPresent(Double.self, forKey: .atS)
         mode = try c.decodeIfPresent(String.self, forKey: .mode)
         liveContext = try c.decodeIfPresent(String.self, forKey: .liveContext)
+        liveContextApplied = try c.decodeIfPresent(Bool.self, forKey: .liveContextApplied)
         console = try c.decodeIfPresent(DaemonStatus.Console.self, forKey: .console)
         target = try c.decodeIfPresent(SnapshotTarget.self, forKey: .target)
         loudness = try c.decodeIfPresent(Loudness.self, forKey: .loudness)
