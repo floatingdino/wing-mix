@@ -227,7 +227,9 @@ impl Analysis {
                     }
                     // Ask before locking the meters (the sim holds its own lock while rendering).
                     let solo = match (&surface, has_solo) {
-                        (Some(s), true) => Some(s.solo_state().map(|s| s.active).unwrap_or_default()),
+                        (Some(s), true) => {
+                            Some(s.solo_state().map(|s| s.active).unwrap_or_default())
+                        }
                         _ => None,
                     };
                     let mut g = lock(&m);

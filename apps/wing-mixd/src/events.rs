@@ -29,7 +29,11 @@ struct Log {
 
 impl Log {
     fn open(path: PathBuf) -> Log {
-        let file = OpenOptions::new().create(true).append(true).open(&path).ok();
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok();
         let bytes = file
             .as_ref()
             .and_then(|f| f.metadata().ok())
@@ -111,7 +115,14 @@ impl EventHub {
     /// The last `n` events matching `keep`, oldest first.
     pub fn recent(&self, n: usize, keep: impl Fn(&Value) -> bool) -> Vec<Value> {
         let st = self.st();
-        let mut v: Vec<Value> = st.recent.iter().rev().filter(|e| keep(e)).take(n).cloned().collect();
+        let mut v: Vec<Value> = st
+            .recent
+            .iter()
+            .rev()
+            .filter(|e| keep(e))
+            .take(n)
+            .cloned()
+            .collect();
         v.reverse();
         v
     }

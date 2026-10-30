@@ -33,7 +33,9 @@ pub fn unix_now() -> f64 {
 /// Write `bytes` to `path` atomically (temp file in the same directory + rename).
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let name = path.file_name().map_or("file".into(), |n| n.to_string_lossy().into_owned());
+    let name = path
+        .file_name()
+        .map_or("file".into(), |n| n.to_string_lossy().into_owned());
     let tmp = path.with_file_name(format!(
         ".{name}.tmp-{}-{}",
         std::process::id(),
@@ -134,11 +136,13 @@ mod tests {
             mode: "suggest".into(),
             ..Default::default()
         };
-        atomic_write(&dir.join(STATUS_FILE), serde_json::to_string(&st).unwrap().as_bytes())
-            .unwrap();
+        atomic_write(
+            &dir.join(STATUS_FILE),
+            serde_json::to_string(&st).unwrap().as_bytes(),
+        )
+        .unwrap();
         let back: DaemonStatus =
-            serde_json::from_str(&std::fs::read_to_string(dir.join(STATUS_FILE)).unwrap())
-                .unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.join(STATUS_FILE)).unwrap()).unwrap();
         assert_eq!(back, st);
         // no temp files left behind
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
@@ -146,7 +150,10 @@ mod tests {
         let mut r = RoleStore::load(&dir);
         assert!(r.consoles.is_empty());
         let k = RoleStore::key("sim", "default");
-        r.confirm(&k, &BTreeMap::from([(StripId::new("bus", 5), Role::Monitor)]));
+        r.confirm(
+            &k,
+            &BTreeMap::from([(StripId::new("bus", 5), Role::Monitor)]),
+        );
         r.save(&dir).unwrap();
         let r2 = RoleStore::load(&dir);
         assert_eq!(r2.roles(&k)[&StripId::new("bus", 5)], Role::Monitor);

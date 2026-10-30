@@ -30,3 +30,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+mix-sim = { path = "../../crates/mix-sim" }
+mix-capture = { path = "../../crates/mix-capture" }
+serde_json = { workspace = true }

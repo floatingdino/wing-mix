@@ -91,8 +91,8 @@ impl Source {
 
     /// Play a WAV file in real time, looping, with the given taps.
     pub fn file(path: &Path, layout: TapLayout) -> Result<(Source, Consumer), String> {
-        let sel = ChannelSelection::from_indices(layout.selection.clone())
-            .map_err(|e| e.to_string())?;
+        let sel =
+            ChannelSelection::from_indices(layout.selection.clone()).map_err(|e| e.to_string())?;
         let src = FileSource::open(path, &sel).map_err(|e| format!("{}: {e}", path.display()))?;
         if src.frames() == 0 {
             return Err(format!("{}: no audio", path.display()));
@@ -158,9 +158,7 @@ impl Source {
         let (st, pr) = (stop.clone(), produced.clone());
         let join = std::thread::Builder::new()
             .name("mixd-sim".into())
-            .spawn(move || {
-                sim_loop(&sim, &points, producer, loop_frames, speed, sr, &st, &pr)
-            })
+            .spawn(move || sim_loop(&sim, &points, producer, loop_frames, speed, sr, &st, &pr))
             .map_err(|e| e.to_string())?;
         Ok((
             Source {

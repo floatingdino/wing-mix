@@ -95,11 +95,11 @@ impl ControlServer {
                     match listener.accept() {
                         Ok((conn, _)) => {
                             let (d, st) = (d.clone(), st.clone());
-                            let _ = std::thread::Builder::new()
-                                .name("mixd-conn".into())
-                                .spawn(move || {
+                            let _ = std::thread::Builder::new().name("mixd-conn".into()).spawn(
+                                move || {
                                     let _ = serve(conn, &*d, &st);
-                                });
+                                },
+                            );
                         }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(20));
@@ -150,10 +150,9 @@ fn serve(conn: sock::Stream, d: &dyn Dispatch, stop: &AtomicBool) -> io::Result<
         }
         let (text, subscribe) = match Request::parse_line(&line) {
             Err((e, id)) => (reply(id, Err(e)), false),
-            Ok((Request::Subscribe, id)) => (
-                reply(id, Ok(serde_json::json!({"subscribed": true}))),
-                true,
-            ),
+            Ok((Request::Subscribe, id)) => {
+                (reply(id, Ok(serde_json::json!({"subscribed": true}))), true)
+            }
             Ok((req, id)) => (reply(id, d.dispatch(req)), false),
         };
         if subscribe {

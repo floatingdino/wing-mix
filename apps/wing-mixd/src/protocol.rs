@@ -306,8 +306,8 @@ mod tests {
             Request::EmergencyStop
         );
         assert_eq!(Request::parse_line("PANIC").unwrap().0, Request::Panic);
-        let (r, id) = Request::parse_line(r#"{"cmd":"set_mode","mode":"autopilot","id":7}"#)
-            .unwrap();
+        let (r, id) =
+            Request::parse_line(r#"{"cmd":"set_mode","mode":"autopilot","id":7}"#).unwrap();
         assert_eq!(
             r,
             Request::SetMode {

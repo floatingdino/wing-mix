@@ -32,7 +32,9 @@ impl Tap {
                     }
                     return Ok(Tap::Monitor { name: n.into() });
                 }
-                let id = StripId::parse(s).ok_or_else(|| format!("unknown tap `{s}` (main, solo, input.N, monitor:NAME)"))?;
+                let id = StripId::parse(s).ok_or_else(|| {
+                    format!("unknown tap `{s}` (main, solo, input.N, monitor:NAME)")
+                })?;
                 Ok(Tap::Strip { strip: id })
             }
         }

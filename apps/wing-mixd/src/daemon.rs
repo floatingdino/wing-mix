@@ -16,8 +16,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use mix_actuator::{
-    spawn as spawn_actuator, Actuator, ActuatorConfig, ActuatorEvent, ActuatorHandle, Job,
-    MoveId, PolicyGate, SafetyConfig, SafetyGate, SafetyMonitor,
+    spawn as spawn_actuator, Actuator, ActuatorConfig, ActuatorEvent, ActuatorHandle, Job, MoveId,
+    PolicyGate, SafetyConfig, SafetyGate, SafetyMonitor,
 };
 use mix_core::bands::{BandLayout, THIRD_OCT_CENTRES_HZ};
 use mix_core::ids::{ParamId, StripId};
@@ -352,7 +352,10 @@ impl Daemon {
     }
 
     fn run(mut self) {
-        self.emit("daemon", &json!({"type": "started", "pid": std::process::id()}));
+        self.emit(
+            "daemon",
+            &json!({"type": "started", "pid": std::process::id()}),
+        );
         while !self.quit {
             match self.rx.recv_timeout(Duration::from_millis(10)) {
                 Ok(m) => self.handle(m),
@@ -587,13 +590,20 @@ impl Daemon {
             "inputs": console.sim.as_ref().map(|s| s.inputs.clone()),
         });
         self.console = Some(console);
-        self.emit("daemon", &json!({"type": "console_connected", "console": out}));
+        self.emit(
+            "daemon",
+            &json!({"type": "console_connected", "console": out}),
+        );
         Ok(out)
     }
 
     fn disconnect(&mut self) {
         self.end_session();
-        if self.input.as_ref().is_some_and(|i| i.kind == InputKind::Sim) {
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|i| i.kind == InputKind::Sim)
+        {
             self.input = None;
         }
         if self.console.take().is_some() {
@@ -740,7 +750,12 @@ impl Daemon {
                     "notes": desc.notes,
                     "llm_used": desc.llm_used,
                 });
-                let _ = tx.send(LoadMsg::Done(Ok((desc.profile, "description", d.text, info))));
+                let _ = tx.send(LoadMsg::Done(Ok((
+                    desc.profile,
+                    "description",
+                    d.text,
+                    info,
+                ))));
             })
             .map_err(err)?;
         Ok(json!({"loading": true}))
@@ -798,7 +813,10 @@ impl Daemon {
             }
             Err(e) => {
                 self.last_error = Some(format!("load: {e}"));
-                self.emit("daemon", &json!({"type": "load_failed", "what": what, "error": e}));
+                self.emit(
+                    "daemon",
+                    &json!({"type": "load_failed", "what": what, "error": e}),
+                );
                 Err(e)
             }
         };
@@ -1046,7 +1064,8 @@ impl Daemon {
                 ActuatorEvent::Stopped => s.stopped = true,
                 ActuatorEvent::Ready => s.stopped = false,
                 ActuatorEvent::Safety { trip, reverted } => {
-                    s.trips.push(json!({"at_s": now, "trip": trip, "reverted": reverted}));
+                    s.trips
+                        .push(json!({"at_s": now, "trip": trip, "reverted": reverted}));
                 }
                 _ => {}
             }
@@ -1077,7 +1096,10 @@ impl Daemon {
         let c = self.console.as_ref().ok_or("no console")?;
         let mut out = serde_json::Map::new();
         for id in ids {
-            let v = c.surface.read(&ParamId::new(id.as_str())).map_err(|e| format!("{id}: {e}"))?;
+            let v = c
+                .surface
+                .read(&ParamId::new(id.as_str()))
+                .map_err(|e| format!("{id}: {e}"))?;
             out.insert(id.clone(), serde_json::to_value(v).map_err(err)?);
         }
         Ok(Value::Object(out))
@@ -1157,9 +1179,10 @@ impl Daemon {
             out["session"]["budget"] = json!(ctl.budget_used());
             out["score"] = json!(ctl.score());
             out["curve"] = json!(ctl.curve());
-            out["problems"] = json!(ctl
-                .diagnosis()
-                .map(|d| d.problems.iter().take(20).collect::<Vec<_>>()));
+            out["problems"] =
+                json!(ctl
+                    .diagnosis()
+                    .map(|d| d.problems.iter().take(20).collect::<Vec<_>>()));
             out["diagnosis_notes"] = json!(ctl.diagnosis().map(|d| d.notes.clone()));
             out["plan"] = json!(ctl.planned());
             out["pending"] = self.pending()["pending"].clone();
@@ -1288,7 +1311,10 @@ fn connect_sim(o: SimOptions, scene: String) -> Result<Console, String> {
             };
             (
                 mix_sim::synth::generate(&spec).0,
-                mix_sim::synth::TRACKS.iter().map(|s| s.to_string()).collect(),
+                mix_sim::synth::TRACKS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
             )
         }
         Some(path) => {
@@ -1301,7 +1327,13 @@ fn connect_sim(o: SimOptions, scene: String) -> Result<Console, String> {
                     name: format!("CH {}", c + 1),
                     channel: c as u8 + 1,
                     usb: c as u8 + 1,
-                    audio: w.samples.iter().skip(c).step_by(w.channels).copied().collect(),
+                    audio: w
+                        .samples
+                        .iter()
+                        .skip(c)
+                        .step_by(w.channels)
+                        .copied()
+                        .collect(),
                 })
                 .collect();
             (
@@ -1380,7 +1412,10 @@ fn load_reference_job(
     let name = path
         .file_name()
         .map_or_else(|| r.path.clone(), |n| n.to_string_lossy().into_owned());
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    {
         let _ = tx.send(LoadMsg::Progress("reading profile".into(), 0.5));
         let p = read_profile(path)?;
         return Ok((p, "reference", name, json!({"profile": true})));
@@ -1397,8 +1432,8 @@ fn load_reference_job(
                     .send(LoadMsg::Progress("stems".into(), 0.1 + 0.8 * f as f64));
             })
         });
-        let (p, st) = mix_stems::profile_with_stems(path, r.section, Some(&cache), sep)
-            .map_err(err)?;
+        let (p, st) =
+            mix_stems::profile_with_stems(path, r.section, Some(&cache), sep).map_err(err)?;
         (p, Some(format!("{st:?}")))
     } else {
         let opts = mix_reference::ProfileOptions {
