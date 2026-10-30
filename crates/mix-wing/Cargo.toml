@@ -6,5 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mix-core = { path = "../mix-core" }
+mix-surface = { path = "../mix-surface" }
 wing-proto.workspace = true
 wing-model.workspace = true
+# Only for `wing_blocks::meter::DynMeterLaw` (gate/dyn GR meter-word laws per model).
+wing-blocks.workspace = true

@@ -1,32 +1,23 @@
-//! mix-wing: WING adapter: OSC client, tree mapping, meters/RTA.
+//! mix-wing: the Behringer WING adapter (docs/research/wing-control.md).
 //!
-//! Scaffold only (M001); implemented by later backlog tasks.
+//! - [`client`]: native protocol client (TCP 2222 via `wing_proto::nrp`): keepalive, get/set, change events, a
+//!   local `wing_model::ParamStore` mirror synchronised by a `DA DC` dump plus gets of the `$` live leaves.
+//! - [`map`]: WING tree <-> generic [`mix_surface::ParamId`] / class mapping (remit.md appendix A.1), slot params
+//!   named through the active model.
+//! - [`convert`]: descriptor -> [`mix_surface::ParamSpec`], WING <-> generic values, knowledge-value clamps.
+//! - [`topology`]: generic [`mix_surface::Topology`] (names, tags, chain, sends, inserts, outputs, re-inputs,
+//!   talkback, FX slots) for role detection.
+//! - [`meters`]: channel-3 meter subscription with renewal, UDP receiver, frame decoding (levels, GR, solo, RTA).
+//! - [`discovery`]: UDP `WING?` discovery.
+//! - [`surface`]: [`WingSurface`], the [`mix_surface::Surface`] implementation (solo save/clear/restore, solo-mode
+//!   refusal, RTA claim/restore).
 
-/// Crate name, used by the scaffold smoke test.
-pub const NAME: &str = "mix-wing";
+pub mod client;
+pub mod convert;
+pub mod discovery;
+pub mod map;
+pub mod meters;
+pub mod surface;
+pub mod topology;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn scaffold_name() {
-        assert_eq!(super::NAME, "mix-wing");
-    }
-}
-
-#[cfg(test)]
-mod proto_tests {
-    use wing_proto::osc::{Arg, Message};
-
-    #[test]
-    fn wing_proto_codec_roundtrip() {
-        let msg = Message::new("/ch/1/fdr", vec![Arg::Float(-6.0)]);
-        let back = Message::decode(&msg.to_vec()).unwrap();
-        assert_eq!(back, msg);
-    }
-
-    #[test]
-    fn wing_model_schema_loads() {
-        // wing-model embeds its schema blob via include_bytes!; touching a path proves it built as a git dep.
-        assert!(wing_model::Schema::get().param_count() > 1000);
-    }
-}
+pub use surface::{ConnectOptions, RtaClaim, WingSurface};

@@ -769,6 +769,9 @@ dependencies = [
 name = "mix-wing"
 version = "0.1.0"
 dependencies = [
+ "mix-core",
+ "mix-surface",
+ "wing-blocks",
  "wing-model",
  "wing-proto",
 ]
