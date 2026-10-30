@@ -757,3 +757,43 @@ fn band_kinds_come_from_the_type_param() {
     assert_eq!(kinds, vec![LowCut, LowShelf, Peq, HighShelf]);
     assert!(eq.band(state::BandSlot::Low).is_none());
 }
+
+#[test]
+fn preferred_boost_matches_the_knowledge_base() {
+    let kb = KnowledgeBase::embedded();
+    assert_eq!(PREFERRED_BOOST_DB, kb.eq.limits.preferred_boost_db.hi());
+}
+
+/// M039: a 9 dB guitar boost feeding the guitar stem's low-mid excess counts in the objective while the console
+/// shows it, and the plan takes the boost back on that band.
+#[test]
+fn boost_into_excess_is_counted_and_taken_back() {
+    let kb = KnowledgeBase::embedded();
+    let s = muddy_guitar(kb);
+    let cfg = PlanConfig::from_kb(kb);
+    let d = diagnose(
+        &DiagnosisInput::new(&s.main, &s.target).with_strips(&s.taps),
+        kb,
+        &cfg.diagnosis,
+    )
+    .unwrap();
+    let state = ConsoleState::capture(&s.surface).unwrap();
+    let with = score_with(&d, cfg.target_weight, Some(&state));
+    let without = score(&d, cfg.target_weight);
+    assert!(
+        with.objective > without.objective + 0.01,
+        "{} vs {}",
+        with.objective,
+        without.objective
+    );
+    // once the excess is answered (the boost taken back or the band cut around it) the term is gone
+    let p = run(&s, &policy(), &RemitSession::default(), &cfg, kb);
+    assert!(
+        p.moves()
+            .any(|m| m.strip.as_str() == "input.4" && m.phase.ends_with("eq")),
+        "{p:#?}"
+    );
+    let mut flat = state.clone();
+    flat.apply(&[ParamChange::new("input.4/eq/band.1.gain", 3.0)]);
+    assert!(score_with(&d, cfg.target_weight, Some(&flat)).objective < with.objective - 0.01);
+}

@@ -958,18 +958,6 @@ impl<'k> Controller<'k> {
                 if !has(self) && !fresh {
                     self.make_plan(PlanReason::Exhausted);
                 }
-                if std::env::var("M039_DBG").is_ok() {
-                    for b in &self.plan {
-                        eprintln!(
-                            "  below-target plan: {} gain {:.3}",
-                            b.mv.action.label,
-                            b.predicted_gain()
-                        );
-                    }
-                    for p in &self.pending {
-                        eprintln!("  below-target pending: {}", p.summary.label);
-                    }
-                }
                 has(self)
             };
             if !worthwhile {

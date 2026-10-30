@@ -7,6 +7,9 @@
 //! of the rough start, the closed loop and the engineer's recorded FOH mix of the same window to that target.
 //!
 //! Slow (decodes the references, ~24 analysed taps per window): ignored, `make check-full` runs it in release.
+//! Diagnostics: `M036_VERBOSE=1` (main diagnoses of the closed loop and the FOH mix), `M039_STRIPS=1` (each strip's
+//! end state: source, level at the main, fader/pan, image), `M039_LOAD=1` (the loop's last measured problems by
+//! score), `SONG=<id>` (one song).
 
 mod common;
 mod loop_harness;
@@ -211,13 +214,6 @@ fn run_song(fx: &Fixture, id: &'static str, cache: &ProfileCache) -> Option<Song
             }
         }
     }
-    if std::env::var("M039_ACT").is_ok() {
-        for (t, e) in &r.act_log {
-            let s = format!("{e:?}");
-            eprintln!("  act {t:7.1} {}", &s[..s.len().min(400)]);
-        }
-    }
-
     let start = console_with(&ex.multitrack, &scene, SimConfig::default()).unwrap();
     let f_start = render_main(&start, frames, sr);
     let f_ctl = render_main(&r.sim, frames, sr);

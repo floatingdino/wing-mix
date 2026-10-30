@@ -439,6 +439,12 @@ fn levels(cx: &mut Ctx<'_>, srcs: &[Src<'_>], groups: &BTreeMap<StemKind, Vec<us
         let Some(src) = s.tap.source.as_deref().and_then(|x| cx.kb.source(x)) else {
             continue;
         };
+        // M039: an ungated tom's session level is kit bleed between fills, not its level in the mix (the kb range
+        // is for the hits); on the real multitrack every tom read 12-16 LU "too quiet" and the planner cut eight
+        // other faders to lift a bleed mic. Gating them is M035's gate opportunity.
+        if SPARSE_SOURCES.contains(&src.id.as_str()) {
+            continue;
+        }
         let r = src.level_rel_mix_lu;
         let scopes = s.scopes(cx);
         let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();

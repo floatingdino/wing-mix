@@ -266,13 +266,6 @@ impl Rig {
         if self.t >= self.next_feed {
             self.next_feed = self.t + 0.5;
             let f = SimMeter::snap(&mut self.meter.main, "main", Window::Momentary);
-            if std::env::var("M039_FB").is_ok() && self.t > 40.0 && self.t < 53.0 {
-                let s = &f.spectrum.third_oct_mid_db;
-                eprintln!(
-                    "fb t {:5.1} pos {:5.2} b4 {:6.1} b5 {:6.1} b6 {:6.1} b7 {:6.1} b8 {:6.1} b9 {:6.1} b11 {:6.1} b12 {:6.1}",
-                    self.t, self.sim.position() as f64 / 48000.0, s[4], s[5], s[6], s[7], s[8], s[9], s[11], s[12]
-                );
-            }
             self.monitor.feed_mains(&f);
         }
         for _ in 0..TICKS {
