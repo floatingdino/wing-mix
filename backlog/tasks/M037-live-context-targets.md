@@ -2,7 +2,7 @@
 id: M037
 title: Live-context targets: de-master references, alignment sanity check
 stage: S3
-status: review
+status: done
 owner: agent-M037
 depends: [M034]
 branch: task/M037
@@ -94,3 +94,4 @@ calibration. Use the video mix (55/56) as a second human baseline for the broadc
     low_mid high on every song) look like room/PA voicing; a venue curve (description or remit) rather than
     record matching. (5) holy-forever bridge 7 (bass +23.7 dB, tilt -3.7) passes the sanity check; a full
     tonal-distance check could catch it. (6) M050: wire the setting (default live) and show `context:*` terms.
+- 2026-10-31 coordinator: merged, make check passes. done. Daemon wiring → M054.
