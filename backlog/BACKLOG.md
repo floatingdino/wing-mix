@@ -25,6 +25,7 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M016 | Reference mixes: profiles + song alignment | M014, M022 | opus |
 | M017 | Real fixture: non-input tracks (FOH + video mix taps) | M012, M014 | sonnet |
 | M018 | mix-wing follow-ups: reconnect, preamp alias, shared mapping | M011, M012, M013 | sonnet |
+| M019 | mix-wing: correct change Origin + reconnect diff events | M018 | sonnet |
 
 ## S2 — Analysis & targets
 

@@ -58,3 +58,4 @@ Also (from M031): fix the ```ignore doctest in crates/mix-surface/src/remit/mod.
   (seen for source.a.5/g in the in-process console; pre-existing, not investigated); (2) shared-source flag on
   strips when several channels/outputs use the same source (remit A.3); (3) expose the preamp alias in SimSurface;
   (4) on Reconnected the mirror diff is not emitted as ParamChanged (consumers re-read, as the actuator does).
+- 2026-10-30 coordinator: merged, make check passes. done. Origin mislabel + reconnect diff events → M019.
