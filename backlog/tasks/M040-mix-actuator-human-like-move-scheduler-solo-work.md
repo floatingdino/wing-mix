@@ -2,10 +2,10 @@
 id: M040
 title: mix-actuator: human-like move scheduler + solo workflow
 stage: S4
-status: todo
-owner: -
+status: in_progress
+owner: agent-M040
 depends: [M010]
-branch: -
+branch: task/M040
 model: opus
 ---
 
@@ -21,3 +21,4 @@ Coordinator note (from M004): capture the session-start baseline of every touche
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M040: started on task/M040 (.worktrees/M040). Plan: core Actuator (virtual-clock tick), ramp math, RemitGate/PolicyGate, thread runner, FakeSurface tests, tick bench.
