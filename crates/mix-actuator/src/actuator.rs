@@ -115,6 +115,9 @@ pub struct Actuator {
     tokens: f64,
     idle_until: f64,
     baseline: BTreeMap<ParamId, Value>,
+    /// Where PANIC returns a param: its session baseline, re-based to the engineer's value whenever they move it
+    /// (their move is theirs; the envelope/safety `baseline` is not re-based).
+    restore_to: BTreeMap<ParamId, Value>,
     last_written: BTreeMap<ParamId, Value>,
     cooldowns: BTreeMap<ParamId, f64>,
     history: Vec<History>,
@@ -168,6 +171,7 @@ impl Actuator {
             tokens,
             idle_until: 0.0,
             baseline: BTreeMap::new(),
+            restore_to: BTreeMap::new(),
             last_written: BTreeMap::new(),
             cooldowns: BTreeMap::new(),
             history: Vec::new(),
@@ -277,17 +281,25 @@ impl Actuator {
             .baseline
             .iter()
             .filter(|(p, _)| self.last_written.contains_key(*p))
-            .map(|(p, v)| (p.clone(), v.clone()))
+            .map(|(p, v)| (p.clone(), self.restore_to.get(p).unwrap_or(v).clone()))
             .collect();
         for (param, base) in touched {
             let tol = self.tolerance(&param);
             let Ok(current) = self.surface.read(&param) else {
                 continue;
             };
+            let ours = &self.last_written[&param];
             if current.approx_eq(&base, tol) {
+                if self.restore_to.contains_key(&param) && !current.approx_eq(ours, tol) {
+                    // the engineer's value stays: reported, as before the re-base
+                    conflicts.push(Conflict {
+                        param,
+                        expected: ours.clone(),
+                        found: current,
+                    });
+                }
                 continue;
             }
-            let ours = &self.last_written[&param];
             if current.approx_eq(ours, tol) {
                 changes.push(ParamChange::new(param, base));
             } else {
@@ -463,6 +475,10 @@ impl Actuator {
                 }
                 in_move = true;
             }
+        }
+        if self.baseline.contains_key(&param) {
+            // the engineer's value is where PANIC returns this param from now on
+            self.restore_to.insert(param.clone(), value.clone());
         }
         if in_move || self.baseline.contains_key(&param) {
             self.journal.note_external(param.clone(), value.clone());

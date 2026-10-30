@@ -465,3 +465,35 @@ fn panic_over_more_params_than_the_write_burst_completes() {
         w.len()
     );
 }
+
+/// M063: the engineer moved a param the tool had touched and the tool later moved it again: PANIC returns it to the
+/// engineer's value (their move is the new baseline), not to the pre-session value.
+#[test]
+fn panic_returns_a_re_moved_param_to_the_engineers_value() {
+    let mut r = Rig::new(ActuatorConfig::default());
+    assert_eq!(r.readf("input.2/fader"), 0.0);
+    r.a.submit(mv("fader 2", "input.2/fader", -3.0));
+    r.run_idle(10.0);
+    // the engineer takes the fader over
+    r.s.external_set(&p("input.2/fader"), f(-9.0)).unwrap();
+    r.tick();
+    // after the cool-down the tool plans it again
+    r.run_for(ActuatorConfig::default().external_cooldown_s + 1.0);
+    r.a.submit(mv("fader 2 again", "input.2/fader", -10.0));
+    r.run_idle(10.0);
+    assert_eq!(r.readf("input.2/fader"), -10.0);
+    let id = r.a.panic();
+    r.run_idle(20.0);
+    assert!(r.done(id), "{:#?}", r.log);
+    assert_eq!(
+        r.readf("input.2/fader"),
+        -9.0,
+        "PANIC must not undo the engineer's move"
+    );
+    // the envelope/safety baseline is not re-based
+    assert_eq!(
+        r.a.baseline()[&p("input.2/fader")],
+        f(0.0),
+        "safety baseline unchanged"
+    );
+}

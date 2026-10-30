@@ -197,3 +197,7 @@ console before starting (it is the ground truth for step 9).
 
 If any step fails: STOP/PANIC, save `<state-dir>/events.jsonl` and `status.json`, and file it against M052's
 follow-ups.
+
+## Follow-up M063
+
+Fixed: gap 2 (RTA claim echoes are Local), gap 4 (post-resume warm-up), gap 5 (absolute band floor -70 -> -90 dB, relative floor only), gap 6 (PANIC re-bases to the engineer's value). See docs/safety.md. Regression tests: `mix-wing` `wing_sim_rta_claim_is_not_an_engineer_move`, `mix-actuator` `panic_returns_a_re_moved_param_to_the_engineers_value`, `no_feedback_verdict_on_the_stub_of_history_after_resume`, `building_sine_in_a_quiet_mix_is_caught_as_early_as_in_a_louder_one`. Re-run `tools/e2e/run.sh` to confirm end to end.

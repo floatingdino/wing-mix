@@ -572,3 +572,34 @@ fn wing_sim_actuator_writes_the_model_switch_before_the_blocks_params() {
     };
     common::model_switch_is_written_before_the_blocks_params(std::sync::Arc::new(d.connect()));
 }
+
+/// M063: the claim's own RTA writes (and its restore) are never reported as engineer (External) moves, even
+/// when the console echoes them back.
+#[test]
+fn wing_sim_rta_claim_is_not_an_engineer_move() {
+    let Some(d) = daemon_or_skip("wing_sim_rta_claim_is_not_an_engineer_move") else {
+        return;
+    };
+    let s = d.connect();
+    let rx = s.subscribe();
+    {
+        let _c = s
+            .claim_rta(&mix_surface::surface::RtaSource {
+                strip: StripId::new("input", 2),
+                tap: "post_eq".into(),
+            })
+            .unwrap();
+        sync2(&s, &s);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    sync2(&s, &s);
+    std::thread::sleep(Duration::from_millis(300));
+    let bad: Vec<_> = rx
+        .try_iter()
+        .filter(|e| {
+            matches!(e, mix_surface::SurfaceEvent::ParamChanged { param, origin: mix_surface::surface::Origin::External, .. }
+                if param.as_str().starts_with("system/cfg/rta"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:?}");
+}

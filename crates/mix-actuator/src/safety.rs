@@ -103,6 +103,15 @@ pub struct FeedbackConfig {
     /// M036: bands more than this far below the frame's loudest band are ignored (besides `floor_db`).
     #[serde(default = "default_relative_floor_db")]
     pub relative_floor_db: f64,
+    /// M063: after `resume` the spectrum history starts empty; no verdict (not even *suspect*) is given until
+    /// this much new history exists, so the tail of what the operator just stopped (a decaying tone, the mix
+    /// settling) cannot read as a rise on a 1.5 s stub of history. 0 = off.
+    #[serde(default = "default_resume_warmup_s")]
+    pub resume_warmup_s: f64,
+}
+
+fn default_resume_warmup_s() -> f64 {
+    4.0
 }
 
 fn default_relative_floor_db() -> f64 {
@@ -188,7 +197,7 @@ impl Default for SafetyConfig {
                 rise_db: 9.0,
                 max_rate_db_per_s: 15.0,
                 monotonic_share: 0.8,
-                floor_db: -70.0,
+                floor_db: -90.0,
                 suspect_fraction: 0.5,
                 level_rise_share: default_level_rise_share(),
                 recent_s: default_recent_s(),
@@ -196,6 +205,7 @@ impl Default for SafetyConfig {
                 reject_harmonic: true,
                 harmonic_window_db: default_harmonic_window_db(),
                 relative_floor_db: default_relative_floor_db(),
+                resume_warmup_s: default_resume_warmup_s(),
             },
             watchdog: WatchdogConfig {
                 require_analysis: true,
@@ -341,13 +351,16 @@ impl SafetyStatus {
 struct Detector {
     frames: VecDeque<(f64, Vec<f32>)>,
     suspect: bool,
+    /// No verdict before this frame time (post-resume warm-up).
+    warm_until: f64,
 }
 
 impl Detector {
-    fn new() -> Self {
+    fn new(warm_until: f64) -> Self {
         Detector {
             frames: VecDeque::new(),
             suspect: false,
+            warm_until,
         }
     }
 }
@@ -503,6 +516,8 @@ struct MonState {
     last_feed: Option<f64>,
     detectors: BTreeMap<String, Detector>,
     feedback_latched: bool,
+    /// `clear_latches` ran: detectors created from now on warm up first.
+    resumed: bool,
     loudness_hold: bool,
     peak_hold: bool,
     stall_hold: bool,
@@ -532,10 +547,15 @@ impl MonState {
             return;
         }
         let cfg = self.cfg.feedback;
+        let warm_until = if self.resumed {
+            t + cfg.resume_warmup_s
+        } else {
+            f64::NEG_INFINITY
+        };
         let det = self
             .detectors
             .entry(source.to_string())
-            .or_insert_with(Detector::new);
+            .or_insert_with(|| Detector::new(warm_until));
         if det.frames.back().is_some_and(|(_, f)| f.len() != db.len()) {
             det.frames.clear();
         }
@@ -547,7 +567,11 @@ impl MonState {
         {
             det.frames.pop_front();
         }
-        let hit = det.evaluate(&cfg);
+        let hit = if t < det.warm_until {
+            None
+        } else {
+            det.evaluate(&cfg)
+        };
         det.suspect = hit.is_some();
         if let Some(h) = hit.filter(|h| h.trip) {
             if !self.feedback_latched {
@@ -579,6 +603,7 @@ impl SafetyMonitor {
             last_feed: None,
             detectors: BTreeMap::new(),
             feedback_latched: false,
+            resumed: false,
             loudness_hold: false,
             peak_hold: false,
             stall_hold: false,
@@ -693,6 +718,7 @@ impl SafetyMonitor {
     pub fn clear_latches(&self) {
         let mut s = self.st();
         s.feedback_latched = false;
+        s.resumed = true;
         s.detectors.clear();
         s.stall_stopped = false;
     }

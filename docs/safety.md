@@ -47,7 +47,9 @@ neighbouring bands (peak-to-neighbouring-power ratio, PNPR; M039: it was a dB me
 e.g. a bass line moving from 50 to 80 Hz, made the new note look 12 dB prominent and stopped a real-song closed loop;
 flat neighbours give the same value as before), and trips when all hold over the window:
 
-- prominence now >= 12 dB, and band level >= -70 dB;
+- prominence now >= 12 dB, and band level >= `floor_db` (-90 dB, M063: just above the analyser's noise floor; it was
+  -70 dB, which hid a rising tone on quiet programmes until it was far above the mix. Sensitivity to the programme
+  level now comes only from the relative floor below, so the guard works the same on a -40 LUFS mix as on a loud one);
 - prominence rose >= 9 dB over the window (span >= 1.5 s);
 - the rise is **gradual**: no frame-to-frame step steeper than 15 dB/s (+1 dB), and >= 80% of steps do not fall.
 
@@ -62,6 +64,11 @@ must also hold:
 - **no harmonic partner** (`reject_harmonic`): no other band at 1/3, 1/2, 2, 3 or 4 times its frequency
   (third-octave offsets -5, -3, +3, +5, +6) is itself narrowband (>= the suspect prominence) within 25 dB of its
   level. A note has partials; incipient feedback is a sine.
+
+- **post-resume warm-up** (M063, `resume_warmup_s` 4 s): `resume` clears the history, and for the next
+  `resume_warmup_s` of frames no verdict (not even *suspect*) is given: music gained prominence on the stub of
+  history left after the operator's STOP (e2e: a false trip at 100 Hz 2 s after resuming). A genuine build-up that
+  continues is caught as soon as the warm-up ends; the start of a session is not delayed.
 
 A note onset is a step (rejected), a mix swelling overall has no prominence, a held tone has no rise. A slow
 single-note swell of a pure tone can look like feedback: that error is on the safe side (STOP + revert, `resume` to
@@ -104,6 +111,21 @@ were changed on the console meanwhile; they are yielded to the engineer (cool-do
 `write_log` keeps the last `write_log_cap` (10 000) records, dropping the oldest quarter at a time
 (`Actuator::write_log_dropped()` counts them); the undo stack keeps `history_cap` (256) moves. The full audit trail
 is the event stream and the journal (M050 persists and rotates them). The `Journal` itself is unbounded.
+
+## PANIC and the engineer's moves (M063)
+
+PANIC ramps each touched param back to its **session baseline**, except that the baseline is *re-based* to the
+engineer's value whenever the engineer moves the param (`Actuator::restore_to`; the safety/envelope baseline used for
+the boost limits is not re-based). So if the engineer takes a fader over and the tool later moves it again, PANIC
+returns it to the engineer's value, never to the pre-session one; a param the engineer left alone after the
+tool's last write is reported as a conflict and not touched, as before.
+
+## Own config writes are not engineer moves (M063)
+
+The RTA claim/restore writes `cfg/rta/rtasrc|rtatap`, and the console mirrors them into the live `$src`/`$tap`
+leaves and echoes them. `WingSurface` remembers its own config-node writes for 2 s and reports their echoes as
+`Origin::Local`, so they no longer appear as `engineer_moved` / start a cool-down / re-plan (a real engineer write to
+the RTA source within 2 s of ours is swallowed too: acceptable for a system config node).
 
 ## RTA source save/restore
 
