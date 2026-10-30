@@ -2,7 +2,7 @@
 id: M011
 title: mix-wing: WING adapter (OSC client, topology, solo, meters)
 stage: S1
-status: review
+status: done
 owner: agent-M011
 depends: [M010, M002]
 branch: task/M011
@@ -63,3 +63,4 @@ Coordinator note (from M015): knowledge values are generic; the WING adapter/pla
      send_tap as `tap.pon`, forbidden by default).
   4. Shared WING path layer for mix-sim (M012): reuse `mix_wing::{map, convert, topology}` over its in-process store
      (they only need a `ParamStore`), so SimSurface and WingSurface name params identically.
+- 2026-10-30 coordinator: cherry-picked, make check passes. done. Follow-ups → M018 (reconnect, preamp alias, shared mapping with mix-sim); hardware checks → HUMAN-ACTIONS #6.
