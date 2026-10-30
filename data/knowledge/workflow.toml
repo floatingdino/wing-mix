@@ -1,0 +1,386 @@
+# Wing Mix knowledge base: workflow order, shared vocabulary, loudness/headroom targets, source registry.
+# Rationale and citations for every rule: docs/research/mix-knowledge.md (section "workflow.toml").
+#
+# This file is the ROOT of the knowledge base: it defines the shared feature names, block names, units and the
+# condition grammar used by every other data/knowledge/*.toml file. Other files reference these names only.
+
+[schema]
+version = 1
+file = "workflow"
+description = "Processing order, phase gating, loudness/headroom targets, and the shared vocabulary (features, blocks, condition grammar, sources) for all knowledge files."
+units = { db = "decibel (ratio)", dbfs = "dB re digital full scale (sample peak or RMS as named)", dbtp = "dB true peak (ITU-R BS.1770 4x oversampled)", lufs = "loudness units re full scale (ITU-R BS.1770)", lu = "loudness units (relative)", hz = "hertz", ms = "milliseconds", s = "seconds", pct = "percent 0..100", ratio = "compression ratio N meaning N:1", oct = "octaves", db_per_oct = "dB per octave" }
+
+# Condition grammar (used by every `when` / `when_any` list in all knowledge files)
+#   condition = { feature = "<feature name>", op = "<" | "<=" | ">" | ">=" | "between" | "outside", value = number | [lo, hi] }
+#   `when`     = list of conditions, all must hold (AND)
+#   `when_any` = list of conditions, at least one must hold (OR). Both present => when AND when_any.
+#   Feature names may carry a dotted suffix: `band_dev_db.low_mid`, `masking_db.presence`.
+#   `<self>` in a feature means the strip being considered; `<other>` the competing strip (masking rules).
+[schema.condition]
+ops = ["<", "<=", ">", ">=", "between", "outside"]
+fields = { feature = "string, a name from [features] (with optional .band suffix)", op = "string, one of ops", value = "number, or [lo, hi] for between/outside" }
+
+# Action grammar (used by every `action` / `actions` entry in all knowledge files)
+#   action = { block = "<block>", ...block-specific params as [lo, hi] ranges or scalars... }
+#   Ranges are [min, max] in the units implied by the param suffix (_hz, _db, _ms, _pct, _s, _oct).
+#   A scalar means "exactly this"; a range means "choose within, start at the geometric/arithmetic midpoint
+#   for _hz / other units respectively, then refine closed-loop".
+#   `threshold_rel` names a measured statistic and `threshold_offset_db` the offset from it (dB), so thresholds are
+#   expressed relative to signal statistics, never as absolute console values.
+[schema.action]
+fields = { block = "string, a name from [blocks]", param_suffixes = "_hz Hz (log), _db dB, _ms ms, _pct %, _s s, _oct octaves, q dimensionless (RBJ bandwidth Q)", max_change_per_step = "optional, the largest single move the planner should make before re-measuring" }
+
+# ---------------------------------------------------------------------------------------------------------------
+# Shared vocabulary: generic processing blocks (mix-surface ProcessingBlock), NOT console paths.
+# Capability notes are the WING channel capabilities (wing-simulator docs/research/models.md) so the planner knows
+# what a typical surface offers; adapters report the real capabilities at runtime.
+[blocks.Trim]
+params = ["gain_db"]
+note = "Input gain staging (preamp/digital trim). WING: preamp -3..+45.5 dB on source, channel trim -18..+18 dB."
+[blocks.Filter]
+params = ["kind", "freq_hz", "slope_db_per_oct"]
+kinds = ["hpf", "lpf"]
+note = "Low cut / high cut. WING ch: LC 20..2000 Hz, 6/12/18/24 dB/oct; HC 50..20000 Hz, 6/12 dB/oct."
+[blocks.Gate]
+params = ["mode", "threshold_rel", "threshold_offset_db", "range_db", "attack_ms", "hold_ms", "release_ms", "expander_ratio", "sidechain_hpf_hz", "sidechain_lpf_hz"]
+modes = ["gate", "expander", "ducker"]
+note = "WING GATE: thr -80..0 dB, range 3..60 dB, att 0..120 ms, hold 1..1000 ms, rel 4..4000 ms, ratio 1:1.5..1:4 or gate."
+[blocks.Eq]
+params = ["band", "type", "freq_hz", "gain_db", "q"]
+types = ["peq", "low_shelf", "high_shelf"]
+bands = ["low", "1", "2", "3", "4", "high", "any_free"]
+note = "WING ch STD EQ: low + high band (PEQ or shelf) + 4 PEQ; gain +/-15 dB, 20..20000 Hz, Q 0.44..10. Bus/main: 6 PEQ + tilt."
+[blocks.Dyn]
+params = ["kind", "threshold_rel", "threshold_offset_db", "target_gr_db", "ratio", "knee_db", "attack_ms", "release_ms", "detector", "makeup_db", "mix_pct", "freq_hz", "q", "range_db"]
+kinds = ["compressor", "limiter", "deesser", "dynamic_eq", "expander"]
+note = "WING COMP: thr -60..0 dB, ratio 1.1..100, att 0..120 ms, rel 4..4000 ms, PEAK/RMS, mix 0..100 %, makeup -6..+12 dB. DEQ: one band, thr -60..0, ratio 1.2..10. DS902 de-esser: 800..8000 Hz, range 0..12 dB."
+[blocks.Send]
+params = ["target", "level_db", "tap"]
+taps = ["pre", "post"]
+note = "Send from a strip to a bus. Send-FX on WING = an FX slot inserted on a bus fed by sends (signal-flow.md)."
+[blocks.Fader]
+params = ["level_db"]
+note = "Strip fader, WING -inf..+10 dB."
+[blocks.Pan]
+params = ["position_pct", "width_pct"]
+note = "-100 (L) .. +100 (R). WING pan -100..+100, width -150..+150 %."
+[blocks.FxSlot]
+params = ["model_class", "decay_s", "predelay_ms", "size", "lo_cut_hz", "hi_cut_hz", "damping_hz", "time_ms", "feedback_pct", "mix_pct"]
+model_classes = ["hall", "room", "plate", "chamber", "ambience", "spring", "delay_stereo", "delay_tape", "delay_tap", "chorus", "doubler", "pitch"]
+note = "WING: 16 stereo slots; reverbs/delays/modulation only in slots 1-8."
+
+# ---------------------------------------------------------------------------------------------------------------
+# Shared vocabulary: measurable features (computed by mix-analysis, M020; definitions refined by M003).
+# Every band feature is a deviation from a target. The target is the TargetProfile's long-term average spectrum
+# (reference mix or genre curve), loudness-normalised and smoothed to 1/3 octave; `band_dev_db.<band>` =
+# (signal band energy - target band energy) in dB, after matching integrated loudness.
+[bands]
+# name = [lo_hz, hi_hz]; contiguous, log-spaced roughly by octave, named with the words engineers use.
+sub        = [20, 60]
+bass       = [60, 120]
+low_mid_lo = [120, 250]     # "warmth / body"
+low_mid    = [250, 500]     # "mud"
+mid        = [500, 1000]    # "box / honk"
+upper_mid  = [1000, 2000]   # "nasal / horn"
+presence   = [2000, 5000]   # "presence / harshness"
+brilliance = [5000, 10000]  # "sibilance / crispness"
+air        = [10000, 20000] # "air / sheen"
+
+[features]
+band_dev_db          = { unit = "db", per = "band", doc = "Band energy minus TargetProfile band energy after loudness matching; tonal-balance target smoothed to 1/3 oct, averaged over >= 10 s (long-term) or 3 s (short-term)." }
+band_rel_db          = { unit = "db", per = "band", doc = "Band energy of a strip relative to its own full-band energy (shape only, no target needed)." }
+tilt_dev_db_per_oct  = { unit = "db_per_oct", doc = "Slope of a least-squares line through band_dev_db over 100 Hz..10 kHz (positive = brighter than target)." }
+spectral_centroid_hz = { unit = "hz", doc = "Power-weighted mean frequency; brightness correlate." }
+resonance_db         = { unit = "db", doc = "Prominence of the largest narrow peak (<= 1/6 oct wide) above the 1/3-oct-smoothed long-term spectrum of a strip; resonance_hz gives its frequency." }
+resonance_hz         = { unit = "hz", doc = "Frequency of resonance_db." }
+lufs_i               = { unit = "lufs", doc = "Integrated loudness (BS.1770 gated)." }
+lufs_s               = { unit = "lufs", doc = "Short-term loudness (3 s window)." }
+lufs_m               = { unit = "lufs", doc = "Momentary loudness (400 ms)." }
+lra_lu               = { unit = "lu", doc = "Loudness range (EBU Tech 3342)." }
+true_peak_dbtp       = { unit = "dbtp", doc = "Maximum true peak." }
+peak_dbfs            = { unit = "dbfs", doc = "Sample peak over the analysis window (95th percentile of 400 ms block peaks unless stated)." }
+rms_dbfs             = { unit = "dbfs", doc = "RMS level over active (above noise floor) 400 ms blocks." }
+crest_db             = { unit = "db", doc = "peak_dbfs - rms_dbfs over active blocks; high = transient/dynamic, low = dense/compressed." }
+plr_db               = { unit = "db", doc = "Peak-to-loudness ratio: true_peak_dbtp - lufs_i (mix level)." }
+noise_floor_dbfs     = { unit = "dbfs", doc = "10th percentile of 50 ms RMS blocks (bleed/noise level when the source is idle)." }
+activity_pct         = { unit = "pct", doc = "Share of 50 ms blocks more than 12 dB above noise_floor_dbfs." }
+level_rel_mix_lu     = { unit = "lu", doc = "Strip short-term loudness minus mix short-term loudness, averaged over the strip's active blocks." }
+level_dev_lu         = { unit = "lu", doc = "level_rel_mix_lu minus the TargetProfile's value for that source (per stem when stems exist)." }
+gr_db                = { unit = "db", doc = "Gain reduction currently applied by a Dyn/Gate block (from surface meters or prediction)." }
+sibilance_db         = { unit = "db", doc = "95th-pct short-term (20 ms) energy 5..10 kHz minus 1..4 kHz energy of the same block (vocals)." }
+transient_db         = { unit = "db", doc = "Mean onset-envelope peak minus sustain level 50..150 ms after onset; punch correlate." }
+onset_density_hz     = { unit = "hz", doc = "Detected onsets per second." }
+correlation          = { unit = "ratio", doc = "L/R Pearson correlation, -1..+1, averaged over active blocks." }
+low_correlation      = { unit = "ratio", doc = "L/R correlation below 120 Hz." }
+side_to_mid_db       = { unit = "db", doc = "Side (L-R) energy minus mid (L+R) energy; width correlate. Mono = -inf." }
+width_dev_db         = { unit = "db", doc = "side_to_mid_db minus target." }
+masking_db           = { unit = "db", per = "band", doc = "Masking of <self> by <other> in a band: other's band energy minus self's band energy where both are active in the same 400 ms blocks (Hafezi & Reiss style simplified measure); positive = self masked." }
+reverb_rel_db        = { unit = "db", doc = "FX-return loudness minus the dry mix loudness (when the FX return is metered)." }
+reverb_rel_dev_db    = { unit = "db", doc = "reverb_rel_db minus TargetProfile estimate (reference DRR proxy, see M003)." }
+hum_db               = { unit = "db", doc = "Energy at 50/60 Hz and first 3 harmonics minus 1/3-oct neighbourhood." }
+feedback_risk_db     = { unit = "db", doc = "Live: a narrow, growing, sustained peak (> 10 dB prominence, rising) - ring/feedback candidate." }
+
+# ---------------------------------------------------------------------------------------------------------------
+# Workflow order. The planner (M032) never schedules a phase while a lower-numbered phase on the same strip has an
+# open problem above its `gate_tolerance`. Within a phase, problems are sorted by severity (|deviation| x weight).
+[[phase]]
+order = 1
+id = "gain_staging"
+blocks = ["Trim"]
+goal = "Each input sits in the console's sweet spot so later thresholds and fader positions are meaningful."
+done_when = [ { feature = "peak_dbfs", op = "between", value = [-18.0, -6.0] } ]
+gate_tolerance = { feature = "peak_dbfs", op = "<=", value = -1.0 }
+note = "Gain changes move every downstream threshold: re-derive Gate/Dyn thresholds after any Trim move (they are relative to signal stats)."
+sources = ["katz2015", "owsinski2017", "behringer_wing"]
+
+[[phase]]
+order = 2
+id = "cleanup_filter"
+blocks = ["Filter"]
+goal = "Remove content below the source's useful range (rumble, stage/handling noise, bleed) and above it where noise/bleed dominate."
+done_when = [ { feature = "band_rel_db.sub", op = "<=", value = -18.0 } ]
+note = "Per-source HPF ranges in sources.toml. Exempt sources whose fundamental lives in the band (kick, bass, sub synth, playback)."
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[phase]]
+order = 3
+id = "gate_expand"
+blocks = ["Gate"]
+goal = "Reduce bleed/noise between notes on sources with high activity contrast (toms, kick, snare, noisy amps)."
+note = "Only when noise_floor_dbfs is >= 20 dB below peak and activity_pct < 60; otherwise gating is audible (dynamics.toml)."
+sources = ["senior2011", "sos_gates"]
+
+[[phase]]
+order = 4
+id = "corrective_eq"
+blocks = ["Eq"]
+goal = "Narrow cuts on resonances/ring and broad cuts on mud/box/harsh regions; cut before boost."
+note = "eq.toml corrective rules; only cuts here."
+sources = ["senior2011", "izhaki2018", "owsinski2017"]
+
+[[phase]]
+order = 5
+id = "dynamics"
+blocks = ["Dyn"]
+goal = "Control level variance and shape transients per source; de-ess vocals."
+note = "dynamics.toml. Compression after corrective EQ so the detector does not react to removed mud/resonance."
+sources = ["senior2011", "giannoulis2012", "izhaki2018"]
+
+[[phase]]
+order = 6
+id = "tonal_eq"
+blocks = ["Eq"]
+goal = "Broad, small boosts/cuts that move each source and the mix towards the tonal target; masking resolution."
+note = "eq.toml tonal + masking rules; vocabulary.toml deltas apply here."
+sources = ["senior2011", "hafezi2015", "pestana2013"]
+
+[[phase]]
+order = 7
+id = "balance"
+blocks = ["Fader", "Pan"]
+goal = "Relative levels and panorama towards target (level_dev_lu, width_dev_db)."
+note = "Pan before final fader trims (panning changes perceived level via the pan law). Low-frequency sources stay centred."
+sources = ["pestana2014", "wakefield2015", "owsinski2017"]
+
+[[phase]]
+order = 8
+id = "space_fx"
+blocks = ["Send", "FxSlot"]
+goal = "Depth and ambience via send FX towards the target's reverb/delay proxy."
+note = "fx.toml. Last because reverb masks detail and its level depends on dry balance."
+sources = ["senior2011", "izhaki2018", "owsinski2017"]
+
+[[phase]]
+order = 9
+id = "bus_master"
+blocks = ["Dyn", "Eq", "Fader"]
+goal = "Gentle mix-bus glue and output level/peak safety; only if Remit allows main-bus processing (conditional)."
+note = "Optional; main bus processing is `conditional` in the default remit (ARCHITECTURE.md)."
+sources = ["katz2015", "senior2011"]
+
+# Iteration policy, consumed by the closed-loop controller (M033).
+[iteration]
+revisit_lower_phases_after = ["dynamics", "balance"]  # these change inputs to earlier decisions; re-check tone
+max_moves_per_strip_per_pass = 3
+settle_s = [1.5, 4.0]          # wait after a move before re-measuring (short-term loudness window is 3 s)
+keep_if_distance_reduced_by = 0.05   # keep a move only if normalised target distance improves by >= 5 %
+
+# ---------------------------------------------------------------------------------------------------------------
+# Loudness and headroom targets.
+[targets.channel]
+peak_dbfs           = [-18.0, -6.0]   # pre-fader input peaks after gain staging (digital console practice)
+rms_dbfs            = [-30.0, -18.0]  # average/RMS region; -18 dBFS ~ 0 VU alignment (EBU R68 style)
+clip_guard_dbfs     = -3.0            # any input peak above this => reduce Trim first
+sources = ["katz2015", "ebu_r68", "behringer_wing"]
+
+[targets.mix_bus]
+peak_dbfs           = [-12.0, -3.0]   # main bus pre-limiter peak region for a live mix
+true_peak_max_dbtp  = -1.0
+sources = ["katz2015", "itu_bs1770"]
+
+[targets.delivery]
+# For recording/streaming taps of the main mix (not live SPL). The planner uses the selected profile only to
+# bound main-bus moves; the TargetProfile from a reference overrides tonal/dynamic shape, not these ceilings.
+live_main           = { true_peak_max_dbtp = -1.0, plr_db = [8.0, 16.0], note = "live FOH: protect output, keep dynamics; SPL is a venue matter" }
+streaming_spotify   = { lufs_i = -14.0, true_peak_max_dbtp = -1.0, note = "Spotify normalises to -14 LUFS; louder masters are turned down" }
+streaming_apple     = { lufs_i = -16.0, true_peak_max_dbtp = -1.0 }
+streaming_aes       = { lufs_i = [-18.0, -16.0], true_peak_max_dbtp = -1.0, note = "AES TD1004 range for streaming/network playback" }
+broadcast_ebu       = { lufs_i = -23.0, tolerance_lu = 0.5, true_peak_max_dbtp = -1.0, note = "EBU R128" }
+broadcast_atsc      = { lufs_i = -24.0, tolerance_lu = 2.0, true_peak_max_dbtp = -2.0, note = "ATSC A/85" }
+sources = ["ebu_r128", "itu_bs1770", "aes_td1004", "spotify_loudness", "atsc_a85"]
+
+[targets.reference_matching]
+# How the reference is compared: both mix and reference are loudness-normalised before spectral comparison so
+# loudness differences do not appear as tonal differences.
+normalise_to_lufs   = -23.0
+band_tolerance_db   = { sub = 3.0, bass = 2.0, low_mid_lo = 2.0, low_mid = 2.0, mid = 2.0, upper_mid = 2.0, presence = 2.0, brilliance = 2.5, air = 3.0 }
+tilt_tolerance_db_per_oct = 0.5
+level_tolerance_lu  = 1.0
+width_tolerance_db  = 2.0
+crest_tolerance_db  = 2.0
+note = "Inside tolerance => no problem raised (M031). Values are just-noticeable-difference-ish bands widened for live programme variance."
+sources = ["pestana2013", "moore2012", "matchering_concept"]
+
+# ---------------------------------------------------------------------------------------------------------------
+# Source registry: keys referenced by `sources = [...]` in every knowledge file. Full discussion in
+# docs/research/mix-knowledge.md. Books are cited, not quoted.
+[sources.senior2011]
+title = "Mixing Secrets for the Small Studio"
+author = "Mike Senior"
+year = 2011
+publisher = "Focal Press (2nd ed. 2018)"
+[sources.owsinski2017]
+title = "The Mixing Engineer's Handbook (4th ed.)"
+author = "Bobby Owsinski"
+year = 2017
+publisher = "Bobby Owsinski Media Group"
+[sources.izhaki2018]
+title = "Mixing Audio: Concepts, Practices and Tools (3rd ed.)"
+author = "Roey Izhaki"
+year = 2018
+publisher = "Routledge"
+[sources.katz2015]
+title = "Mastering Audio: The Art and the Science (3rd ed.)"
+author = "Bob Katz"
+year = 2015
+publisher = "Focal Press"
+[sources.gibson2019]
+title = "The Art of Mixing (3rd ed.)"
+author = "David Gibson"
+year = 2019
+publisher = "Routledge"
+[sources.moore2012]
+title = "An Introduction to the Psychology of Hearing (6th ed.)"
+author = "Brian C. J. Moore"
+year = 2012
+publisher = "Brill / Emerald"
+[sources.giannoulis2012]
+title = "Digital Dynamic Range Compressor Design - A Tutorial and Analysis"
+author = "D. Giannoulis, M. Massberg, J. D. Reiss"
+year = 2012
+venue = "J. Audio Eng. Soc. 60(6), 399-408"
+[sources.pestana2014]
+title = "Intelligent audio production strategies informed by best practices"
+author = "P. D. Pestana, J. D. Reiss"
+year = 2014
+venue = "AES 53rd Int. Conf. on Semantic Audio, London, pp. 300-308"
+url = "https://aes2.org/publications/elibrary-page/?id=17121"
+[sources.pestana2013]
+title = "Spectral characteristics of popular commercial recordings 1950-2010"
+author = "P. D. Pestana, Z. Ma, J. D. Reiss, A. Barbosa, D. A. A. Black"
+year = 2013
+venue = "AES 135th Convention, paper 8960"
+url = "https://aes2.org/publications/elibrary-page/?id=17010"
+[sources.hafezi2015]
+title = "Autonomous multitrack equalization based on masking reduction"
+author = "S. Hafezi, J. D. Reiss"
+year = 2015
+venue = "J. Audio Eng. Soc. 63(5), 312-323"
+url = "https://aes2.org/publications/elibrary-page/?id=17637"
+[sources.wakefield2015]
+title = "An investigation into the efficacy of methods commonly employed by mix engineers to reduce frequency masking in the mixing of multitrack musical recordings"
+author = "J. Wakefield, C. Dewey"
+year = 2015
+venue = "AES 138th Convention, paper 9341"
+url = "https://aes2.org/publications/elibrary-page/?id=17765"
+[sources.stables2014]
+title = "SAFE: A system for the extraction and retrieval of semantic audio descriptors"
+author = "R. Stables, S. Enderby, B. De Man, G. Fazekas, J. D. Reiss"
+year = 2014
+venue = "ISMIR 2014 (late-breaking demo)"
+url = "https://www.open-access.bcu.ac.uk/3255/"
+[sources.deman2016]
+title = "Semantic description of timbral transformations in music production"
+author = "R. Stables, B. De Man, S. Enderby, J. D. Reiss, G. Fazekas, T. Wilmering"
+year = 2016
+venue = "ACM Multimedia 2016"
+url = "https://qmro.qmul.ac.uk/xmlui/handle/123456789/22150"
+[sources.cartwright2013]
+title = "Social-EQ: crowdsourcing an equalization descriptor map"
+author = "M. Cartwright, B. Pardo"
+year = 2013
+venue = "ISMIR 2013"
+url = "https://archives.ismir.net/ismir2013/paper/000173.pdf"
+[sources.zacharakis2014]
+title = "An interlanguage study of musical timbre semantic dimensions and their acoustic correlates"
+author = "A. Zacharakis, K. Pastiadis, J. D. Reiss"
+year = 2014
+venue = "Music Perception 31(4), 339-358"
+[sources.saitis2019]
+title = "The semantics of timbre (in Timbre: Acoustics, Perception, and Cognition, Springer Handbook of Auditory Research 69)"
+author = "C. Saitis, S. Weinzierl"
+year = 2019
+venue = "Springer"
+[sources.ebu_r128]
+title = "EBU R 128 Loudness normalisation and permitted maximum level of audio signals"
+author = "EBU"
+year = 2020
+url = "https://tech.ebu.ch/publications/r128"
+[sources.ebu_r68]
+title = "EBU R 68 Alignment level in digital audio production equipment"
+author = "EBU"
+year = 2000
+url = "https://tech.ebu.ch/publications/r068"
+[sources.itu_bs1770]
+title = "ITU-R BS.1770-5 Algorithms to measure audio programme loudness and true-peak audio level"
+author = "ITU-R"
+year = 2023
+url = "https://www.itu.int/rec/R-REC-BS.1770"
+[sources.aes_td1004]
+title = "AES TD1004.1.15-10 Recommendation for Loudness of Audio Streaming and Network File Playback"
+author = "AES Technical Committee on Broadcasting and Online Delivery"
+year = 2015
+url = "https://www.aes.org/technical/documents/AESTD1004_1_15_10.pdf"
+[sources.atsc_a85]
+title = "ATSC A/85 Techniques for Establishing and Maintaining Audio Loudness for Digital Television"
+author = "ATSC"
+year = 2013
+url = "https://www.atsc.org/atsc-documents/a85-techniques-for-establishing-and-maintaining-audio-loudness/"
+[sources.spotify_loudness]
+title = "Loudness normalization on Spotify (Spotify for Artists help)"
+author = "Spotify"
+year = 2024
+url = "https://support.spotify.com/artists/article/loudness-normalization/"
+[sources.sos_gates]
+title = "Sound On Sound technique articles on gates/expanders and compression set-up (e.g. 'Gates & Expanders', 'Compression Made Easy')"
+author = "Sound On Sound (P. White, M. Senior et al.)"
+year = 2008
+url = "https://www.soundonsound.com/techniques"
+[sources.shure_mics]
+title = "Shure educational publications: Microphone Techniques for Recording / for Live Sound Reinforcement"
+author = "Shure Inc."
+year = 2014
+url = "https://www.shure.com/en-US/insights"
+[sources.behringer_wing]
+title = "Behringer WING manual + wing-simulator docs/research/models.md, signal-flow.md (capabilities and ranges)"
+author = "Behringer / wing-simulator project"
+year = 2025
+[sources.matchering_concept]
+title = "Matchering (reference-based matching, GPL; concept only, no code reuse)"
+author = "S. Grigoriev"
+year = 2016
+url = "https://github.com/sergree/matchering"
+[sources.practice]
+title = "Common engineering practice (consensus across senior2011, owsinski2017, izhaki2018); low-confidence heuristic"
+author = "-"
+year = 0
