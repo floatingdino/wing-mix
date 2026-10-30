@@ -16,14 +16,17 @@
 //!    (400 ms) loudness against the integrated level − 20 LU decides which frames are *active* (their mean power is
 //!    the spectrum's level), frame crest per 3 s, post-onset (≤ 64 ms) power ratio, short-term (3 s) loudness range,
 //!    all-frames RMS, inactive-frame (floor) power, sample peak. Weighting filters are ignored (broadband).
-//! 3. **Fit**: coordinate descent over (`tau`, `duty`, `rest`, `floor`) on a fixed grid to the measured frame
-//!    crest, attack ratio and active share, then the slow amplitude to the LRA, then the level to the active RMS.
-//! 4. **Run**: the fitted envelope is rendered at 8 kHz on a 180 Hz carrier (floor on 1.37 kHz) and processed by
+//! 3. **Fit**: per event rate (×1, ×0.7, ×0.5, ×0.35 of the measured onset rate, which also counts re-attacks),
+//!    coordinate descent over (`tau`, `duty`, `body`, `rest`) on a fixed grid to the measured frame crest, attack
+//!    ratio and active share; the lowest error wins; then the slow amplitude to the LRA, the level to the active
+//!    RMS. A resolvable floor ([`floor_estimate`]) is kept at its measured level.
+//! 4. **Run**: the fitted envelope is rendered at 8 kHz on a harmonic carrier (1/n, 6 harmonics) at the strip's
+//!    strongest band (40..400 Hz; floor on a 1.37 kHz sine) and processed by
 //!    the console's own blocks ([`crate::plan::TransferModel::run_dynamics`]: wing-blocks `Gate`/`Dynamics`);
 //!    predicted changes are measured-on-output minus measured-on-input deltas.
 //!
-//! Limits [I]: one broadband level process per strip (no per-band dynamics), sine carriers (waveform crest 3 dB;
-//! peak-detector behaviour on high-crest waveforms is underestimated), deterministic seed (same strip statistics →
+//! Limits [I]: one broadband level process per strip (no per-band dynamics), a fixed harmonic carrier (the
+//! PEAK detector's reading of real waveforms differs), deterministic seed (same strip statistics →
 //! same proxy). Accuracy against SimSurface renders is measured in `tests/dyn_sim.rs` (M035 log).
 
 #![allow(clippy::needless_range_loop)] // per-sample/per-frame DSP arithmetic over parallel arrays
@@ -50,13 +53,19 @@ const EVENT_ATTACK_MS: f64 = 5.0;
 const EVENT_RELEASE_MS: f64 = 20.0;
 const EVENT_SD_DB: f64 = 2.0;
 const SLOW_PERIOD_S: f64 = 6.0;
-const CARRIER_HZ: f64 = 180.0;
 const FLOOR_HZ: f64 = 1370.0;
 /// BS.1770 absolute gate as power (−70 dB).
 const ABS_GATE: f64 = 1e-7;
 
 const TAUS: [f64; 8] = [0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 2.0, 1000.0];
 const DUTIES: [f64; 4] = [0.25, 0.5, 0.75, 0.95];
+/// Event rate relative to the measured onset rate (flux onset detection also counts clicks/re-attacks).
+const RATES: [f64; 4] = [1.0, 0.7, 0.5, 0.35];
+/// Body share (amplitude) of an event that decays 8x slower than its transient.
+const BODIES: [f64; 4] = [0.0, 0.15, 0.3, 0.5];
+/// Harmonic amplitudes of the carrier (1/n, normalised to the sine's mean square): a voice/instrument-like
+/// waveform crest instead of a sine's 3 dB.
+const HARMONICS: usize = 6;
 const RESTS: [f64; 5] = [0.0, 0.125, 0.25, 0.375, 0.5];
 
 fn db(x: f64) -> f64 {
@@ -84,6 +93,9 @@ pub struct ProxyTarget {
     pub onset_hz: f64,
     /// Floor (bleed/noise between events, mean power dB) when the measurement resolves one ([`floor_estimate`]).
     pub floor_db: Option<f64>,
+    /// Carrier fundamental (Hz): the centre of the strip's strongest ERB band (40..400 Hz), so detector ripple
+    /// (WING's 20 ms RMS detector on a 50 Hz kick) is reproduced.
+    pub carrier_hz: f64,
 }
 
 impl ProxyTarget {
@@ -109,6 +121,9 @@ impl ProxyTarget {
             }
         }
         let bt: f64 = band.iter().sum::<f64>().max(1e-30);
+        let strongest = (0..N_ERB)
+            .max_by(|&x, &y| f.spectrum.erb_mid_rel_db[x].total_cmp(&f.spectrum.erb_mid_rel_db[y]))
+            .unwrap_or(0);
         let wavg = |v: &[f32; N_BROAD]| {
             (0..N_BROAD)
                 .map(|i| v[i] as f64 * band[i] / bt)
@@ -125,6 +140,7 @@ impl ProxyTarget {
             ),
             onset_hz: f.transients.onset_rate_hz as f64,
             floor_db: floor_estimate(f).map(|x| x + gain_db),
+            carrier_hz: (c[strongest] as f64).clamp(40.0, 400.0),
         }
     }
 }
@@ -184,6 +200,10 @@ pub struct Shape {
     pub floor_db: Option<f64>,
     /// Amplitude of the slow level modulation (dB).
     pub slow_db: f64,
+    /// Share of the event amplitude in a slow (8 x `tau`) body.
+    pub body: f64,
+    /// Event rate / measured onset rate.
+    pub rate: f64,
 }
 
 impl Default for Shape {
@@ -194,6 +214,8 @@ impl Default for Shape {
             rest: 0.0,
             floor_db: None,
             slow_db: 1.0,
+            body: 0.0,
+            rate: 1.0,
         }
     }
 }
@@ -227,7 +249,7 @@ struct Envelope {
 }
 
 fn envelope(shape: &Shape, onset_hz: f64, level_db: f64) -> Envelope {
-    let t_ev = (1.0 / onset_hz.max(0.05)).clamp(0.1, 2.0);
+    let t_ev = (1.0 / (onset_hz * shape.rate).max(0.05)).clamp(0.1, 2.0);
     let mut rng = Rng(0x5EED_D7A5);
     let mut events: Vec<(usize, f64, f64)> = Vec::new(); // start ms, amp, length ms
     let mut t = 0.2;
@@ -252,7 +274,8 @@ fn envelope(shape: &Shape, onset_hz: f64, level_db: f64) -> Envelope {
         for k in s..end {
             let u = (k - s) as f64;
             let ramp = (u / EVENT_ATTACK_MS).min(1.0);
-            let dec = (-(u - EVENT_ATTACK_MS).max(0.0) * k_dec).exp();
+            let v = (u - EVENT_ATTACK_MS).max(0.0) * k_dec;
+            let dec = (1.0 - shape.body) * (-v).exp() + shape.body * (-v / 8.0).exp();
             let rel = if u < len {
                 1.0
             } else {
@@ -403,16 +426,33 @@ fn fit_error(s: &ProxyStats, t: &ProxyTarget) -> f64 {
 
 impl Proxy {
     /// Fit a proxy to `t` (see module docs).
+    /// Multi-start: one coordinate descent per event rate, the lowest error wins (a single descent sticks
+    /// between "fast decay, dense hits" and "slow decay, sparse hits").
     pub fn fit(t: &ProxyTarget) -> Proxy {
+        RATES
+            .iter()
+            .map(|&r| Self::fit_rates(t, &[r]))
+            .min_by(|a, b| a.fit_error().total_cmp(&b.fit_error()))
+            .expect("rates")
+    }
+
+    /// Fit error of this proxy against its target (crest dB² + attack-ratio dB² + (20 x active share)²).
+    pub fn fit_error(&self) -> f64 {
+        fit_error(&self.stats, &self.target)
+    }
+
+    /// [`Proxy::fit`] with the event-rate grid restricted to `rates`.
+    pub fn fit_rates(t: &ProxyTarget, rates: &[f64]) -> Proxy {
         // shape fitted at the target level (the floor is absolute)
         let lv0 = t.rms_db + 3.0;
         let mut sh = Shape {
             floor_db: t.floor_db,
+            rate: rates.first().copied().unwrap_or(1.0),
             ..Shape::default()
         };
         let eval = |s: &Shape| fit_error(&env_stats(&envelope(s, t.onset_hz, lv0)), t);
         let mut best = eval(&sh);
-        for _ in 0..2 {
+        for _ in 0..3 {
             for &x in &TAUS {
                 let c = Shape { tau_s: x, ..sh };
                 let e = eval(&c);
@@ -423,6 +463,22 @@ impl Proxy {
             }
             for &x in &DUTIES {
                 let c = Shape { duty: x, ..sh };
+                let e = eval(&c);
+                if e < best {
+                    best = e;
+                    sh = c;
+                }
+            }
+            for &x in rates {
+                let c = Shape { rate: x, ..sh };
+                let e = eval(&c);
+                if e < best {
+                    best = e;
+                    sh = c;
+                }
+            }
+            for &x in &BODIES {
+                let c = Shape { body: x, ..sh };
                 let e = eval(&c);
                 if e < best {
                     best = e;
@@ -479,9 +535,15 @@ impl Proxy {
     pub fn audio(&self) -> Vec<f32> {
         let n = N_MS * SPM;
         let (w1, w2) = (
-            std::f64::consts::TAU * CARRIER_HZ / FS,
+            std::f64::consts::TAU * self.target.carrier_hz / FS,
             std::f64::consts::TAU * FLOOR_HZ / FS,
         );
+        // 1/n harmonics, scaled to the sine's mean square (sum of (1/n)^2 = 1)
+        let norm = 1.0
+            / (1..=HARMONICS)
+                .map(|h| 1.0 / (h * h) as f64)
+                .sum::<f64>()
+                .sqrt();
         (0..n)
             .map(|i| {
                 let k = i / SPM;
@@ -489,8 +551,12 @@ impl Proxy {
                 let a0 = self.env.amp[k];
                 let a1 = self.env.amp.get(k + 1).copied().unwrap_or(a0);
                 let a = a0 + (a1 - a0) * fr;
-                (a * (w1 * i as f64).sin() + self.env.floor_amp * (w2 * i as f64 + 0.7).sin())
-                    as f32
+                let ph = w1 * i as f64;
+                let car: f64 = (1..=HARMONICS)
+                    .map(|h| (h as f64 * ph).sin() / h as f64)
+                    .sum::<f64>()
+                    * norm;
+                (a * car + self.env.floor_amp * (w2 * i as f64 + 0.7).sin()) as f32
             })
             .collect()
     }
@@ -537,6 +603,7 @@ mod tests {
             lra_lu: 3.0,
             onset_hz: onset,
             floor_db: None,
+            carrier_hz: 180.0,
         }
     }
 

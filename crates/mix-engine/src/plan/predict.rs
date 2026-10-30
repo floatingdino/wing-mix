@@ -490,8 +490,9 @@ impl<'a> MixModel<'a> {
         }
         let centres = erb40_centres_hz();
         let f = &o.tap.features;
-        // sibilant share of each band above SIB_LO_HZ from the air band's frame crest
-        let crest = f.dynamics.crest_db[N_BROAD - 1].max(f.dynamics.crest_db[N_BROAD - 2]) as f64;
+        // sibilant share of each band above SIB_LO_HZ from the air band's (6-20 kHz) frame crest (the 2.5-6 kHz
+        // band's crest is the voice's own formant/vowel structure)
+        let crest = f.dynamics.crest_db[N_BROAD - 1] as f64;
         let share = (SIB_DUTY * p(crest)).clamp(0.0, 0.95);
         let total: f64 = (0..N_ERB).map(|b| o.mid[b] + o.side[b]).sum();
         let sib: [f64; N_ERB] = std::array::from_fn(|b| {
