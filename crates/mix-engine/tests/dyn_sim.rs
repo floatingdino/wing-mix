@@ -110,7 +110,8 @@ struct Base {
 }
 
 fn base(song: Song, degraded: bool) -> &'static Base {
-    static B: OnceLock<std::sync::Mutex<Vec<(Song, bool, &'static Base)>>> = OnceLock::new();
+    type Cache = std::sync::Mutex<Vec<(Song, bool, &'static Base)>>;
+    static B: OnceLock<Cache> = OnceLock::new();
     let m = B.get_or_init(Default::default);
     let mut v = m.lock().unwrap();
     if let Some(b) = v.iter().find(|x| x.0 == song && x.1 == degraded) {
@@ -138,10 +139,10 @@ fn wavg(f: &Features, v: &[f32; N_BROAD]) -> f64 {
     let l = window_loudness(f) as f64;
     let c = erb40_centres_hz();
     let mut band = [0.0f64; N_BROAD];
-    for b in 0..N_ERB {
+    for (b, &cb) in c.iter().enumerate() {
         let x = 10f64.powf((f.spectrum.erb_mid_rel_db[b] as f64 + l) / 10.0);
         if let Some(i) =
-            (0..N_BROAD).find(|&i| c[b] >= BROAD6_EDGES_HZ[i] && c[b] < BROAD6_EDGES_HZ[i + 1])
+            (0..N_BROAD).find(|&i| cb >= BROAD6_EDGES_HZ[i] && cb < BROAD6_EDGES_HZ[i + 1])
         {
             band[i] += x;
         }

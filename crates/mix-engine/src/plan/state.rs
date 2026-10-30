@@ -536,3 +536,49 @@ impl StripSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mix_surface::model::{StripKind, Topology};
+    use mix_surface::ParamClass;
+
+    #[test]
+    fn deesser_model_switch_registers_its_params() {
+        let s = StripId::new("input", 13);
+        let mut topo = Topology::default();
+        topo.strips
+            .push(Strip::new(s.clone(), StripKind::Input, "VOX"));
+        let model = ParamSpec::enumeration(
+            ParamId::of(&s, "gate/model"),
+            ParamClass::DynamicsModel,
+            &["GATE", "DS902"],
+        );
+        let on = ParamSpec::boolean(ParamId::of(&s, "gate/on"), ParamClass::Dynamics);
+        let mut st = ConsoleState::from_parts(
+            topo,
+            vec![
+                (model, Value::Enum("GATE".into())),
+                (on, Value::Bool(false)),
+            ],
+        );
+        assert!(st.settings(&s).deesser.is_none());
+        st.apply(&[
+            ParamChange::new(ParamId::of(&s, "gate/model"), Value::Enum("DS902".into())),
+            ParamChange::new(ParamId::of(&s, "gate/f"), Value::Float(6000.0)),
+            ParamChange::new(ParamId::of(&s, "gate/on"), Value::Bool(true)),
+        ]);
+        let d = st.settings(&s).deesser.expect("DS902 read");
+        assert_eq!(d.slot, DynSlot::Gate);
+        assert!(
+            d.on && d.hf_mode
+                && (d.freq_hz - 6000.0).abs() < 1e-9
+                && (d.range_db - 4.0).abs() < 1e-9
+        );
+        // the spec clamps into the DS902 range
+        let v = st
+            .coerce(&ParamId::of(&s, "gate/f"), Value::Float(12_000.0))
+            .unwrap();
+        assert_eq!(v, Value::Float(8000.0));
+    }
+}
