@@ -206,6 +206,8 @@ pub struct Controller<'k> {
     state: State,
     now: f64,
     plan: VecDeque<Batch>,
+    /// Objective the plan expects now (measured at planning − predicted gains of the batches kept since).
+    expected: f64,
     replan: Option<PlanReason>,
     hold: Option<HoldReason>,
     guard: Guard,
@@ -257,6 +259,7 @@ impl<'k> Controller<'k> {
             },
             now: 0.0,
             plan: VecDeque::new(),
+            expected: f64::NAN,
             replan: Some(PlanReason::Start),
             hold: None,
             guard: Guard::new(),
@@ -664,7 +667,10 @@ impl<'k> Controller<'k> {
                     predicted_gain: v.batch.predicted_gain(),
                 });
                 self.record(&v, Outcome::Kept, Some(after), String::new());
-                if (after - v.batch.mv.predicted.objective_after).abs() > self.cfg.replan_drift {
+                // the plan's moves are ordered by workflow phase, not in the greedy order their predictions were
+                // made in, so drift is judged on the running sum of predicted gains
+                self.expected -= v.batch.predicted_gain();
+                if (after - self.expected).abs() > self.cfg.replan_drift {
                     self.replan.get_or_insert(PlanReason::Drift);
                 }
             } else {
@@ -853,7 +859,12 @@ impl<'k> Controller<'k> {
                 if self.replan.is_some() || self.plan.is_empty() {
                     let reason = self.replan.take().unwrap_or(PlanReason::Exhausted);
                     if self.make_plan(reason) {
-                        let moves = self.plan.iter().map(Batch::summary).collect();
+                        let moves = self
+                            .plan
+                            .iter()
+                            .map(Batch::summary)
+                            .chain(self.pending.iter().map(|p| p.summary.clone()))
+                            .collect();
                         self.emit(ControlEvent::Suggested { moves });
                     }
                 }
@@ -905,18 +916,6 @@ impl<'k> Controller<'k> {
             let Some(b) = self.plan.pop_front() else {
                 break;
             };
-            if !b.mv.needs_confirmation.is_empty()
-                && !b
-                    .mv
-                    .needs_confirmation
-                    .iter()
-                    .all(|k| self.session.is_confirmed(k))
-            {
-                for k in b.mv.needs_confirmation.clone() {
-                    self.add_pending(k, &b);
-                }
-                continue;
-            }
             match self.guard.check(&b.mv, self.now, &self.cfg) {
                 Ok(()) => {}
                 Err(Block::Wait { .. }) => {
@@ -1033,7 +1032,9 @@ impl<'k> Controller<'k> {
         let Ok(p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
             return false;
         };
+        self.expected = s.score.objective;
         let mut inspect: Option<(StripId, f64)> = None;
+        let mut asks: Vec<(String, Batch)> = Vec::new();
         for step in p.steps() {
             match step {
                 PlanStep::Inspect {
@@ -1046,13 +1047,31 @@ impl<'k> Controller<'k> {
                     inspect = (!needs_confirmation).then(|| (strip.clone(), *dwell_s));
                 }
                 PlanStep::Move(mv) => {
-                    let insp = inspect.take_if(|(s, _)| *s == mv.strip);
-                    self.plan.push_back(Batch {
+                    let insp = inspect
+                        .take_if(|(s, _)| *s == mv.strip)
+                        .filter(|_| self.cfg.inspect);
+                    let b = Batch {
                         mv: (**mv).clone(),
                         inspect: insp,
-                    });
+                    };
+                    // conditional moves wait in the pending queue (published now, not when reached)
+                    let missing: Vec<String> = b
+                        .mv
+                        .needs_confirmation
+                        .iter()
+                        .filter(|k| !self.session.is_confirmed(k))
+                        .cloned()
+                        .collect();
+                    if missing.is_empty() {
+                        self.plan.push_back(b);
+                    } else {
+                        asks.extend(missing.into_iter().map(|k| (k, b.clone())));
+                    }
                 }
             }
+        }
+        for (k, b) in asks {
+            self.add_pending(k, &b);
         }
         self.emit(ControlEvent::Planned {
             reason,

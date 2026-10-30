@@ -36,11 +36,14 @@ pub struct KeepRule {
 pub struct SectionConfig {
     /// How often the short-term main features are polled (s).
     pub poll_s: f64,
-    /// Time constant of the running reference the short-term features are compared with (s).
+    /// Time constant of the running reference the short-term features are compared with (s). Not scaled: it must
+    /// average over a song's bar-to-bar dynamics whatever the test clock.
     pub tau_s: f64,
-    /// No detection before the reference has seen this much audio (s).
+    /// Smoothing of the short-term features before comparison (s).
+    pub fast_tau_s: f64,
+    /// No detection before the reference has averaged this much audio (s).
     pub warmup_s: f64,
-    /// A jump must persist this long (s).
+    /// A jump must persist this long (s). Not scaled (musical time).
     pub hold_s: f64,
     /// Short-term loudness jump (LU) that marks a new section.
     pub loudness_jump_lu: f32,
@@ -65,7 +68,8 @@ pub struct ControlConfig {
     /// A converged controller resumes when the objective rises above `target_objective × resume_factor`.
     pub resume_factor: f64,
     pub keep: KeepRule,
-    /// Re-plan when the measured objective after a kept batch differs from the plan's prediction by more than this.
+    /// Re-plan when the measured objective after a kept batch differs from the plan's expectation (objective
+    /// measured when planning − Σ predicted gains of the batches kept since) by more than this.
     pub replan_drift: f64,
     /// Per-session change budget: batches submitted (reverts not counted).
     pub max_batches: u32,
@@ -102,6 +106,9 @@ impl ControlConfig {
         // docs/safety.md: the safety gate refuses boosts above +3 dB per move; a larger planned step would only be
         // refused, so plan within it (the loop re-measures between steps anyway).
         plan.candidates.max_fader_step_db = plan.candidates.max_fader_step_db.min(3.0);
+        // Planning horizon: the loop re-measures after every batch and re-plans when the measurement drifts from
+        // the prediction, so a long greedy plan is mostly thrown away (and planning costs ~0.2 s per move).
+        plan.max_moves = 8;
         ControlConfig {
             mode: Mode::Suggest,
             settle_s: it.settle_s.lo(),
@@ -129,7 +136,8 @@ impl ControlConfig {
             section: SectionConfig {
                 poll_s: 0.5,
                 tau_s: 10.0,
-                warmup_s: 4.0,
+                fast_tau_s: 1.5,
+                warmup_s: 6.0,
                 hold_s: 1.5,
                 loudness_jump_lu: 5.0,
                 spectral_jump_db: 5.0,
@@ -139,15 +147,13 @@ impl ControlConfig {
         }
     }
 
-    /// Multiply every duration (settle, window, cool-downs, section timing) by `f` (test clocks).
+    /// Multiply the loop's durations (settle, window, cool-downs) by `f` (test clocks). The section detector's
+    /// timing describes the music, not the loop, and is kept.
     pub fn scaled(mut self, f: f64) -> Self {
         self.settle_s *= f;
         self.window_s *= f;
         self.reversal_cooldown_s *= f;
         self.engineer_hold_s *= f;
-        self.section.tau_s *= f;
-        self.section.warmup_s *= f;
-        self.section.hold_s *= f;
         self
     }
 

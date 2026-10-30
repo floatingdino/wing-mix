@@ -163,8 +163,9 @@ fn section_detector() {
         }
         hits
     };
-    // stationary with small wobble: nothing
-    assert!(feed(&mut d, &st(-18.0, 0.0), 10.0).is_empty());
+    // stationary with small wobble: nothing (and nothing during the warm-up, whatever happens)
+    assert!(feed(&mut d, &st(-30.0, 0.0), 2.0).is_empty());
+    assert!(feed(&mut d, &st(-18.0, 0.0), 15.0).is_empty());
     assert!(feed(&mut d, &st(-19.5, 2.0), 10.0).is_empty());
     // a 7 LU jump (verse -> chorus) is detected once, after the hold time
     let h = feed(&mut d, &st(-11.0, 0.0), 10.0);
@@ -186,7 +187,8 @@ fn scaled_config() {
     let s = c.clone().scaled(0.5);
     assert_eq!(s.window_s, c.window_s * 0.5);
     assert_eq!(s.engineer_hold_s, c.engineer_hold_s * 0.5);
-    assert_eq!(s.section.tau_s, c.section.tau_s * 0.5);
+    assert_eq!(s.section.tau_s, c.section.tau_s);
+    assert_eq!(s.section.hold_s, c.section.hold_s);
     assert_eq!(s.max_batches, c.max_batches);
     // planning stays within the safety layer's per-move boost
     assert!(c.plan.candidates.max_fader_step_db <= 3.0);
