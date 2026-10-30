@@ -1,7 +1,7 @@
 //! Wing Mix headless CLI (analyse, match, dry-run against the simulator).
 //!
-//! Subcommands so far: `devices` (list audio input devices), `fixture info|excerpt|scan` (real multitrack fixture),
-//! `profile <file>` (reference file -> TargetProfile JSON), `describe` (mix description -> TargetProfile).
+//! Subcommands so far: `devices` (list audio input devices), `fixture info|excerpt|scan|align` (real multitrack
+//! fixture; `align` locates the fixtures/mixes references in the show), `profile <file>` (reference file -> TargetProfile JSON), `describe` (mix description -> TargetProfile).
 
 use mix_capture::list_input_devices;
 
@@ -34,7 +34,7 @@ fn devices() -> i32 {
 }
 
 const FIXTURE_USAGE: &str =
-    "usage: fixture info | fixture excerpt --start S --dur D [--out DIR] | fixture scan [--step S]";
+    "usage: fixture info | fixture excerpt --start S --dur D [--out DIR] | fixture scan [--step S] | fixture align [--cache DIR]";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -135,11 +135,115 @@ fn fixture(args: &[String]) -> i32 {
 
             0
         }
+        Some("align") => {
+            let cache = flag(args, "--cache")
+                .map_or_else(|| std::env::temp_dir().join("wingmix-align"), Into::into);
+            match align_songs(&fx, &cache) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
         _ => {
             eprintln!("{FIXTURE_USAGE}");
             2
         }
     }
+}
+
+/// `fixture align`: locate every reference in `fixtures/mixes/` in the multitrack (fine chroma, per-block matching
+/// at the record's tempo in every key, see `mix_fixtures::align::locate`) and print the range, key, confidence,
+/// matched segments and per-section multitrack ranges (the source of `mix_fixtures::SONGS`).
+fn align_songs(
+    fx: &mix_fixtures::Fixture,
+    cache: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use mix_fixtures::align::{fine_chroma, locate, map_range, ALIGN_RATE};
+    use mix_fixtures::songs::{mixdown_cached, mixes_dir, reference_mono};
+    let dir = mixes_dir().ok_or("fixtures/mixes not found")?;
+    let t0 = std::time::Instant::now();
+    let mix = mixdown_cached(fx, cache)?;
+    let mt = fine_chroma(&mix, ALIGN_RATE);
+    eprintln!(
+        "mixdown {:.0} s -> {} chroma frames ({:.1} s; cache {})",
+        mix.len() as f64 / ALIGN_RATE as f64,
+        mt.len(),
+        t0.elapsed().as_secs_f64(),
+        cache.display()
+    );
+    let mut files: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|e| ["m4a", "wav", "mp3", "flac"].iter().any(|x| e == *x))
+        })
+        .collect();
+    files.sort();
+    let pcache = mix_reference::ProfileCache::new(cache.join("profiles"));
+    let mmss = |t: f64| format!("{}:{:02}", (t / 60.0) as u32, t as u32 % 60);
+    for f in files {
+        let r = fine_chroma(&reference_mono(&f)?, ALIGN_RATE);
+        let Some(m) = locate(&r, &mt) else {
+            println!("\n{}: no match", f.display());
+            continue;
+        };
+        let k = m.transpose as i32;
+        println!(
+            "\n{}: {:.1}-{:.1} s ({}-{}), transpose {:+}, {} of {} blocks vote ({} anchored), score {:.2} (runner-up {:.2}), confidence {:.2}",
+            f.file_name().unwrap_or_default().to_string_lossy(),
+            m.start_s,
+            m.end_s,
+            mmss(m.start_s),
+            mmss(m.end_s),
+            if k > 6 { k - 12 } else { k },
+            m.members.len(),
+            m.blocks.len(),
+            m.anchored.len(),
+            m.score,
+            m.runner_up,
+            m.confidence()
+        );
+        for b in &m.blocks {
+            println!(
+                "  block ref {:>5.0}: key {:+3} at {:>7.1} s  height {:.2} prominence {:.2}{}",
+                b.ref_start_s,
+                b.transpose,
+                b.start_s(),
+                b.height,
+                b.prominence,
+                if m.members.iter().any(|&i| m.blocks[i] == *b) {
+                    "  *"
+                } else {
+                    ""
+                }
+            );
+        }
+        let segs = m.segments();
+        let fmt: Vec<String> = segs
+            .iter()
+            .map(|(a, b, o)| format!("({a:.1}, {b:.1}, {o:.1})"))
+            .collect();
+        println!("  segments: &[{}]", fmt.join(", "));
+        let p = mix_reference::profile_file(&f, &Default::default(), Some(&pcache))?;
+        for s in &p.sections {
+            let r = &s.section;
+            let to =
+                map_range(&segs, r.start_s, r.end_s).map_or("not found live".into(), |(a, b)| {
+                    format!(
+                        "{a:.1}-{b:.1} s ({:.0}% of the section)",
+                        100.0 * (b - a) / (r.end_s - r.start_s)
+                    )
+                });
+            println!(
+                "  section {:>2} {:<10} ref {:>6.1}-{:>6.1} s -> {to}",
+                r.index, r.label, r.start_s, r.end_s
+            );
+        }
+    }
+    Ok(())
 }
 
 const PROFILE_USAGE: &str =

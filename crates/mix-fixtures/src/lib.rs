@@ -8,8 +8,15 @@
 //! * [`Fixture`]: project + audio tracks, with WING input channel numbers parsed from the file names
 //!   (`03-Kick-250622_1001.wav` is WING channel 3, label "Kick").
 //! * [`Fixture::loudness_map`]: streaming per-bin mean-square scan used to pick representative windows.
+//! * [`align`]: chroma + subsequence-DTW alignment of a reference recording to the multitrack (M016).
+//! * [`songs`]: the reference mixes (`fixtures/mixes/`), their multitrack time ranges ([`SONGS`]) and the
+//!   [`matched_pair`] test helper (multitrack excerpt + reference profile of the same song section).
 
+pub mod align;
 pub mod rpp;
+pub mod songs;
+
+pub use songs::{matched_pair, song, MatchedPair, Song, SONGS};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -93,6 +100,18 @@ pub fn group_of(channel: u32) -> Group {
         38..=40 => Group::Vocals,
         _ => Group::Other,
     }
+}
+
+/// FOH main mix L/R as recorded (the engineer's live mix; not console inputs). See fixtures/README.md.
+pub const FOH_CHANNELS: [u32; 2] = [52, 53];
+/// Separate video/stream mix L/R (not console inputs).
+pub const VIDEO_MIX_CHANNELS: [u32; 2] = [55, 56];
+/// Recorded tracks that are not console inputs: 43 (empty), FOH L/R and video mix L/R.
+pub const NON_INPUT_CHANNELS: [u32; 5] = [43, 52, 53, 55, 56];
+
+/// True for recorded console inputs (everything except [`NON_INPUT_CHANNELS`]).
+pub fn is_input(channel: u32) -> bool {
+    !NON_INPUT_CHANNELS.contains(&channel)
 }
 
 /// Representative 30 s windows `(name, start seconds, duration)`, chosen from `fixture scan --step 10`

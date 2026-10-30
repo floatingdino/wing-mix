@@ -78,6 +78,9 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.ebur128]
 opt-level = 2
+# Song alignment (M016) scans 12 keys x every offset of the 95 min show.
+[profile.dev.package.mix-fixtures]
+opt-level = 2
 
 [profile.release]
 lto = "thin"

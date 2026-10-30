@@ -682,8 +682,10 @@ name = "mix-describe"
 version = "0.1.0"
 dependencies = [
  "mix-core",
+ "mix-fixtures",
  "mix-knowledge",
  "mix-llm",
+ "mix-reference",
  "serde",
  "serde_json",
 ]
@@ -707,6 +709,9 @@ name = "mix-fixtures"
 version = "0.1.0"
 dependencies = [
  "hound",
+ "mix-core",
+ "mix-reference",
+ "realfft",
 ]
 
 [[package]]

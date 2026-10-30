@@ -328,3 +328,20 @@ mod mocked_cli {
         assert!(!d.llm_used);
     }
 }
+
+#[test]
+fn worship_profile_is_measured_and_aliased() {
+    let w = genre_profile("worship").unwrap();
+    assert_eq!(genre_profile("Contemporary").unwrap(), w);
+    assert_eq!(genre_profile("worship/contemporary").unwrap(), w);
+    assert!(genre_names().contains(&"worship"));
+    // Measured, on the analysis scale (loudness-relative band levels), not the placeholder tilt curve.
+    assert!(erb_p50(&w, 1000.0) < -15.0);
+    assert!(erb_p50(&w, 100.0) > erb_p50(&w, 8000.0) + 10.0);
+    assert_eq!(w.tonal.erb_side_rel_db.len(), w.tonal.erb_mid_rel_db.len());
+    assert!(w.tonal.tolerance_db.iter().all(|&t| t >= 4.0));
+    assert!(w.loudness.integrated_lufs < -6.0 && w.loudness.integrated_lufs > -12.0);
+    // A description still applies on top of it.
+    let d = describe("brighter vocals", Some(&w), kb(), &off());
+    d.profile.validate().unwrap();
+}
