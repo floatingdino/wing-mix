@@ -23,6 +23,10 @@ use serde::Deserialize;
 /// Crate name, used by the scaffold smoke test.
 pub const NAME: &str = "mix-llm";
 
+/// Short replacement for the CLI's default system prompt (see [`LlmConfig::system_prompt`]).
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a component inside an audio-mixing tool. Answer only with JSON \
+matching the requested schema. No prose, no tools.";
+
 /// Why a call produced no answer.
 #[derive(Debug)]
 pub enum LlmError {
@@ -65,6 +69,9 @@ pub struct LlmConfig {
     pub max_calls: u32,
     /// Directory holding `<task>.md` prompt templates.
     pub prompt_dir: PathBuf,
+    /// System prompt passed as `--system-prompt`, replacing the CLI's ~12k-token default (which costs about
+    /// $0.10 per call and carries irrelevant coding-agent instructions). `None` keeps the CLI default.
+    pub system_prompt: Option<String>,
     /// Extra CLI arguments appended verbatim (escape hatch, e.g. `--settings`).
     pub extra_args: Vec<String>,
 }
@@ -78,6 +85,7 @@ impl Default for LlmConfig {
             timeout: Duration::from_secs(60),
             max_calls: 50,
             prompt_dir: PathBuf::from("data/prompts"),
+            system_prompt: Some(DEFAULT_SYSTEM_PROMPT.into()),
             extra_args: Vec::new(),
         }
     }
@@ -280,7 +288,9 @@ impl LlmBridge {
         let bin = self.check_available()?;
         self.inner.calls.fetch_add(1, Ordering::SeqCst);
 
-        let mut cmd = Command::new(bin);
+        let launcher = resolve_launcher(&bin);
+        let mut cmd = Command::new(&launcher.program);
+        cmd.args(&launcher.prefix_args);
         cmd.arg("-p")
             .arg(prompt)
             .args([
@@ -292,6 +302,9 @@ impl LlmBridge {
             ])
             .arg("--json-schema")
             .arg(schema.to_string());
+        if let Some(sp) = &c.system_prompt {
+            cmd.args(["--system-prompt", sp, "--disable-slash-commands"]);
+        }
         if let Some(m) = &c.model {
             cmd.args(["--model", m]);
         }
@@ -371,15 +384,93 @@ fn drain<R: Read + Send + 'static>(r: Option<R>) -> thread::JoinHandle<Vec<u8>> 
     })
 }
 
-/// Resolve a binary: a path containing a separator is checked directly, otherwise PATH is searched.
+/// How to start the CLI: a program plus leading arguments (non-empty only for a Node-script shim).
+#[derive(Debug, Clone, PartialEq)]
+struct Launcher {
+    program: PathBuf,
+    prefix_args: Vec<PathBuf>,
+}
+
+/// Resolve a binary: a path containing a separator is checked directly, otherwise PATH is searched. On Windows
+/// the npm install provides `claude.cmd`, so PATHEXT extensions are tried too.
 fn which(bin: &Path) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH");
+    let pathext = if cfg!(windows) {
+        std::env::var("PATHEXT").ok()
+    } else {
+        None
+    };
+    which_in(bin, paths.as_deref(), pathext.as_deref())
+}
+
+/// Testable core of [`which`]: `pathext` is a `;`-separated list (`.EXE;.CMD`), `None` on non-Windows.
+fn which_in(
+    bin: &Path,
+    path_var: Option<&std::ffi::OsStr>,
+    pathext: Option<&str>,
+) -> Option<PathBuf> {
+    let exts: Vec<String> = pathext
+        .map(|p| {
+            p.split(';')
+                .filter(|e| !e.is_empty())
+                .map(|e| e.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+    let candidates = |base: PathBuf| -> Option<PathBuf> {
+        if base.is_file() {
+            return Some(base);
+        }
+        exts.iter().find_map(|e| {
+            let mut s = base.clone().into_os_string();
+            s.push(e);
+            let p = PathBuf::from(s);
+            p.is_file().then_some(p)
+        })
+    };
     if bin.components().count() > 1 {
-        return bin.is_file().then(|| bin.to_path_buf());
+        return candidates(bin.to_path_buf());
     }
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|d| d.join(bin))
-        .find(|p| p.is_file())
+    std::env::split_paths(path_var?).find_map(|d| candidates(d.join(bin)))
+}
+
+/// Windows `.cmd`/`.bat` shims mangle quotes and newlines in arguments (the prompt and JSON schema contain
+/// both), so look for what the npm shim wraps and start that directly: the native `claude.exe` or `cli.js` run
+/// by `node`. Anything else is returned unchanged.
+fn resolve_launcher(bin: &Path) -> Launcher {
+    let plain = Launcher {
+        program: bin.to_path_buf(),
+        prefix_args: Vec::new(),
+    };
+    let is_shim = bin
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    let Some(dir) = bin.parent().filter(|_| is_shim) else {
+        return plain;
+    };
+    let pkg = dir.join("node_modules/@anthropic-ai/claude-code");
+    let exe = pkg.join("bin/claude.exe");
+    if exe.is_file() {
+        return Launcher {
+            program: exe,
+            prefix_args: Vec::new(),
+        };
+    }
+    let js = pkg.join("cli.js");
+    if js.is_file() {
+        let node = dir.join("node.exe");
+        let node = if node.is_file() {
+            node
+        } else {
+            which(Path::new("node")).unwrap_or_else(|| PathBuf::from("node"))
+        };
+        return Launcher {
+            program: node,
+            prefix_args: vec![js],
+        };
+    }
+    plain
 }
 
 #[cfg(all(test, unix))]
@@ -448,6 +539,37 @@ mod tests {
         );
         // -p arg is the rendered template; flags: --json-schema, --tools, --model, haiku, json (output-format value)
         assert_eq!(b.ask::<Out>("t", "{}", &schema()).unwrap().x, 5);
+    }
+
+    #[test]
+    fn system_prompt_replaces_default() {
+        // Counts argv lines equal to the flag/value; only passes if both reach the child.
+        let body = r#"n=$(printf '%s\n' "$@" | grep -c -x -e '--system-prompt' -e 'sys prompt here'); printf '{"is_error":false,"structured_output":{"x":%s}}' "$n""#;
+        let b = fake("sp", body, |c| c.system_prompt = Some("sys prompt here".into()));
+        assert_eq!(b.ask::<Out>("t", "{}", &schema()).unwrap().x, 2);
+        let b = fake("nosp", body, |c| c.system_prompt = None);
+        assert_eq!(b.ask::<Out>("t", "{}", &schema()).unwrap().x, 0);
+        assert!(LlmConfig::default().system_prompt.is_some());
+    }
+
+    #[test]
+    fn pathext_resolves_cmd_shim() {
+        let dir = std::env::temp_dir().join(format!("mix-llm-pathext-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("claude.cmd"), "@echo off").unwrap();
+        let path = std::env::join_paths([&dir]).unwrap();
+        assert_eq!(
+            which_in(Path::new("claude"), Some(&path), Some(".COM;.EXE;.CMD")),
+            Some(dir.join("claude.cmd"))
+        );
+        assert_eq!(which_in(Path::new("claude"), Some(&path), None), None);
+        // shim without a known payload stays as is; with a native exe it is unwrapped
+        let shim = dir.join("claude.cmd");
+        assert_eq!(resolve_launcher(&shim).program, shim);
+        let exe_dir = dir.join("node_modules/@anthropic-ai/claude-code/bin");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::write(exe_dir.join("claude.exe"), "").unwrap();
+        assert_eq!(resolve_launcher(&shim).program, exe_dir.join("claude.exe"));
     }
 
     #[test]

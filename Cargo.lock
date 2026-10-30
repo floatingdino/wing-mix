@@ -584,6 +584,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mix-describe"
+version = "0.1.0"
+dependencies = [
+ "mix-core",
+ "mix-knowledge",
+ "mix-llm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mix-engine"
 version = "0.1.0"
 
