@@ -20,3 +20,10 @@ Write docs/research/wing-control.md. Using ../wing-simulator (docs/research/prot
 ## Log
 - 2026-10-30 coordinator: created.
 - 2026-10-30 agent-M002: started; worktree .worktrees/M002 on task/M002.
+- 2026-10-30 agent-M002: built wing-sim/wing-render (release) in ../wing-simulator; daemon run headless with
+  `--port 32222 --no-discovery --osc-port 32223 --no-hostio --shm-name /wingmix-probe-none --idle-timeout 0
+  --no-autosave --state-dir .worktrees/M002/.sim-state` (the user's own wing-sim owns 2222/2223 and the real shm:
+  never use default ports/shm). Wrote tools/wing-probe/{wingosc,wingnrp,dump_tree}.py; tree dumps in
+  tools/wing-probe/captures/. Verified: OSC get/set/node dumps, native get/set/toggle/DD, cross-client change
+  events, OSC /*S events, solo via `$solo` + `$stat/solo`, meter request/UDP layout (183 words for the test
+  selection), 5 s expiry (renew after expiry does NOT restart; redefine). Next: roundtrip.py + the doc.
