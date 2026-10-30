@@ -2,7 +2,7 @@
 id: M055
 title: WingMix GUI polish: strip names, event stream, per-move undo, live states
 stage: S5
-status: review
+status: done
 owner: agent-M055
 depends: [M051]
 branch: task/M055
@@ -38,3 +38,4 @@ per-move undo in the move log; show safety.rta_feed and live_context_applied; sc
   - Test: `make check`, `make app` (22 Swift tests incl. real daemon, stream, strips).
   - Proposed follow-ups: true per-move undo needs actuator support (history is a stack; `undo` pops the newest);
     strip colours need a surface-model field; real-window screenshots need Screen Recording permission.
+- 2026-10-31 coordinator: merged; make check + make app pass. done. Arbitrary per-move undo deferred (actuator history is a stack) — listed for M052 review.
