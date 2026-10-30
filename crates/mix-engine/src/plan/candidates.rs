@@ -1,6 +1,14 @@
 //! Problems → candidate moves, from the knowledge base (eq.toml limits/Q classes/masking strategies, sources.toml
 //! filters/pans/problems, dynamics.toml presets/rules) over the strips' actual capabilities.
 //!
+//! Dynamics (M035): compressor presets carry their attack/release (WING AUTO off so they apply); gate/expander
+//! candidates answer sources.toml problems whose action is a `Gate` (bleed on toms/snare), from the source's
+//! dynamics.toml gate preset (threshold relative to the strip's resolvable floor, else 45 dB below its peak,
+//! clamped below the peak by the preset's `threshold_clamp`; kb ~63 % times converted to the console's convention
+//! by [`super::TransferModel::gate_time_from_tau`]); de-esser candidates answer sibilance problems with WING's
+//! `DS902` in the free gate slot (or the dynamics slot when no compressor runs), from the source's de-ess preset
+//! (frequency at the low end of its window, clamped into the DS902's 800-8000 Hz; range lo/mid/hi).
+//!
 //! Every candidate is one connected batch (one fader, one EQ band freq+gain+Q, one filter, one compressor setup)
 //! tagged with its workflow phase, the problem and rules it answers, and a change cost (small, conventional, few
 //! params; boosts cost `boost_penalty` x a cut; masking strategies carry their kb cost). Several magnitudes are
@@ -18,7 +26,7 @@ use mix_knowledge::{KnowledgeBase, Param};
 use mix_surface::model::StripKind;
 
 use super::predict::MixModel;
-use super::state::{BandKind, BandSlot, ConsoleState, StripSettings};
+use super::state::{BandKind, BandSlot, ConsoleState, DynSlot, StripSettings, DEESSER_MODEL};
 use crate::diagnosis::stem_masking::stem_of;
 use crate::diagnosis::{Problem, ProblemKind, Subject};
 
@@ -457,7 +465,7 @@ impl Gen<'_> {
                     attack_ms: pr.attack_ms.mid(),
                     hold_ms: d.hold_ms,
                     release_ms: pr.release_ms.mid(),
-                    lin_env: false,
+                    lin_env: d.lin_env,
                     auto: false,
                 };
                 let gr = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&probe, l) / 20.0));
@@ -477,6 +485,8 @@ impl Gen<'_> {
                 push("dyn/knee", fv(knee));
                 push("dyn/attack", fv(pr.attack_ms.mid()));
                 push("dyn/release", fv(pr.release_ms.mid()));
+                // the preset's times only apply with WING AUTO off
+                push("dyn/auto", Value::Bool(false));
                 if let Some(det) = &pr.detector {
                     push("dyn/detector", Value::Enum(det.to_uppercase()));
                 }
@@ -551,6 +561,238 @@ impl Gen<'_> {
         out
     }
 
+    /// Input-level (pre-fader/pan) peak, RMS and resolvable floor of a strip (dBFS).
+    fn input_levels(&self, s: &StripId) -> Option<(f64, f64, Option<f64>)> {
+        let o = self.model.obs(s)?;
+        let st = &o.settings;
+        if st.level_db() <= -100.0 {
+            return None;
+        }
+        let (gl, gr) = match st.pan {
+            Some(p) if matches!(o.kind, StripKind::Input | StripKind::Aux) => {
+                self.model.transfer().pan_gains(o.kind, p)
+            }
+            _ => (1.0, 1.0),
+        };
+        let f = &o.tap.features;
+        let g = st.level_db() + o.tap.gain_to_main_db as f64;
+        let pan_pow = 10.0 * ((gl * gl + gr * gr) * 0.5).max(1e-12).log10();
+        let pan_pk = 20.0 * gl.max(gr).max(1e-9).log10();
+        let peak = f.loudness.sample_peak_dbfs as f64 - g - pan_pk;
+        let t = crate::proxy::ProxyTarget::from_features(f, -g - pan_pow);
+        Some((peak, t.rms_db, t.floor_db))
+    }
+
+    /// Gate/expander on (or retuned) from the source's dynamics.toml gate preset; `mode`/`ratio`/`range` from the
+    /// problem's action override the preset.
+    pub fn gate(
+        &self,
+        s: &StripId,
+        p: &Problem,
+        why: &str,
+        action: Option<&mix_knowledge::Action>,
+    ) -> Vec<Candidate> {
+        let mut out = Vec::new();
+        let st = self.settings(s);
+        if st.gate.is_none() {
+            return out; // no standard GATE in the gate slot
+        }
+        let Some(src) = (self.source_of)(s) else {
+            return out;
+        };
+        let Some(pr) = self.kb.presets_by_source(&src).and_then(|x| x.gate) else {
+            return out;
+        };
+        let Some((peak, rms, floor)) = self.input_levels(s) else {
+            return out;
+        };
+        let range_of = |k: &str| match action.and_then(|a| a.params.get(k)) {
+            Some(Param::Range(r)) => Some(r.mid()),
+            Some(Param::Num(x)) => Some(*x),
+            _ => None,
+        };
+        let expander = match action.and_then(|a| a.mode.as_deref()) {
+            Some(m) => m == "expander",
+            None => pr.kind == "expander",
+        };
+        let ratio = if expander {
+            let r = range_of("expander_ratio")
+                .or(pr.expander_ratio.map(|r| r.mid()))
+                .unwrap_or(2.0);
+            match r {
+                r if r <= 1.75 => "1:1.5",
+                r if r <= 2.5 => "1:2",
+                r if r <= 3.5 => "1:3",
+                _ => "1:4",
+            }
+        } else {
+            "gate"
+        };
+        let range = range_of("range_db")
+            .or(pr.range_db.map(|r| r.mid()))
+            .unwrap_or(20.0)
+            .clamp(3.0, 60.0);
+        let base = match pr.threshold_rel.as_str() {
+            "peak_dbfs" => peak,
+            "rms_dbfs" | "lufs_s" => rms,
+            _ => floor.unwrap_or(peak - 45.0),
+        };
+        let cap = pr
+            .threshold_clamp
+            .as_ref()
+            .map_or(peak - 12.0, |c| match c.max_rel.as_str() {
+                "rms_dbfs" => rms + c.max_offset_db,
+                _ => peak + c.max_offset_db,
+            });
+        let t = self.model.transfer();
+        let att = pr.attack_ms.map_or(0.5, |r| r.mid());
+        let hold = pr.hold_ms.map_or(50.0, |r| r.mid());
+        let rel = pr.release_ms.map_or(200.0, |r| r.mid());
+        let mut rules = vec!["gate_when_useful".to_string()];
+        rules.extend(p.rules.iter().cloned());
+        for frac in [0.0, 0.5, 1.0] {
+            let off = pr.threshold_offset_db.lo()
+                + frac * (pr.threshold_offset_db.hi() - pr.threshold_offset_db.lo());
+            let thr = (base + off).min(cap).clamp(-80.0, 0.0);
+            let mut changes = Vec::new();
+            let mut push = |id: &str, v: Value| {
+                if let Some(c) = self.change(pid(s, id), v) {
+                    changes.push(c);
+                }
+            };
+            push("gate/threshold", fv(thr));
+            push("gate/range", fv(range));
+            push("gate/ratio", Value::Enum(ratio.into()));
+            push("gate/attack", fv(t.gate_time_from_tau(att)));
+            push("gate/hold", fv(hold));
+            push("gate/release", fv(t.gate_time_from_tau(rel)));
+            push("gate/on", Value::Bool(true));
+            if changes.is_empty() {
+                continue;
+            }
+            let n = changes.len();
+            out.push(Candidate {
+                phase: 2,
+                strip: s.clone(),
+                label: format!(
+                    "{s} {} on ({}: thr {thr:.0} dB, range {range:.0} dB, {ratio})",
+                    if expander { "expander" } else { "gate" },
+                    pr.id
+                ),
+                changes,
+                problem: p.id.clone(),
+                rules: rules.clone(),
+                why: format!(
+                    "{why}; dynamics.toml {} (threshold {} {off:+.0} dB{})",
+                    pr.id,
+                    if floor.is_some() || pr.threshold_rel != "noise_floor_dbfs" {
+                        pr.threshold_rel.as_str()
+                    } else {
+                        "peak - 45 dB (floor below resolution)"
+                    },
+                    if thr >= cap - 1e-9 {
+                        ", clamped below the peak"
+                    } else {
+                        ""
+                    }
+                ),
+                cost: 0.8 + 0.05 * n as f64,
+            });
+        }
+        out
+    }
+
+    /// `DS902` de-esser in a free dynamics slot from the source's de-ess preset.
+    pub fn deesser(&self, s: &StripId, p: &Problem, why: &str) -> Vec<Candidate> {
+        let mut out = Vec::new();
+        let st = self.settings(s);
+        let Some(src) = (self.source_of)(s) else {
+            return out;
+        };
+        let Some(pr) = self.kb.presets_by_source(&src).and_then(|x| x.deess) else {
+            return out;
+        };
+        // slot: an existing DS902, else the gate slot when no gate runs, else the dynamics slot when no
+        // compressor runs
+        let slot = if let Some(d) = st.deesser {
+            d.slot
+        } else if self.state.has(s, "gate/model") && !st.gate.is_some_and(|g| g.on) {
+            DynSlot::Gate
+        } else if self.state.has(s, "dyn/model") && !st.dynamics.is_some_and(|d| d.on) {
+            DynSlot::Dyn
+        } else {
+            return out;
+        };
+        let blk = slot.block();
+        // coerce against the console as it will be after the model switch
+        let mut scratch = self.state.clone();
+        let mut model_change = None;
+        if self.state.str(s, &format!("{blk}/model")) != Some(DEESSER_MODEL) {
+            let id = pid(s, &format!("{blk}/model"));
+            let to = Value::Enum(DEESSER_MODEL.into());
+            let c = ParamChange {
+                param: id.clone(),
+                from: self.state.get(&id).cloned(),
+                to,
+            };
+            scratch.apply_one(&c);
+            model_change = Some(c);
+        }
+        let freqs = [pr.freq_hz.lo(), pr.freq_hz.mid()].map(|f| f.clamp(800.0, 8000.0));
+        let ranges = [pr.range_db.lo(), pr.range_db.mid(), pr.range_db.hi()];
+        let mut rules = vec!["deess_when_sibilant".to_string()];
+        rules.extend(p.rules.iter().cloned());
+        for &freq in &freqs {
+            for &range in &ranges {
+                let mut changes: Vec<ParamChange> = model_change.iter().cloned().collect();
+                let mut push = |leaf: &str, v: Value| {
+                    let id = pid(s, &format!("{blk}/{leaf}"));
+                    let Some(v) = scratch.coerce(&id, v) else {
+                        return;
+                    };
+                    if scratch.get(&id).is_some_and(|c| c.approx_eq(&v, 1e-3)) {
+                        return;
+                    }
+                    changes.push(ParamChange {
+                        param: id.clone(),
+                        from: scratch.get(&id).cloned(),
+                        to: v,
+                    });
+                };
+                push("f", fv(freq));
+                push("range", fv(range));
+                push("mode", Value::Enum("HF".into()));
+                push("on", Value::Bool(true));
+                if changes.is_empty() {
+                    continue;
+                }
+                let n = changes.len();
+                out.push(Candidate {
+                    phase: 4,
+                    strip: s.clone(),
+                    label: format!(
+                        "{s} de-esser {DEESSER_MODEL} in the {blk} slot ({}: {freq:.0} Hz, range {range:.1} dB)",
+                        pr.id
+                    ),
+                    changes,
+                    problem: p.id.clone(),
+                    rules: rules.clone(),
+                    why: format!(
+                        "{why}; dynamics.toml {} (freq {:.0}-{:.0} Hz, range {:.0}-{:.0} dB, {})",
+                        pr.id,
+                        pr.freq_hz.lo(),
+                        pr.freq_hz.hi(),
+                        pr.range_db.lo(),
+                        pr.range_db.hi(),
+                        pr.mode
+                    ),
+                    cost: 0.8 + 0.05 * n as f64 + if model_change.is_some() { 0.3 } else { 0.0 },
+                });
+            }
+        }
+        out
+    }
+
     // ---------------------------------------------------------------------------------------------------------
     // Problems
 
@@ -616,6 +858,12 @@ impl Gen<'_> {
             ProblemKind::TooDynamic | ProblemKind::Squashed => self.dynamics(p, &mut out),
             ProblemKind::Masking => self.masking(p, &mut out),
             ProblemKind::SourceProblem => self.source_problem(p, &mut out),
+            ProblemKind::Sibilance => {
+                for s in self.members(p) {
+                    let why = format!("{} sibilant", p.scope.subject.label());
+                    out.extend(self.deesser(&s, p, &why));
+                }
+            }
             ProblemKind::Depth => {
                 // FX return level (Depth problems on the mix scale reverb_rel_db)
                 for o in self.model.strips.iter().filter(|o| o.tap.fx_return) {
@@ -1039,6 +1287,7 @@ impl Gen<'_> {
                 "Filter" if a.kind.as_deref() != Some("lpf") => {
                     out.extend(self.lowcut(strip, p, &why))
                 }
+                "Gate" => out.extend(self.gate(strip, p, &why, Some(a))),
                 _ => {}
             }
         }

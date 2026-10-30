@@ -13,8 +13,10 @@
 //! 4. Scoring: each candidate is applied to the predicted console, the predicted features are re-diagnosed with
 //!    [`diagnose`], and `benefit = objective(before) − objective(after)`, `score = benefit − cost_weight · cost`.
 //!    The objective is [`Diagnosis::distance`] plus `target_weight ×` the scores of the target-referenced strip/stem
-//!    problems (levels, stem tonal balance, ...); heuristic problems (masking, source problems, sibilance) only
-//!    generate candidates. Greedy: the best positive move is taken, the state advances, repeat.
+//!    problems (levels, stem tonal balance, ...) and of the dynamics problems a console block answers (M035:
+//!    sibilance; sources.toml problems whose action is a `Gate`, counted while that strip's gate/expander is off —
+//!    see [`score_with`]); other heuristic problems (masking, other source problems) only generate candidates.
+//!    Greedy: the best positive move is taken, the state advances, repeat.
 //! 5. Output: moves grouped by workflow phase (gain staging → filters → gates → corrective EQ → dynamics → tonal EQ
 //!    → balance → FX → bus), the selection order kept within a phase and for moves sharing a param; an "inspect
 //!    (solo)" step precedes the first move on a strip in the phases an engineer works soloed (filter, gate, EQ,
@@ -24,9 +26,14 @@
 //! The plan is open loop: the closed-loop controller (M033) applies moves one at a time and re-measures.
 //!
 //! WING specifics handled in the transfer model / candidates (coordinator notes, M015): dynamics.toml attack/release
-//! are ~63 % time constants, which is what the WING compressor's LOG envelope uses (`tau = att/rel`); ratios are
-//! snapped to the console's enum (min 1.1); gate presets are not proposed (no gate problems are diagnosed yet) and
-//! de-essing (DS902 800-8000 Hz) is noted as unsupported until a de-esser model is modelled.
+//! are ~63 % time constants, which is what the WING compressor's LOG envelope uses (`tau = att/rel`; presets switch
+//! WING AUTO off so their times apply); WING GATE times are 10-90 % times (kb taus x ln 9,
+//! [`TransferModel::gate_time_from_tau`]); ratios are snapped to the console's enum (min 1.1); de-essing uses the
+//! `DS902` (800-8000 Hz) in a free dynamics slot — a model switch, `conditional` in the default remit, whose slot
+//! params the snapshot learns on the switch ([`state::model_specs`]).
+//!
+//! Dynamics prediction (M035): compressor/gate timing through [`crate::proxy`] and the console's own blocks;
+//! accuracy vs SimSurface renders in `tests/dyn_sim.rs` (M035 log).
 
 pub mod candidates;
 pub mod predict;
@@ -121,7 +128,10 @@ impl PlanConfig {
             allow_conditional: true,
             inspect_dwell_s: kb.workflow.iteration.settle_s.lo(),
             candidates: CandidateConfig::from_kb(kb),
-            diagnosis: DiagnosisConfig::default(),
+            diagnosis: DiagnosisConfig {
+                gate_opportunities: true,
+                ..DiagnosisConfig::default()
+            },
         }
     }
 }
@@ -286,11 +296,33 @@ fn target_referenced(p: &Problem) -> bool {
     ) && p.evidence.measured.is_some()
 }
 
-fn score_of(d: &Diagnosis, w: f64) -> PlanScore {
+/// A sources.toml problem whose action is a gate/expander (bleed on toms, snare).
+fn is_gate_problem(p: &Problem) -> bool {
+    p.kind == ProblemKind::SourceProblem
+        && p.suggested_blocks.first().map(String::as_str) == Some("Gate")
+}
+
+/// Dynamics problems a console block answers (M035), counted in the objective: sibilance (the diagnosis
+/// re-measures it on predicted/measured features) and gate problems while the strip's gate/expander is off (the
+/// gate's bleed reduction is not a target-referenced feature; with `state` unknown the problem counts).
+fn dynamics_opportunity(p: &Problem, state: Option<&ConsoleState>) -> bool {
+    match p.kind {
+        ProblemKind::Sibilance => true,
+        _ if is_gate_problem(p) => {
+            let Subject::Strip { strip, .. } = &p.scope.subject else {
+                return true;
+            };
+            state.is_none_or(|st| !st.settings(strip).gate.is_some_and(|g| g.on))
+        }
+        _ => false,
+    }
+}
+
+fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
     let load: f32 = d
         .problems
         .iter()
-        .filter(|p| target_referenced(p))
+        .filter(|p| target_referenced(p) || dynamics_opportunity(p, state))
         .map(|p| p.score())
         .sum();
     PlanScore {
@@ -302,16 +334,26 @@ fn score_of(d: &Diagnosis, w: f64) -> PlanScore {
 }
 
 /// The planner objective of a measured diagnosis (seam for the closed-loop controller, M033: measurements and
-/// predictions are compared on the same scale).
+/// predictions are compared on the same scale). Without the console state gate problems always count; prefer
+/// [`score_with`].
 pub fn score(d: &Diagnosis, target_weight: f64) -> PlanScore {
-    score_of(d, target_weight)
+    score_of(d, target_weight, None)
+}
+
+/// [`score`] with the console state the diagnosis was measured at (gate problems on gated strips are answered).
+pub fn score_with(d: &Diagnosis, target_weight: f64, state: Option<&ConsoleState>) -> PlanScore {
+    score_of(d, target_weight, state)
 }
 
 /// Problems that generate candidates: the target-referenced ones (mix level via `distance`, strip/stem) by score,
 /// then up to `max_heuristic` heuristic ones (masking, source problems), so a long tail of masking pairs cannot
 /// crowd out the problems the objective measures.
 fn select_problems<'d>(d: &'d Diagnosis, cfg: &PlanConfig) -> Vec<&'d Problem> {
-    let is_target = |p: &Problem| matches!(p.scope.subject, Subject::Mix) || target_referenced(p);
+    let is_target = |p: &Problem| {
+        matches!(p.scope.subject, Subject::Mix)
+            || target_referenced(p)
+            || dynamics_opportunity(p, None)
+    };
     let mut v: Vec<&Problem> = d
         .problems
         .iter()
@@ -389,11 +431,15 @@ fn check_remit(
 ) -> Result<Checked, String> {
     let mut confirm = Vec::new();
     let mut kept = Vec::new();
+    // a model switch re-maps the slot: later changes are checked against the console after the switch
+    let mut scratch: Option<ConsoleState> = None;
     for ch in c.changes.drain(..) {
-        let Some(spec) = state.spec(&ch.param) else {
+        let st = scratch.as_ref().unwrap_or(state);
+        let Some(spec) = st.spec(&ch.param).cloned() else {
             return Err(format!("{}: unknown param", ch.param));
         };
-        let from = ch.from.clone().or_else(|| state.get(&ch.param).cloned());
+        let spec = &spec;
+        let from = ch.from.clone().or_else(|| st.get(&ch.param).cloned());
         let mut req = WriteRequest::new(ch.param.clone(), spec.class);
         req.from = from.clone();
         req.to = Some(ch.to.clone());
@@ -414,7 +460,7 @@ fn check_remit(
         }
         let to = match (&d.envelope, &from) {
             (Some(env), Some(f)) => match clamp_envelope(spec, f, &ch.to, env) {
-                Some(v) => state.coerce(&ch.param, v).unwrap_or(ch.to.clone()),
+                Some(v) => st.coerce(&ch.param, v).unwrap_or(ch.to.clone()),
                 None => continue,
             },
             _ => ch.to.clone(),
@@ -427,11 +473,17 @@ fn check_remit(
                 return Err(format!("{}: forbidden after envelope clamp", ch.param));
             }
         }
-        kept.push(ParamChange {
+        let pc = ParamChange {
             param: ch.param,
             from,
             to,
-        });
+        };
+        if pc.param.leaf() == "model" {
+            let mut sc = scratch.take().unwrap_or_else(|| state.clone());
+            sc.apply_one(&pc);
+            scratch = Some(sc);
+        }
+        kept.push(pc);
     }
     if kept.is_empty() {
         return Err("nothing left inside the remit envelope".into());
@@ -495,7 +547,7 @@ pub fn plan_with(
     let mut state = input.state.clone();
     let mut pred = model.predict(&state);
     let mut diag = run(&pred)?;
-    let before = score_of(&diag, w);
+    let before = score_of(&diag, w, Some(input.state));
     let mut cur = before.clone();
     let mut notes: Vec<String> = Vec::new();
     let mut remit_drops: BTreeMap<String, usize> = BTreeMap::new();
@@ -523,9 +575,6 @@ pub fn plan_with(
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut cands: Vec<Checked> = Vec::new();
         for p in select_problems(&diag, cfg) {
-            if matches!(p.kind, ProblemKind::Sibilance) {
-                unsupported.insert("sibilance (de-esser not modelled)");
-            }
             if matches!(
                 p.kind,
                 ProblemKind::Punch | ProblemKind::Phase | ProblemKind::StereoBalance
@@ -566,7 +615,7 @@ pub fn plan_with(
             st2.apply(&k.cand.changes);
             let p2 = model.predict(&st2);
             let d2 = run(&p2)?;
-            let s2 = score_of(&d2, w);
+            let s2 = score_of(&d2, w, Some(&st2));
             let benefit = cur.objective - s2.objective;
             let net = benefit - cfg.cost_weight * k.cand.cost;
 

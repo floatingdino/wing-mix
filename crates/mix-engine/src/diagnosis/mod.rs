@@ -185,6 +185,11 @@ pub struct DiagnosisConfig {
     /// Extra level tolerance (LU) of a stem summed from several strip taps: the live sum is a power sum, the
     /// reference stem a coherent one (bleed between drum mics adds up), ~1.5 LU apart on mix-sim's drums (M034).
     pub stem_sum_tolerance_lu: f32,
+    /// Report sources.toml problems whose action is a gate/expander (M035; `tom_cymbal_bleed`,
+    /// `snare_hihat_bleed`), also on strips too sparse for the other checks. They are knowledge-base gating
+    /// opportunities rather than deviations from the target (a reference with an ungated sparse tom has them too),
+    /// so plain diagnosis leaves them out; the planner and the closed loop turn them on.
+    pub gate_opportunities: bool,
 }
 
 impl Default for DiagnosisConfig {
@@ -198,6 +203,7 @@ impl Default for DiagnosisConfig {
             max_problems: None,
             intent_tolerance: 0.5,
             stem_sum_tolerance_lu: 1.0,
+            gate_opportunities: false,
         }
     }
 }

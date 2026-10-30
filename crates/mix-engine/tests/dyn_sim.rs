@@ -103,51 +103,6 @@ fn pair(song: Song) -> FixturePair {
     p
 }
 
-/// 70 ms bursts of high-passed noise at the start of sung notes (one per detected note onset).
-pub fn add_sibilants(x: &mut [f32], sr: f64) {
-    let n = x.len();
-    let win = (0.01 * sr) as usize;
-    let env: Vec<f32> = (0..n / win)
-        .map(|k| (x[k * win..(k + 1) * win].iter().map(|v| v * v).sum::<f32>() / win as f32).sqrt())
-        .collect();
-    let mut seed: u64 = 0x5151;
-    let mut rnd = || {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((seed >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
-    };
-    let len = (0.07 * sr) as usize;
-    let mut k = 1;
-    while k + 8 < env.len() {
-        // onset: silent before, sounding after
-        if env[k - 1] < 1e-3 && env[k + 2] > 1e-2 {
-            let start = k * win;
-            let level = env[k + 2..k + 8].iter().cloned().fold(0.0, f32::max) * 0.55;
-            let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-            // 2nd-order high-pass ~5 kHz (RBJ, Q 0.7)
-            let w = std::f32::consts::TAU * 5000.0 / sr as f32;
-            let (c, s) = (w.cos(), w.sin());
-            let a = s / (2.0 * 0.7);
-            let (b0, b1, b2) = ((1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0);
-            let (a0, a1, a2) = (1.0 + a, -2.0 * c, 1.0 - a);
-            for i in 0..len.min(n - start) {
-                let u = rnd();
-                let y = (b0 * u + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
-                x2 = x1;
-                x1 = u;
-                y2 = y1;
-                y1 = y;
-                let t = i as f32 / sr as f32;
-                let e = (t / 0.005).min(1.0) * ((len - i) as f32 / (0.01 * sr as f32)).min(1.0);
-                x[start + i] += 2.5 * level * y * e;
-            }
-            k += 30;
-        }
-        k += 1;
-    }
-}
-
 struct Base {
     pair: FixturePair,
     scene: Scene,
