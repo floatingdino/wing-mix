@@ -1,8 +1,9 @@
 //! Song alignment: find where a reference recording is played in the live multitrack (M016).
 //!
 //! Method (deliberately simple, see fixtures/README.md for the results):
-//! 1. A coarse mono mixdown of the multitrack at [`ALIGN_RATE`] (project gains applied, muted tracks skipped;
-//!    [`mixdown`] streams the 95 min in 30 s blocks) and the reference folded to mono at the same rate.
+//! 1. The recorded FOH main mix L/R ([`foh_mixdown`], channels 52/53: the engineer's real live mix) folded to mono
+//!    at [`ALIGN_RATE`] (streamed in 30 s blocks), and the reference folded to mono at the same rate.
+//!    [`mixdown`] (a sum of the console inputs) is the fallback for recordings without a main-mix tap.
 //! 2. Chroma features ([`chroma`]): 0.5 s hop, Hann STFT, 80 Hz - 2 kHz bins folded to 12 pitch classes,
 //!    L1-normalised, square-root compressed, smoothed over ~2.5 s and L2-normalised (CENS-like; robust to mix,
 //!    timbre and loudness differences between a studio master and a live band).
@@ -15,7 +16,7 @@
 //! The warp path is kept as `(reference_s, multitrack_s)` anchors so reference section times map to multitrack
 //! times ([`map_time`]) without re-running the alignment.
 
-use crate::{AudioTrack, Fixture, FixtureError};
+use crate::{is_input, AudioTrack, Fixture, FixtureError, FOH_CHANNELS};
 use realfft::RealFftPlanner;
 
 /// Rate of the mixdown / reference used for chroma (Hz).
@@ -49,8 +50,7 @@ pub fn decimate(x: &[f32], factor: usize) -> Vec<f32> {
             } else {
                 (2.0 * std::f64::consts::PI * fc * n).sin() / (std::f64::consts::PI * n)
             };
-            let w = 0.5
-                - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (taps as f64 - 1.0)).cos();
+            let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (taps as f64 - 1.0)).cos();
             (sinc * w) as f32
         })
         .collect();
@@ -70,13 +70,28 @@ pub fn decimate(x: &[f32], factor: usize) -> Vec<f32> {
     out
 }
 
-/// Mono mixdown of the whole multitrack at [`ALIGN_RATE`]: project gains applied, muted tracks skipped, read in
-/// `block_s` blocks (each block decimated on its own; edge effects are irrelevant for chroma).
+/// Mono mixdown of the console inputs at [`ALIGN_RATE`]: project gains applied, muted tracks and
+/// [`crate::NON_INPUT_CHANNELS`] (FOH/video mixes, empty track) skipped, read in `block_s` blocks (each block
+/// decimated on its own; edge effects are irrelevant for chroma).
 pub fn mixdown(fx: &Fixture, block_s: f64) -> Result<Vec<f32>, FixtureError> {
-    mixdown_where(fx, block_s, |t| !t.mute)
+    mixdown_where(fx, block_s, |t| !t.mute && is_input(t.channel))
 }
 
-/// [`mixdown`] of the tracks selected by `pick` (project gains applied).
+/// The recorded FOH main mix (L + R, [`crate::FOH_CHANNELS`]) at [`ALIGN_RATE`], raw (no project gains).
+pub fn foh_mixdown(fx: &Fixture, block_s: f64) -> Result<Vec<f32>, FixtureError> {
+    if !FOH_CHANNELS
+        .iter()
+        .all(|&c| fx.track_for_channel(c).is_some())
+    {
+        return Err(FixtureError::Range(
+            "FOH L/R tracks (52/53) not found".into(),
+        ));
+    }
+    mixdown_where(fx, block_s, |t| FOH_CHANNELS.contains(&t.channel))
+        .map(|v| v.into_iter().map(|x| x * 0.5).collect())
+}
+
+/// Mono sum of the tracks selected by `pick` (project gains applied) at [`ALIGN_RATE`].
 pub fn mixdown_where(
     fx: &Fixture,
     block_s: f64,
@@ -100,7 +115,11 @@ pub fn mixdown_where(
             if !pick(tr) {
                 continue;
             }
-            let g = tr.project_gain as f32;
+            let g = if FOH_CHANNELS.contains(&tr.channel) {
+                1.0
+            } else {
+                tr.project_gain as f32
+            };
             for (m, s) in mix.iter_mut().zip(a) {
                 *m += s * g;
             }
@@ -115,7 +134,13 @@ pub fn mixdown_where(
 /// `i * HOP_S` seconds.
 pub fn chroma(mono: &[f32], rate: u32) -> Vec<ChromaFrame> {
     let hop = (rate as f64 * HOP_S).round() as usize;
-    chroma_with(mono, rate, hop_s_frames(rate, HOP_S), hop.next_power_of_two(), SMOOTH)
+    chroma_with(
+        mono,
+        rate,
+        hop_s_frames(rate, HOP_S),
+        hop.next_power_of_two(),
+        SMOOTH,
+    )
 }
 
 fn hop_s_frames(rate: u32, hop_s: f64) -> usize {
@@ -123,7 +148,13 @@ fn hop_s_frames(rate: u32, hop_s: f64) -> usize {
 }
 
 /// [`chroma`] with an explicit hop (samples), FFT size and smoothing length (frames).
-pub fn chroma_with(mono: &[f32], rate: u32, hop: usize, n: usize, smooth: usize) -> Vec<ChromaFrame> {
+pub fn chroma_with(
+    mono: &[f32],
+    rate: u32,
+    hop: usize,
+    n: usize,
+    smooth: usize,
+) -> Vec<ChromaFrame> {
     let mut planner = RealFftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(n);
     let mut inbuf = fft.make_input_vec();
@@ -270,9 +301,8 @@ impl Alignment {
 /// Subsequence DTW over the last row only: (total cost, path length, start column) per end column.
 fn sdtw_last_row(q: &[ChromaFrame], d: &[ChromaFrame]) -> Vec<(f32, u32, u32)> {
     let m = d.len();
-    let mut prev: Vec<(f32, u32, u32)> = (0..m)
-        .map(|j| (cost(&q[0], &d[j]), 1, j as u32))
-        .collect();
+    let mut prev: Vec<(f32, u32, u32)> =
+        (0..m).map(|j| (cost(&q[0], &d[j]), 1, j as u32)).collect();
     let mut cur = prev.clone();
     for qi in &q[1..] {
         for j in 0..m {
@@ -358,7 +388,13 @@ fn sdtw_path(q: &[ChromaFrame], d: &[ChromaFrame], end: usize) -> Vec<(usize, us
 /// module doc). Forces the whole reference onto one monotonic path; for songs whose live version omits or
 /// reorders parts use [`locate`].
 pub fn align_chroma(reference: &[ChromaFrame], multitrack: &[ChromaFrame]) -> Option<Alignment> {
-    align_window(reference, multitrack, &(0..12).collect::<Vec<_>>(), 0, multitrack.len())
+    align_window(
+        reference,
+        multitrack,
+        &(0..12).collect::<Vec<_>>(),
+        0,
+        multitrack.len(),
+    )
 }
 
 /// [`align_chroma`] restricted to the given transpositions and multitrack frames `lo..hi` (times in the result
@@ -494,16 +530,15 @@ impl SongMatch {
     }
 
     /// Anchored matches merged into segments `(ref_start_s, ref_end_s, offset_s)` (offset within
-    /// [`OFFSET_TOL_S`] and overlapping or adjacent reference ranges), sorted by reference time.
+    /// [`OFFSET_TOL_S`] and reference ranges at most one [`BLOCK_HOP_S`] apart: same offset = played straight through), sorted by reference time.
     pub fn segments(&self) -> Vec<(f64, f64, f64)> {
         let mut m: Vec<BlockMatch> = self.anchored.iter().map(|&i| self.blocks[i]).collect();
         m.sort_by(|a, b| a.ref_start_s.total_cmp(&b.ref_start_s));
         let mut out: Vec<(f64, f64, f64)> = Vec::new();
         for b in m {
-            match out
-                .iter_mut()
-                .find(|s| (s.2 - b.offset_s).abs() < OFFSET_TOL_S && b.ref_start_s <= s.1 + 1e-9)
-            {
+            match out.iter_mut().find(|s| {
+                (s.2 - b.offset_s).abs() < OFFSET_TOL_S && b.ref_start_s <= s.1 + BLOCK_HOP_S + 1e-9
+            }) {
                 Some(s) => s.1 = s.1.max(b.ref_end_s),
                 None => out.push((b.ref_start_s, b.ref_end_s, b.offset_s)),
             }
@@ -542,12 +577,11 @@ fn block_matches(reference: &[ChromaFrame], multitrack: &[ChromaFrame]) -> Vec<B
                 })
             })
             .collect();
-        hs.into_iter().map(|h| h.join().expect("block scan")).collect()
+        hs.into_iter()
+            .map(|h| h.join().expect("block scan"))
+            .collect()
     });
-    let (near, far) = (
-        (1.0 / FINE_HOP_S) as usize,
-        (4.0 / FINE_HOP_S) as usize,
-    );
+    let (near, far) = ((1.0 / FINE_HOP_S) as usize, (4.0 / FINE_HOP_S) as usize);
     let mut out = Vec::new();
     for b in 0..=nsub - per_block {
         let len = (b * sub + per_block * sub).min(n) - b * sub;
@@ -645,11 +679,19 @@ pub fn locate(reference: &[ChromaFrame], multitrack: &[ChromaFrame]) -> Option<S
     }
     let span_of = |set: &[usize]| {
         (
-            set.iter().map(|&i| blocks[i].start_s()).fold(f64::MAX, f64::min),
-            set.iter().map(|&i| blocks[i].end_s()).fold(f64::MIN, f64::max),
+            set.iter()
+                .map(|&i| blocks[i].start_s())
+                .fold(f64::MAX, f64::min),
+            set.iter()
+                .map(|&i| blocks[i].end_s())
+                .fold(f64::MIN, f64::max),
         )
     };
-    let (start_s, end_s) = span_of(if anchored.is_empty() { &voters } else { &anchored });
+    let (start_s, end_s) = span_of(if anchored.is_empty() {
+        &voters
+    } else {
+        &anchored
+    });
     let members: Vec<usize> = voters
         .iter()
         .copied()
@@ -872,7 +914,10 @@ mod tests {
         let reference = long_song(0, 0, 30);
         let mut live = long_song_with(0, 0, 30, [2.5, 6.0, 3.5], 7);
         live.extend(long_song_with(5, 0, 30, [2.5, 6.0, 3.5], 7));
-        let m = locate(&fine_chroma(&reference, ALIGN_RATE), &fine_chroma(&live, ALIGN_RATE));
+        let m = locate(
+            &fine_chroma(&reference, ALIGN_RATE),
+            &fine_chroma(&live, ALIGN_RATE),
+        );
         assert!(m.as_ref().is_none_or(|m| m.confidence() < 0.3), "{m:?}");
     }
 

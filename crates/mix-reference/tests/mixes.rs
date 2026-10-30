@@ -22,7 +22,11 @@ fn m4a_references_decode_and_profile() {
         let path = dir.join(name);
         let d = decode_file(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!((d.sample_rate, d.channels), (44_100, 2), "{name}");
-        assert!((d.duration_s() - dur).abs() < 1.5, "{name}: {} s", d.duration_s());
+        assert!(
+            (d.duration_s() - dur).abs() < 1.5,
+            "{name}: {} s",
+            d.duration_s()
+        );
         let peak = d.samples.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(peak > 0.5 && peak <= 1.05, "{name}: peak {peak}");
 
@@ -33,7 +37,11 @@ fn m4a_references_decode_and_profile() {
         assert!((-16.0..-5.0).contains(&l.integrated_lufs), "{name}: {l:?}");
         assert!(l.plr_db > 4.0 && l.plr_db < 20.0, "{name}: {l:?}");
         assert_eq!(p.tonal.erb_side_rel_db.len(), p.tonal.erb_mid_rel_db.len());
-        assert!(p.sections.len() >= 3, "{name}: {} sections", p.sections.len());
+        assert!(
+            p.sections.len() >= 3,
+            "{name}: {} sections",
+            p.sections.len()
+        );
         let tilt = p.tonal.tilt_db_per_oct.p50;
         assert!((-8.0..0.0).contains(&tilt), "{name}: tilt {tilt}");
         eprintln!(

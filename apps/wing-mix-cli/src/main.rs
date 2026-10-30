@@ -214,7 +214,11 @@ fn align_songs(
                 b.start_s(),
                 b.height,
                 b.prominence,
-                if m.members.iter().any(|&i| m.blocks[i] == *b) { "  *" } else { "" }
+                if m.members.iter().any(|&i| m.blocks[i] == *b) {
+                    "  *"
+                } else {
+                    ""
+                }
             );
         }
         let segs = m.segments();
@@ -226,9 +230,13 @@ fn align_songs(
         let p = mix_reference::profile_file(&f, &Default::default(), Some(&pcache))?;
         for s in &p.sections {
             let r = &s.section;
-            let to = map_range(&segs, r.start_s, r.end_s).map_or("not found live".into(), |(a, b)| {
-                format!("{a:.1}-{b:.1} s ({:.0}% of the section)", 100.0 * (b - a) / (r.end_s - r.start_s))
-            });
+            let to =
+                map_range(&segs, r.start_s, r.end_s).map_or("not found live".into(), |(a, b)| {
+                    format!(
+                        "{a:.1}-{b:.1} s ({:.0}% of the section)",
+                        100.0 * (b - a) / (r.end_s - r.start_s)
+                    )
+                });
             println!(
                 "  section {:>2} {:<10} ref {:>6.1}-{:>6.1} s -> {to}",
                 r.index, r.label, r.start_s, r.end_s

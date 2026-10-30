@@ -54,7 +54,8 @@ pub fn song(id: &str) -> Option<&'static Song> {
     SONGS.iter().find(|s| s.id == id)
 }
 
-/// Songs found in the multitrack, in show order (from `wing-mix-cli fixture align`, M016; see fixtures/README.md).
+/// Songs found in the multitrack, in show order (from `wing-mix-cli fixture align` against the FOH L/R recording,
+/// M016; see fixtures/README.md).
 /// The band plays along the records' tempo (click/tracks), so the offsets are exact to ~0.1 s.
 pub const SONGS: &[Song] = &[
     Song {
@@ -70,32 +71,33 @@ pub const SONGS: &[Song] = &[
         id: "holy-forever",
         file: "Holy Forever.m4a",
         start_s: 829.2,
-        end_s: 1140.8,
+        end_s: 1157.4,
         transpose: 7,
-        confidence: 0.72,
+        confidence: 0.89,
         segments: &[
             (30.0, 105.0, 799.2),
-            (90.0, 165.0, 825.9),
-            (240.0, 270.0, 825.9),
-            (255.0, 300.0, 632.6),
+            (90.0, 225.0, 825.9),
+            (150.0, 195.0, 739.2),
+            (210.0, 255.0, 799.4),
+            (240.0, 300.0, 632.6),
             (285.0, 315.0, 825.8),
+            (300.0, 345.0, 812.4),
             (390.0, 435.0, 505.7),
-            (420.0, 465.0, 476.5),
         ],
     },
     Song {
         id: "show-me-your-face",
         file: "Show me Your Face.m4a",
-        start_s: 1245.5,
+        start_s: 1245.6,
         end_s: 1318.8,
         transpose: 5,
-        confidence: 0.81,
+        confidence: 0.70,
         segments: &[
-            (75.0, 120.0, 1170.5),
+            (75.0, 120.0, 1170.6),
             (105.0, 150.0, 1168.9),
             (240.0, 285.0, 1032.8),
-            (345.0, 390.0, 925.6),
-            (450.0, 495.0, 818.1),
+            (330.0, 375.0, 926.4),
+            (450.0, 495.0, 818.2),
         ],
     },
 ];
@@ -143,10 +145,11 @@ pub fn reference_mono(path: &Path) -> Result<Vec<f32>, SongError> {
         .collect())
 }
 
-/// [`align::mixdown`] cached as raw little-endian f32 in `cache_dir` (derived audio: keep it out of the repo).
+/// [`align::foh_mixdown`] (the recorded FOH main mix, mono) cached as raw little-endian f32 in `cache_dir`
+/// (derived audio: keep it out of the repo).
 pub fn mixdown_cached(fx: &Fixture, cache_dir: &Path) -> Result<Vec<f32>, SongError> {
     let expect = (fx.duration() * ALIGN_RATE as f64) as usize;
-    let path = cache_dir.join(format!("mixdown-{ALIGN_RATE}hz.f32"));
+    let path = cache_dir.join(format!("foh-{ALIGN_RATE}hz.f32"));
     if let Ok(bytes) = std::fs::read(&path) {
         if bytes.len() / 4 + ALIGN_RATE as usize >= expect {
             return Ok(bytes
@@ -155,7 +158,7 @@ pub fn mixdown_cached(fx: &Fixture, cache_dir: &Path) -> Result<Vec<f32>, SongEr
                 .collect());
         }
     }
-    let mix = align::mixdown(fx, 30.0)?;
+    let mix = align::foh_mixdown(fx, 30.0)?;
     let io = |e: std::io::Error| SongError::Fixture(FixtureError::Io(e.to_string()));
     std::fs::create_dir_all(cache_dir).map_err(io)?;
     let bytes: Vec<u8> = mix.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -306,7 +309,10 @@ mod tests {
         };
         // 50-110 overlaps the second segment most (50 s): 60-110 + 140.
         assert_eq!(section_range(&TOY, Some(&r), None), Some((200.0, 250.0)));
-        assert_eq!(section_range(&TOY, Some(&r), Some(20.0)), Some((215.0, 235.0)));
+        assert_eq!(
+            section_range(&TOY, Some(&r), Some(20.0)),
+            Some((215.0, 235.0))
+        );
         assert_eq!(section_range(&TOY, None, None), Some((100.0, 300.0)));
         let late = SectionRef {
             start_s: 150.0,
@@ -335,7 +341,8 @@ mod tests {
                 .max_by(|a, b| a.3.total_cmp(&b.3))
                 .unwrap()
                 .clone();
-            let p = matched_pair(&fx, s, Some(sec.index as usize), Some(&cache), Some(20.0)).unwrap();
+            let p =
+                matched_pair(&fx, s, Some(sec.index as usize), Some(&cache), Some(20.0)).unwrap();
             p.reference.validate().unwrap();
             let sec = p.section.as_ref().unwrap();
             assert!(p.start_s >= s.start_s - 1e-6 && p.end_s <= s.end_s + 1e-6);

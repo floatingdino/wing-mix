@@ -102,6 +102,18 @@ pub fn group_of(channel: u32) -> Group {
     }
 }
 
+/// FOH main mix L/R as recorded (the engineer's live mix; not console inputs). See fixtures/README.md.
+pub const FOH_CHANNELS: [u32; 2] = [52, 53];
+/// Separate video/stream mix L/R (not console inputs).
+pub const VIDEO_MIX_CHANNELS: [u32; 2] = [55, 56];
+/// Recorded tracks that are not console inputs: 43 (empty), FOH L/R and video mix L/R.
+pub const NON_INPUT_CHANNELS: [u32; 5] = [43, 52, 53, 55, 56];
+
+/// True for recorded console inputs (everything except [`NON_INPUT_CHANNELS`]).
+pub fn is_input(channel: u32) -> bool {
+    !NON_INPUT_CHANNELS.contains(&channel)
+}
+
 /// Representative 30 s windows `(name, start seconds, duration)`, chosen from `fixture scan --step 10`
 /// (see fixtures/README.md for the levels that justify them).
 pub const WINDOWS: &[(&str, f64, f64)] = &[
