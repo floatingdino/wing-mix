@@ -35,7 +35,7 @@ impl Message {
 
 fn pad(out: &mut Vec<u8>) {
     out.push(0);
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
 }
@@ -67,7 +67,7 @@ pub fn encode(m: &Message) -> Vec<u8> {
             Arg::Blob(b) => {
                 out.extend_from_slice(&(b.len() as i32).to_be_bytes());
                 out.extend_from_slice(b);
-                while out.len() % 4 != 0 {
+                while !out.len().is_multiple_of(4) {
                     out.push(0);
                 }
             }
