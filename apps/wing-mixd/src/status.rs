@@ -16,6 +16,8 @@ pub const STATUS_FILE: &str = "status.json";
 pub const SOCKET_FILE: &str = "control.sock";
 /// Persisted role confirmations.
 pub const ROLES_FILE: &str = "roles.json";
+/// Small persisted daemon settings (`{"live_context":"live"}`).
+pub const SETTINGS_FILE: &str = "settings.json";
 
 /// Default state dir: `$WINGMIX_STATE_DIR`, else `~/Library/Application Support/WingMix` (macOS) /
 /// `$XDG_STATE_HOME/wingmix` / `~/.local/state/wingmix`.
@@ -80,6 +82,27 @@ pub struct DaemonStatus {
     pub safety: Value,
     pub subscribers: usize,
     pub last_error: Option<String>,
+}
+
+/// Settings that survive a daemon restart (`<state-dir>/settings.json`; missing or unreadable = defaults).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub live_context: crate::protocol::LiveContext,
+}
+
+impl Settings {
+    pub fn load(dir: &Path) -> Settings {
+        std::fs::read_to_string(dir.join(SETTINGS_FILE))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, dir: &Path) -> io::Result<()> {
+        let s = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
+        atomic_write(&dir.join(SETTINGS_FILE), s.as_bytes())
+    }
 }
 
 /// User-confirmed strip roles, per console + scene (`<state-dir>/roles.json`).
@@ -153,6 +176,14 @@ mod tests {
         assert_eq!(back, st);
         // no temp files left behind
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+        assert_eq!(Settings::load(&dir), Settings::default());
+        let set = Settings {
+            live_context: crate::protocol::LiveContext::MatchRecord,
+        };
+        set.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), set);
+        std::fs::remove_file(dir.join(SETTINGS_FILE)).unwrap();
 
         let mut r = RoleStore::load(&dir);
         assert!(r.consoles.is_empty());

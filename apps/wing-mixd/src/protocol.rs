@@ -78,6 +78,8 @@ pub enum Request {
     Undo,
     /// Live state: spectra, loudness, problems, plan, move log, safety.
     Snapshot,
+    /// Strip names of the connected console (`{"strips":[{"id","kind","name"}]}`, unnamed strips left out).
+    Strips,
     /// Read console params (`input.1/fader`).
     Params {
         ids: Vec<String>,

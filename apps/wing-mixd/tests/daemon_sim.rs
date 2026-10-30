@@ -406,3 +406,41 @@ fn daemon_live_context_switch_changes_target_and_problems() {
     assert_eq!(r["target"]["band_width_p50_db"], live["band_width_p50_db"]);
     d.req(json!({"cmd": "quit"}));
 }
+
+/// M055: `strips` returns the console's strip names; the live context survives a daemon restart.
+#[test]
+fn daemon_strips_and_persisted_live_context() {
+    let dir = tmp_dir().join("strips");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mt, _) = write_fixture(&dir);
+    let saved = {
+        let d = Daemon::start(&dir);
+        assert!(
+            d.try_req(json!({"cmd": "strips"})).is_err(),
+            "needs a console"
+        );
+        d.req(json!({
+            "cmd": "connect_console", "console": "sim",
+            "sim": {"multitrack": mt, "names": TRACKS, "scene": "degraded", "speed": 0}
+        }));
+        let r = d.req(json!({"cmd": "strips"}));
+        let strips = r["strips"].as_array().unwrap();
+        assert!(
+            strips
+                .iter()
+                .any(|s| s["id"] == "input.1" && s["name"] == TRACKS[0]),
+            "{r}"
+        );
+        d.req(json!({"cmd": "set_live_context", "context": "match_record"}));
+        let saved = std::fs::read_to_string(dir.join("state/settings.json")).unwrap();
+        assert!(saved.contains("match_record"), "{saved}");
+        saved
+    }; // dropping the daemon removes the dir: put the settings file back for the second run
+    std::fs::create_dir_all(dir.join("state")).unwrap();
+    std::fs::write(dir.join("state/settings.json"), saved).unwrap();
+    let d = Daemon::start(&dir);
+    assert_eq!(
+        d.req(json!({"cmd": "status"}))["live_context"],
+        "match_record"
+    );
+}
