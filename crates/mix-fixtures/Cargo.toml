@@ -7,3 +7,6 @@ publish.workspace = true
 
 [dependencies]
 hound.workspace = true
+realfft.workspace = true
+mix-core = { path = "../mix-core" }
+mix-reference = { path = "../mix-reference" }

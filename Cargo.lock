@@ -695,6 +695,9 @@ name = "mix-fixtures"
 version = "0.1.0"
 dependencies = [
  "hound",
+ "mix-core",
+ "mix-reference",
+ "realfft",
 ]
 
 [[package]]

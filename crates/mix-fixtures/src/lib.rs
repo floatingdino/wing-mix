@@ -8,8 +8,15 @@
 //! * [`Fixture`]: project + audio tracks, with WING input channel numbers parsed from the file names
 //!   (`03-Kick-250622_1001.wav` is WING channel 3, label "Kick").
 //! * [`Fixture::loudness_map`]: streaming per-bin mean-square scan used to pick representative windows.
+//! * [`align`]: chroma + subsequence-DTW alignment of a reference recording to the multitrack (M016).
+//! * [`songs`]: the reference mixes (`fixtures/mixes/`), their multitrack time ranges ([`SONGS`]) and the
+//!   [`matched_pair`] test helper (multitrack excerpt + reference profile of the same song section).
 
+pub mod align;
 pub mod rpp;
+pub mod songs;
+
+pub use songs::{matched_pair, song, MatchedPair, Song, SONGS};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
