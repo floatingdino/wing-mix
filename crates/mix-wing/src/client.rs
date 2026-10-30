@@ -407,6 +407,32 @@ impl NativeClient {
         Ok(())
     }
 
+    /// [`Self::send_value`] for several nodes in **one** wire write with one barrier behind the last value (M064
+    /// slot recall: the console receives the whole batch as one TCP segment run). Hold [`Self::write_guard`]
+    /// around the mirror updates and this call.
+    pub fn send_values(&self, ids: &[NodeId]) -> io::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let store = self.store.clone();
+        let target = self.write_with(|enc, buf| {
+            for &id in ids {
+                let _ = enc.control(&Token::NavHash(Schema::get().hash(id)), buf);
+                with_value_token(&store, id, |t| {
+                    let _ = enc.control(&t, buf);
+                });
+            }
+            let _ = enc.control(&Token::NavHash(0), buf);
+            let _ = enc.control(&Token::DataRequest, buf);
+            1
+        })?;
+        let mut pending = lock(&self.shared.pending);
+        for &id in ids {
+            pending.insert(id, target);
+        }
+        Ok(())
+    }
+
     /// Send a raw value token for `id` (used by test drivers).
     pub fn send_token(&self, id: NodeId, t: &Token<'_>) -> io::Result<()> {
         self.write_with(|enc, buf| {

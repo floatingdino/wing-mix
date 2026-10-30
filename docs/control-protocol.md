@@ -21,6 +21,7 @@ temp dir). It is never the WingSimulator state dir.
 | `settings.json` | Persisted daemon settings: `{"live_context":"live"}` (M055); loaded at start, rewritten when `set_live_context` changes it. |
 | `roles.json` | User-confirmed strip roles per console + scene (`{"consoles":{"sim\|default":{"bus.5":"monitor"}}}`). |
 | `events.jsonl` | Every event line (below), appended; rotated to `events.1.jsonl` past 8 MB. The audit trail of moves. |
+| `slots/<console key>+<scene>.json` | Mix slots (M064), `{"version":1,"console_key","scene","slots":[...]}` (see [Mix slots](#mix-slots)); a file with a newer version is refused, never overwritten. |
 | `profiles/` | Reference profile cache (blake3 of the file + analysis versions). |
 | `stems/` | Optional stem-separation sidecar (mix-stems; only used with `"stems": true`). |
 
@@ -72,6 +73,14 @@ nothing else happens.
 | `snapshot` | | live state, below |
 | `strips` | | `{"strips":[{"id":"input.13","kind":"input","name":"VOX 1"}]}` for every named strip of the connected console (M055; the strip model has no colours). Front ends map the ids in `snapshot` (problem contributors, plan/move `strip`, param ids) to names. Errors without a console. |
 | `params` | `ids` (`["input.13/fader"]`) | `{"input.13/fader":{"type":"float","value":-10.0}}` |
+| `slot_store` | `name` (default: next free letter A, B, C...) | slot summary `{"name","builtin","auto","stored_unix","target":{kind,label,live_context}|null,"distance","objective","params","console"}`. Stores the managed console state + the active target; an existing name is overwritten (not `Original`). Needs a console only. |
+| `slot_list` | | `{"slots":[summary + "differs","engineer_moved","active","compatible","refused"?],"active","comparing","switching_set","live_confirmation_needed","target","distance","objective","file"}` |
+| `slot_recall` | `name`, `keep_engineer` (default true), `confirm_live` (bool) | `{"name","requested","written","changes":[{param,from,to}],"skipped":[Refusal],"kept_engineer":[param],"models":[param],"may_click","phases","prep_ms","write_ms","total_ms","request_ms","target","job"}`. See [Mix slots](#mix-slots). |
+| `slot_commit` | `name` (default: the active slot; another name is recalled first) | `{"name","job","changes"}`: ends the comparison as one undoable batch (`undo` reverts it) |
+| `slot_resume` | `mode` (default: the mode before the comparison; observe counts as autopilot) | `{"mode","slot","committed"}`: commits a running comparison, then continues the loop from the current slot and its target |
+| `slot_rename` | `name`, `to` | |
+| `slot_delete` | `name` | |
+| `slot_diff` | `a`, `b` (a slot, or `current` = the console now; default) | `{"a","b","params":[{"param","a","b","engineer_moved"}]}` |
 | `subscribe` | | turns the connection into an event stream |
 | `quit` | | the daemon writes its final status and exits |
 
@@ -143,7 +152,10 @@ of main-tap audio analysed), `unix`, and the event's own fields.
   `strips_measured` when its result re-planned).
 - `actuator`: `mix_actuator::ActuatorEvent` — `queued`, `refused`, `started`, `progress`, `yielded`, `paused`,
   `resumed`, `done {changes}`, `aborted`, `soloed`, `measured`, `solo_restored`, `reverted {restored, conflicts,
-  skipped}`, `rta_restored`, `safety {trip, reverted}`, `link_lost`, `link_restored {drifted}`, `stopped`, `ready`.
+  skipped}`, `rta_restored`, `safety {trip, reverted}`, `link_lost`, `link_restored {drifted}`, `stopped`, `ready`,
+  `snapped {report}` (M064 slot recall: `SnapReport` `{id,label,changes,skipped,phases,models,write_ms,total_ms,
+  refused,aborted}`), `committed {id,label,changes}`; `started.kind` `snap`, `aborted.reason` `superseded` (a running
+  move ended in place by a recall).
 - `daemon`: `started`, `console_connected`, `console_disconnected`, `input_selected`, `load_started`,
   `load_progress {what, stage, progress}`, `target_loaded`, `load_failed`, `roles_confirmed`, `session_started`,
   `session_stopped`, `session_ended`, `emergency_stop`, `signal {signal}`, `live_context_changed {live_context, applied}`, `panic`, `stopped`, `heartbeat` (subscribers only).
@@ -168,6 +180,7 @@ log        the last 60 actuator events (no progress)
 safety     {status {feedback_latched, feedback_suspect, ceiling_hold, stalled}, trips [{at_s, trip, reverted}],
             rta_feed {frames, source}|null}
 touched    [{param, baseline, current}]  every param the session changed (the PANIC target)
+slots      {count, active, comparing, live_confirmation_needed}   (M064; also in status)
 ```
 
 The current spectrum is the short-term (3 s) main analysis, refreshed every 0.5 s of audio.
@@ -178,7 +191,8 @@ The current spectrum is the short-term (3 s) main analysis, refreshed every 0.5 
 `console {kind,name,key,scene}`, `input {kind,description,sample_rate,taps,dropped_frames,clock_s,stream_errors}`,
 `target {kind,label}`, `loading {what,stage,progress}`, `tools {uv,claude: {path|null, for}}` (M065: where the
 daemon found each external tool; at start it merges the login shell's PATH and `~/.local/bin`, `/opt/homebrew/bin`,
-`/usr/local/bin`, nvm node bins into its own, so an app-launched daemon finds them), `mode`, `live_context`, `live_context_applied`, `session {running,stopped,holding,objective,distance,
+`/usr/local/bin`, nvm node bins into its own, so an app-launched daemon finds them), `slots {count,active,comparing,
+live_confirmation_needed}` (M064), `mode`, `live_context`, `live_context_applied`, `session {running,stopped,holding,objective,distance,
 batches,pending,touched}`, `safety {status,trips,rta_feed}`, `subscribers`, `last_error`. Absent parts are `null`.
 
 ## Threads
@@ -207,6 +221,47 @@ shows the confirmations stored for `<console key>|<scene>` (sim: `sim`; WING: `w
 confirmations) from the new roles before its next decision, so writes to a bus just confirmed as `monitor` are refused
 at once, and the controller is rebuilt between batches so new plans use them (the actuator session, journal and
 baseline are kept; the controller's move history restarts, as after a target change).
+
+## Mix slots
+
+M064. Keep several realised mixes, one per reference or description, and switch between them instantly.
+
+- **What a slot holds.** The values of every param the assistant manages (`mix_surface::slots::managed_params`:
+  writable params of every exposed strip that is not a matrix/DCA, minus hard-forbidden classes and anything the
+  remit forbids now: monitor/comms/locked/unconfirmed roles, default deny; conditional params are stored and decided
+  again on recall), the raw target (kind, label, info, live context, TargetProfile), the daemon run and engineer-move
+  counter at storing time, the console identity and the distance/objective of the last measurement. Typical size on a
+  WING: ~3000 params.
+- **`Original`** (built in) is captured when a session opens (the session baseline). It has no target: recalling it
+  keeps the active target, so it shows how far the untouched mix is from that target.
+- **Auto-capture.** When an autopilot session converges (`holding {reason: converged}`), the result is stored as
+  the target's auto slot (updated on later convergences on the same target, else the next free letter).
+- **Recall** (`slot_recall`):
+  1. refused with a reason if the slot does not map onto the console now (`mix_surface::slots::check_compatible`:
+     strip gone, class/unit changed, stored value invalid; model-dependent leaves of a block whose model the slot
+     switches are checked after the switch) or was stored on another surface family;
+  2. on a real console (not the embedded sim) the first recall per connection needs `confirm_live: true`: the
+     audience hears the switch;
+  3. opens the actuator session if needed (needs a console and an input; captures `Original`); refused while STOP
+     is in effect;
+  4. the slot's params that differ from the console now are the switching set of this recall. Params the engineer
+     moved (any non-daemon change seen on the console) since the slot was stored are **kept** (`kept_engineer`)
+     unless `keep_engineer: false`; then the slot's value is written and those params count as the engineer's
+     choice from then on;
+  5. the actuator **snaps** them (`mix_actuator::SnapRequest`): one console batch (`Surface::write_batch`; on a WING
+     one wire write + one barrier), not ramped. A model switch goes first, the switched block's params follow in a
+     second batch after the console re-resolved them (M038 ordering; `may_click`). Every write is checked by the
+     remit + safety gate (`check_recall`, see docs/safety.md); refused params are listed in `skipped`;
+  6. the comparison starts (first recall): the mode drops to `observe` (the loop measures, moves nothing; `undo`,
+     `start` and `set_mode autopilot` are refused while comparing) and the slot's target becomes the active target
+     (with its own live context), so the live view and the distance follow the slot.
+- **Commit** records the comparison's end state as one journal batch (from = the values before the comparison's first
+  recall, to = now) and one undo unit: `undo` ramps it back. **Resume** commits, then continues the loop from the
+  current slot (default autopilot). PANIC ends a comparison without committing (and reverts the session as usual).
+- **Latency** (wing-sim via mix-testsim, release build, `tests/slots.rs`): 9 params without a model switch ~30 ms
+  from request to reply (write itself < 0.1 ms; most is the compatibility check of ~3000 stored params); 20 params
+  with an EQ model switch ~63 ms (the actuator's part 33 ms, of which most waits for the console's remap); the last
+  value is echoed to a second client on the console within 1 ms of the reply. Embedded sim: ~16 ms.
 
 ## Console RTA feed
 

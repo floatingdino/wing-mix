@@ -4,7 +4,8 @@
 //! handle (or [`ActuatorHandle::shutdown`]) STOPs (freezing moves, restoring any inspection solo) and joins.
 
 use crate::actuator::Actuator;
-use crate::event::{ActuatorEvent, Job, MoveId};
+use crate::event::{ActuatorEvent, Job, MoveId, SnapRequest};
+use mix_surface::journal::Change;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -15,6 +16,8 @@ enum Command {
     Submit(MoveId, Job),
     Stop,
     Panic(MoveId),
+    Snap(MoveId, SnapRequest),
+    Commit(MoveId, String, Vec<Change>),
     Resume,
     Confirm(String),
     Revoke(String),
@@ -75,6 +78,8 @@ fn apply(a: &mut Actuator, cmd: Command) {
         Command::Submit(id, job) => a.submit_with_id(id, job),
         Command::Stop => a.stop(),
         Command::Panic(id) => a.panic_with_id(id),
+        Command::Snap(id, req) => a.snap_with_id(id, req),
+        Command::Commit(id, label, changes) => a.commit_with_id(id, &label, changes),
         Command::Resume => a.resume(),
         Command::Confirm(k) => a.confirm(&k),
         Command::Revoke(k) => a.revoke(&k),
@@ -105,6 +110,20 @@ impl ActuatorHandle {
     pub fn panic(&self) -> MoveId {
         let id = self.next_id();
         self.send(Command::Panic(id));
+        id
+    }
+
+    /// Slot-recall snap (M064): runs as soon as the thread wakes (see [`SnapRequest`]).
+    pub fn snap(&self, req: SnapRequest) -> MoveId {
+        let id = self.next_id();
+        self.send(Command::Snap(id, req));
+        id
+    }
+
+    /// Record the end of a slot comparison as one undoable journal batch (see `Actuator::commit`).
+    pub fn commit(&self, label: impl Into<String>, changes: Vec<Change>) -> MoveId {
+        let id = self.next_id();
+        self.send(Command::Commit(id, label.into(), changes));
         id
     }
 

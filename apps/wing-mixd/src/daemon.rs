@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 
 use mix_actuator::{
     spawn as spawn_actuator, Actuator, ActuatorConfig, ActuatorEvent, ActuatorHandle, Job, MoveId,
-    PolicyGate, SafetyConfig, SafetyGate, SafetyMonitor,
+    PolicyGate, SafetyConfig, SafetyGate, SafetyMonitor, SnapRequest,
 };
+use mix_core::action::ParamChange;
 use mix_core::bands::{BandLayout, THIRD_OCT_CENTRES_HZ};
 use mix_core::ids::{ParamId, StripId};
 use mix_core::profile::TargetProfile;
@@ -26,7 +27,9 @@ use mix_core::value::Value as PValue;
 use mix_engine::control::{ControlConfig, ControlEvent, Controller, Executor, Mode};
 use mix_knowledge::KnowledgeBase;
 use mix_sim::{Multitrack, SimConfig, SimSurface, Track};
+use mix_surface::journal::Change;
 use mix_surface::remit::{detect_topology, Policy, ScoringDetector};
+use mix_surface::SurfaceEvent;
 use mix_surface::{Role, Surface};
 use serde_json::{json, Value};
 
@@ -39,6 +42,7 @@ use crate::protocol::{
 };
 use crate::rta::RtaFeed;
 use crate::server::{ControlServer, Dispatch};
+use crate::slots::{EngineerMoves, Slot, SlotConsole, SlotStore, SlotTarget, ORIGINAL};
 use crate::source::Source;
 use crate::status::{atomic_write, unix_now, DaemonStatus, RoleStore, SOCKET_FILE, STATUS_FILE};
 use crate::taps::TapLayout;
@@ -429,6 +433,26 @@ struct Daemon {
     loading: Option<Loading>,
     session: Option<Session>,
     next_status: Instant,
+    /// M064 mix slots of the connected console + scene (`Err`: the file could not be read).
+    slots: Option<Result<SlotStore, String>>,
+    /// Params someone else changed on the console (engineer moves), for slot recalls.
+    moves: EngineerMoves,
+    /// The console's change events (engineer moves).
+    ext_rx: Option<Receiver<SurfaceEvent>>,
+    /// A slot comparison is running: the loop measures in observe mode and moves nothing.
+    comparing: Option<Comparing>,
+    /// Slot last recalled (the one the console is on, unless moved since).
+    active_slot: Option<String>,
+    /// Mode `slot_resume` returns to (the mode before the comparison).
+    resume_mode: Mode,
+    /// The live-console warning was confirmed for this connection.
+    live_confirmed: bool,
+}
+
+/// A running slot comparison (M064).
+struct Comparing {
+    /// Value of every param a recall wrote, before the comparison first wrote it (the commit's `from`).
+    start: BTreeMap<ParamId, PValue>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -466,6 +490,17 @@ impl Daemon {
             loading: None,
             session: None,
             next_status: Instant::now(),
+            slots: None,
+            moves: EngineerMoves::new(format!(
+                "{}-{:.0}",
+                std::process::id(),
+                crate::status::unix_now() * 1e3
+            )),
+            ext_rx: None,
+            comparing: None,
+            active_slot: None,
+            resume_mode: Mode::Autopilot,
+            live_confirmed: false,
         }
     }
 
@@ -513,6 +548,13 @@ impl Daemon {
     fn handle(&mut self, m: Msg) {
         match m {
             Msg::After(Request::Panic) => {
+                if self.comparing.take().is_some() {
+                    self.emit(
+                        "daemon",
+                        &json!({"type": "slot_comparison_ended", "reason": "panic"}),
+                    );
+                }
+                self.active_slot = None;
                 self.set_mode(Mode::Observe);
                 self.emit("daemon", &json!({"type": "panic", "mode": "observe"}));
             }
@@ -577,6 +619,9 @@ impl Daemon {
             }
             Request::ListRoles => self.list_roles(),
             Request::ConfirmRoles { roles, scene } => self.confirm_roles(roles, scene),
+            Request::SetMode { mode } if mode == Mode::Autopilot && self.comparing.is_some() => {
+                Err("comparing slots: slot_resume continues tuning".into())
+            }
             Request::SetMode { mode } => {
                 self.set_mode(mode);
                 Ok(json!({"mode": mode}))
@@ -598,12 +643,27 @@ impl Daemon {
                 Ok(json!({"confirmed": key}))
             }),
             Request::Pending => Ok(self.pending()),
+            Request::Undo if self.comparing.is_some() => {
+                Err("comparing slots: slot_commit (or slot_resume) first, then undo".into())
+            }
             Request::Undo => {
                 self.with_session(|s| Ok(json!({"job": s.actuator.submit(Job::Undo)})))
             }
             Request::Snapshot => Ok(self.snapshot()),
             Request::Strips => self.strips(),
             Request::Params { ids } => self.params(&ids),
+            Request::SlotStore { name } => self.slot_store_cmd(name),
+            Request::SlotList => self.slot_list(),
+            Request::SlotRecall {
+                name,
+                keep_engineer,
+                confirm_live,
+            } => self.slot_recall(&name, keep_engineer.unwrap_or(true), confirm_live),
+            Request::SlotRename { name, to } => self.slot_rename(&name, &to),
+            Request::SlotDelete { name } => self.slot_delete(&name),
+            Request::SlotCommit { name } => self.slot_commit(name),
+            Request::SlotResume { mode } => self.slot_resume(mode),
+            Request::SlotDiff { a, b } => self.slot_diff(&a, b.as_deref()),
             Request::Subscribe => Err("subscribe is only available on a socket connection".into()),
             Request::Quit => {
                 self.quit = true;
@@ -744,6 +804,17 @@ impl Daemon {
             "scene": console.scene,
             "inputs": console.sim.as_ref().map(|s| s.inputs.clone()),
         });
+        self.ext_rx = Some(console.surface.subscribe());
+        self.slots = Some(SlotStore::open(
+            &self.cfg.state_dir,
+            &console.key,
+            &console.scene,
+        ));
+        if let Some(Err(e)) = &self.slots {
+            self.last_error = Some(format!("slots: {e}"));
+        }
+        self.moves.clear();
+        self.live_confirmed = false;
         self.console = Some(console);
         self.emit(
             "daemon",
@@ -761,6 +832,9 @@ impl Daemon {
         {
             self.input = None;
         }
+        self.ext_rx = None;
+        self.slots = None;
+        self.active_slot = None;
         if self.console.take().is_some() {
             self.emit("daemon", &json!({"type": "console_disconnected"}));
         }
@@ -1110,17 +1184,28 @@ impl Daemon {
     }
 
     fn start(&mut self, o: StartOptions) -> Result<Value, String> {
+        if self.comparing.is_some() {
+            return Err("comparing slots: slot_resume continues tuning (or slot_commit ends the comparison)".into());
+        }
         let console = self.console.as_ref().ok_or("connect a console first")?;
         self.policy
             .check_surface(&console.surface.info())
             .map_err(err)?;
-        let input = self.input.as_ref().ok_or("select an input first")?;
+        self.input.as_ref().ok_or("select an input first")?;
         if self.target.is_none() {
             return Err("load a reference or a description first".into());
         }
         if let Some(m) = o.mode {
             self.mode = m;
         }
+        self.open_session(&o)?;
+        self.start_tail(o)
+    }
+
+    /// Create the actuator session (gate, safety monitor, RTA feed) if there is none. Needs a console and an input.
+    fn open_session(&mut self, o: &StartOptions) -> Result<(), String> {
+        let console = self.console.as_ref().ok_or("connect a console first")?;
+        let input = self.input.as_ref().ok_or("select an input first")?;
         if self.session.is_none() {
             let feedback_guard = o.feedback_guard.unwrap_or(console.kind != "sim");
             let mut scfg = SafetyConfig::default();
@@ -1170,7 +1255,20 @@ impl Daemon {
                 roles_stale: false,
                 rta,
             });
+            // M064: the built-in `Original` slot is the console as the session found it (its baseline).
+            match self.capture_slot(ORIGINAL, true, false) {
+                Ok(slot) => {
+                    if let Err(e) = self.put_slot(slot, false) {
+                        self.last_error = Some(format!("slots: {e}"));
+                    }
+                }
+                Err(e) => self.last_error = Some(format!("slots: {e}")),
+            }
         }
+        Ok(())
+    }
+
+    fn start_tail(&mut self, o: StartOptions) -> Result<Value, String> {
         let s = self.session.as_mut().expect("session");
         let rebuild = o != StartOptions::default() && o != s.opts || s.ctl.is_none();
         if o != StartOptions::default() {
@@ -1266,12 +1364,14 @@ impl Daemon {
         if let Some(i) = &self.input {
             lock(&i.analysis.meters).safety = None;
         }
+        self.comparing = None;
         if self.session.take().is_some() {
             self.emit("daemon", &json!({"type": "session_ended"}));
         }
     }
 
     fn tick(&mut self) {
+        self.drain_console_events();
         if self
             .session
             .as_ref()
@@ -1315,8 +1415,14 @@ impl Daemon {
             }
             events.push(("actuator", serde_json::to_value(&e).unwrap_or(Value::Null)));
         }
+        let converged = events.iter().any(|(src, e)| {
+            *src == "control" && e["type"] == "holding" && e["reason"] == "converged"
+        });
         for (src, e) in events {
             self.shared.hub.emit(src, now, &e);
+        }
+        if converged && self.comparing.is_none() && self.mode == Mode::Autopilot {
+            self.auto_store();
         }
     }
 
@@ -1374,6 +1480,7 @@ impl Daemon {
             "live_context_applied": self.target.is_some(),
             "console": self.console.as_ref().map(|c| json!({"kind": c.kind, "name": c.name})),
             "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label, "info": t.info, "context": context_summary(&t.profile)})),
+            "slots": self.slots_status(),
         });
         let live = self.input.as_ref().and_then(|i| {
             let m = lock(&i.analysis.meters);
@@ -1526,6 +1633,7 @@ impl Daemon {
             subscribers: self.shared.hub.subscribers(),
             last_error: self.last_error.clone(),
             tools: crate::tools::status(),
+            slots: self.slots_status(),
         }
     }
 
@@ -1533,6 +1641,548 @@ impl Daemon {
         if let Ok(s) = serde_json::to_string(&self.status(running)) {
             let _ = atomic_write(&self.cfg.state_dir.join(STATUS_FILE), s.as_bytes());
         }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------------
+// Mix slots (M064)
+
+/// How long a recall waits for the actuator's snap report (model remap wait included).
+const SNAP_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl Daemon {
+    fn slot_store_mut(&mut self) -> Result<&mut SlotStore, String> {
+        match self.slots.as_mut() {
+            None => Err("connect a console first".into()),
+            Some(Err(e)) => Err(format!("slots unavailable: {e}")),
+            Some(Ok(s)) => Ok(s),
+        }
+    }
+
+    fn slot_store(&self) -> Result<&SlotStore, String> {
+        match self.slots.as_ref() {
+            None => Err("connect a console first".into()),
+            Some(Err(e)) => Err(format!("slots unavailable: {e}")),
+            Some(Ok(s)) => Ok(s),
+        }
+    }
+
+    /// Read the managed params of the console now (remit as for the session: policy + confirmed roles).
+    fn capture_slot(&self, name: &str, builtin: bool, auto: bool) -> Result<Slot, String> {
+        let c = self.console.as_ref().ok_or("connect a console first")?;
+        let roles = self.roles.roles(&c.role_key());
+        let gate = PolicyGate::with_roles(self.policy.clone(), &*c.surface, roles)
+            .map_err(|e| format!("remit: {e}"))?;
+        let specs = mix_surface::slots::managed_params(
+            &*c.surface,
+            &self.policy,
+            gate.context(),
+            gate.session(),
+        )
+        .map_err(err)?;
+        let values = mix_surface::slots::capture(&*c.surface, &specs).map_err(err)?;
+        let score = self
+            .session
+            .as_ref()
+            .and_then(|s| s.ctl.as_ref())
+            .and_then(|c| c.ctl.score().cloned());
+        Ok(Slot {
+            name: name.into(),
+            builtin,
+            auto,
+            stored_unix: crate::status::unix_now(),
+            run: self.moves.run.clone(),
+            seq: self.moves.seq(),
+            console: SlotConsole {
+                kind: c.kind.into(),
+                key: c.key.clone(),
+                name: c.name.clone(),
+                scene: c.scene.clone(),
+                surface: c.surface.info().surface,
+            },
+            target: if builtin {
+                None
+            } else {
+                self.target.as_ref().map(|t| SlotTarget {
+                    kind: t.kind.into(),
+                    label: t.label.clone(),
+                    info: t.info.clone(),
+                    live_context: self.live_context,
+                    profile: t.raw.clone(),
+                })
+            },
+            distance: if builtin {
+                None
+            } else {
+                score.as_ref().map(|s| s.distance as f64)
+            },
+            objective: if builtin {
+                None
+            } else {
+                score.as_ref().map(|s| s.objective)
+            },
+            values,
+        })
+    }
+
+    fn put_slot(&mut self, slot: Slot, announce: bool) -> Result<Value, String> {
+        let summary = slot.summary();
+        self.slot_store_mut()?.put(slot)?;
+        if announce {
+            self.emit(
+                "daemon",
+                &json!({"type": "slot_stored", "slot": summary.clone()}),
+            );
+        }
+        Ok(summary)
+    }
+
+    fn slot_store_cmd(&mut self, name: Option<String>) -> Result<Value, String> {
+        let name = match name {
+            Some(n) => n,
+            None => self.slot_store()?.next_name(),
+        };
+        if name == ORIGINAL {
+            return Err(format!("`{ORIGINAL}` is built in (the session baseline)"));
+        }
+        self.slot_store()?;
+        let slot = self.capture_slot(&name, false, false)?;
+        self.put_slot(slot, true)
+    }
+
+    /// The session converged on its target: keep the result as a slot (the target's earlier auto slot is updated).
+    fn auto_store(&mut self) {
+        let Some(t) = self.target.as_ref() else {
+            return;
+        };
+        let Ok(store) = self.slot_store() else {
+            return;
+        };
+        let name = match store.auto_for(t.kind, &t.label) {
+            Some(s) => s.name.clone(),
+            None => store.next_name(),
+        };
+        match self.capture_slot(&name, false, true) {
+            Ok(slot) => {
+                if let Err(e) = self.put_slot(slot, true) {
+                    self.last_error = Some(format!("slots: {e}"));
+                }
+            }
+            Err(e) => self.last_error = Some(format!("slots: {e}")),
+        }
+    }
+
+    /// Console values of every param any slot stores (params that do not resolve now are left out).
+    fn slot_current(&self) -> Result<BTreeMap<ParamId, PValue>, String> {
+        let c = self.console.as_ref().ok_or("connect a console first")?;
+        let store = self.slot_store()?;
+        let mut out = BTreeMap::new();
+        for s in store.slots() {
+            for p in s.values.keys() {
+                if out.contains_key(p) {
+                    continue;
+                }
+                if let Ok(v) = c.surface.read(p) {
+                    out.insert(p.clone(), v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn tolerance_fn(&self) -> impl Fn(&ParamId) -> f64 + '_ {
+        let surface = self.console.as_ref().map(|c| c.surface.clone());
+        move |p: &ParamId| {
+            surface
+                .as_ref()
+                .and_then(|s| s.param_spec(p).ok())
+                .map_or(1e-6, |s| s.tolerance())
+        }
+    }
+
+    /// Slots this recall may consider: compatible with the console now.
+    fn compatible(&self, slot: &Slot) -> Result<(), String> {
+        let c = self.console.as_ref().ok_or("connect a console first")?;
+        let surface = c.surface.info().surface;
+        if slot.console.surface != surface {
+            return Err(format!(
+                "stored on a `{}` console, this is `{surface}`",
+                slot.console.surface
+            ));
+        }
+        mix_surface::slots::check_compatible(&*c.surface, &slot.values)
+    }
+
+    fn slot_list(&self) -> Result<Value, String> {
+        let store = self.slot_store()?;
+        let current = self.slot_current()?;
+        let tol = self.tolerance_fn();
+        let compatible: Vec<&Slot> = store
+            .slots()
+            .into_iter()
+            .filter(|s| self.compatible(s).is_ok())
+            .collect();
+        let set = crate::slots::switching_set(compatible.iter().copied(), &current, &tol);
+        let slots: Vec<Value> = store
+            .slots()
+            .iter()
+            .map(|s| {
+                let differs = crate::slots::diff(&s.values, &current, &tol)
+                    .into_iter()
+                    .filter(|p| s.values.contains_key(p))
+                    .collect::<Vec<_>>();
+                let moved = differs
+                    .iter()
+                    .filter(|p| self.moves.moved_since(p, s))
+                    .count();
+                let mut v = s.summary();
+                v["differs"] = json!(differs.len());
+                v["engineer_moved"] = json!(moved);
+                v["active"] = json!(self.active_slot.as_deref() == Some(s.name.as_str()));
+                match self.compatible(s) {
+                    Ok(()) => v["compatible"] = json!(true),
+                    Err(e) => {
+                        v["compatible"] = json!(false);
+                        v["refused"] = json!(e);
+                    }
+                }
+                v
+            })
+            .collect();
+        let score = self
+            .session
+            .as_ref()
+            .and_then(|s| s.ctl.as_ref())
+            .and_then(|c| c.ctl.score());
+        Ok(json!({
+            "slots": slots,
+            "active": self.active_slot,
+            "comparing": self.comparing.is_some(),
+            "switching_set": set.len(),
+            "live_confirmation_needed": self.live_confirmation_needed(),
+            "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label})),
+            "distance": score.map(|s| s.distance),
+            "objective": score.map(|s| s.objective),
+            "file": store.path(),
+        }))
+    }
+
+    fn live_confirmation_needed(&self) -> bool {
+        self.console
+            .as_ref()
+            .is_some_and(|c| c.kind != "sim" && !self.live_confirmed)
+    }
+
+    fn slot_recall(
+        &mut self,
+        name: &str,
+        keep_engineer: bool,
+        confirm_live: bool,
+    ) -> Result<Value, String> {
+        let t_req = Instant::now();
+        let slot = self
+            .slot_store()?
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("no slot `{name}`"))?;
+        if self.live_confirmation_needed() {
+            if !confirm_live {
+                return Err(
+                    "live console: recalling a slot changes what the audience hears at once; \
+                            repeat with confirm_live: true (asked once per connection)"
+                        .into(),
+                );
+            }
+            self.live_confirmed = true;
+        }
+        self.compatible(&slot)
+            .map_err(|e| format!("slot `{name}` refused: {e}"))?;
+        self.open_session(&StartOptions::default())?;
+        if self.session.as_ref().is_some_and(|s| s.stopped) {
+            return Err("STOP is in effect: `resume` before recalling a slot".into());
+        }
+        // what this slot changes: its params that differ from the console now (the switching set restricted to
+        // this slot; writing is decided again by the gate)
+        let c = self.console.as_ref().expect("console");
+        let tol = self.tolerance_fn();
+        let mut changes = Vec::new();
+        let mut kept = Vec::new();
+        for (p, sp) in &slot.values {
+            if c.surface
+                .read(p)
+                .is_ok_and(|cur| cur.approx_eq(&sp.value, tol(p)))
+            {
+                continue;
+            }
+            if self.moves.moved_since(p, &slot) && keep_engineer {
+                kept.push(p.clone());
+                continue;
+            }
+            changes.push(ParamChange::new(p.clone(), sp.value.clone()));
+        }
+        let t_prep = t_req.elapsed().as_secs_f64() * 1e3;
+        drop(tol);
+        // pause the loop: observe mode measures (distance to the slot's target) and moves nothing
+        let started_now = self.comparing.is_none();
+        let prior_mode = self.mode;
+        if started_now {
+            self.resume_mode = match self.mode {
+                Mode::Observe => Mode::Autopilot,
+                m => m,
+            };
+            self.comparing = Some(Comparing {
+                start: BTreeMap::new(),
+            });
+            self.set_mode(Mode::Observe);
+            self.emit(
+                "daemon",
+                &json!({"type": "slot_comparison_started", "resume_mode": self.resume_mode}),
+            );
+        }
+        let s = self.session.as_ref().expect("session");
+        let (tx, rx) = channel();
+        let n = changes.len();
+        s.actuator
+            .snap(SnapRequest::new(format!("slot {name}"), changes).reply_to(tx));
+        let report = rx
+            .recv_timeout(SNAP_TIMEOUT)
+            .map_err(|_| "the actuator did not finish the recall in time".to_string())?;
+        let request_ms = t_req.elapsed().as_secs_f64() * 1e3;
+        if let Some(r) = &report.refused {
+            if started_now {
+                // nothing was written: no comparison after all
+                self.comparing = None;
+                self.set_mode(prior_mode);
+            }
+            return Err(format!("recall refused: {r:?}"));
+        }
+        if let Some(c) = self.comparing.as_mut() {
+            for ch in &report.changes {
+                c.start
+                    .entry(ch.param.clone())
+                    .or_insert_with(|| ch.from.clone());
+            }
+        }
+        if !keep_engineer {
+            for ch in &report.changes {
+                self.moves.acknowledge(&ch.param);
+            }
+        }
+        // the slot's reference becomes the active target (its own live context), so the live view and the
+        // distance follow the slot
+        if let Some(t) = &slot.target {
+            self.target_gen += 1;
+            let mut applied = t.profile.clone();
+            mix_describe::apply_context(&mut applied, t.live_context.mix_context());
+            let kind: &'static str = if t.kind == "description" {
+                "description"
+            } else {
+                "reference"
+            };
+            self.target = Some(Target {
+                profile: applied,
+                raw: t.profile.clone(),
+                kind,
+                label: t.label.clone(),
+                info: t.info.clone(),
+                gen: self.target_gen,
+            });
+            if self.live_context != t.live_context {
+                self.live_context = t.live_context;
+                self.emit(
+                    "daemon",
+                    &json!({"type": "live_context_changed", "live_context": t.live_context, "applied": true, "from_slot": name}),
+                );
+            }
+        }
+        if self.target.is_some() {
+            self.build_ctl()?;
+            if let Some(s) = self.session.as_mut() {
+                s.running = true;
+            }
+        }
+        self.active_slot = Some(name.to_string());
+        let skipped: Vec<Value> = report
+            .skipped
+            .iter()
+            .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+            .collect();
+        let out = json!({
+            "name": name,
+            "requested": n,
+            "written": report.changes.len(),
+            "changes": report.changes,
+            "skipped": skipped,
+            "kept_engineer": kept,
+            "models": report.models,
+            "may_click": !report.models.is_empty(),
+            "phases": report.phases,
+            "write_ms": report.write_ms,
+            "total_ms": report.total_ms,
+            "request_ms": request_ms,
+            "prep_ms": t_prep,
+            "aborted": report.aborted,
+            "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label})),
+            "job": report.id,
+        });
+        let mut ev = out.clone();
+        ev["type"] = json!("slot_recalled");
+        if let Some(o) = ev.as_object_mut() {
+            o.remove("changes");
+        }
+        self.emit("daemon", &ev);
+        Ok(out)
+    }
+
+    fn slot_commit(&mut self, name: Option<String>) -> Result<Value, String> {
+        if let Some(n) = &name {
+            if self.active_slot.as_deref() != Some(n.as_str()) {
+                self.slot_recall(n, true, false)?;
+            }
+        }
+        let c = self.comparing.take().ok_or("no slot comparison running")?;
+        let name = self.active_slot.clone().unwrap_or_default();
+        let surface = self
+            .console
+            .as_ref()
+            .ok_or("connect a console first")?
+            .surface
+            .clone();
+        let tol = self.tolerance_fn();
+        let changes: Vec<Change> = c
+            .start
+            .into_iter()
+            .filter_map(|(param, from)| {
+                let to = surface.read(&param).ok()?;
+                (!to.approx_eq(&from, tol(&param))).then_some(Change { param, from, to })
+            })
+            .collect();
+        drop(tol);
+        let s = self.session.as_ref().ok_or("no session")?;
+        let n = changes.len();
+        let job = s.actuator.commit(format!("slot {name}"), changes);
+        let out = json!({"name": name, "job": job, "changes": n, "undo": "`undo` reverts it"});
+        let mut ev = out.clone();
+        ev["type"] = json!("slot_committed");
+        self.emit("daemon", &ev);
+        Ok(out)
+    }
+
+    fn slot_resume(&mut self, mode: Option<Mode>) -> Result<Value, String> {
+        self.session.as_ref().ok_or("no session")?;
+        let committed = if self.comparing.is_some() {
+            Some(self.slot_commit(None)?)
+        } else {
+            None
+        };
+        let mode = mode.unwrap_or(self.resume_mode);
+        if self.target.is_none() {
+            return Err("load a reference or a description first".into());
+        }
+        let stale = self
+            .session
+            .as_ref()
+            .and_then(|s| s.ctl.as_ref())
+            .map(|c| c.gen)
+            != self.target.as_ref().map(|t| t.gen);
+        if stale {
+            self.build_ctl()?;
+        }
+        if let Some(s) = self.session.as_mut() {
+            s.running = true;
+        }
+        self.set_mode(mode);
+        let out = json!({"mode": mode, "slot": self.active_slot, "committed": committed});
+        self.emit(
+            "daemon",
+            &json!({"type": "slot_resumed", "mode": mode, "slot": self.active_slot}),
+        );
+        Ok(out)
+    }
+
+    fn slot_rename(&mut self, name: &str, to: &str) -> Result<Value, String> {
+        self.slot_store_mut()?.rename(name, to)?;
+        if self.active_slot.as_deref() == Some(name) {
+            self.active_slot = Some(to.to_string());
+        }
+        self.emit(
+            "daemon",
+            &json!({"type": "slot_renamed", "name": name, "to": to}),
+        );
+        Ok(json!({"name": to}))
+    }
+
+    fn slot_delete(&mut self, name: &str) -> Result<Value, String> {
+        self.slot_store_mut()?.delete(name)?;
+        if self.active_slot.as_deref() == Some(name) {
+            self.active_slot = None;
+        }
+        self.emit("daemon", &json!({"type": "slot_deleted", "name": name}));
+        Ok(json!({"deleted": name}))
+    }
+
+    fn slot_diff(&self, a: &str, b: Option<&str>) -> Result<Value, String> {
+        let store = self.slot_store()?;
+        let sa = store.get(a).ok_or_else(|| format!("no slot `{a}`"))?;
+        let current;
+        let bvals: BTreeMap<ParamId, PValue> = match b {
+            None | Some("current") => {
+                current = self.slot_current()?;
+                sa.values
+                    .keys()
+                    .filter_map(|p| current.get(p).map(|v| (p.clone(), v.clone())))
+                    .collect()
+            }
+            Some(n) => store
+                .get(n)
+                .ok_or_else(|| format!("no slot `{n}`"))?
+                .values
+                .iter()
+                .map(|(p, v)| (p.clone(), v.value.clone()))
+                .collect(),
+        };
+        let tol = self.tolerance_fn();
+        let params: Vec<Value> = crate::slots::diff(&sa.values, &bvals, &tol)
+            .into_iter()
+            .map(|p| {
+                json!({
+                    "param": p,
+                    "a": sa.values.get(&p).map(|v| &v.value),
+                    "b": bvals.get(&p),
+                    "engineer_moved": self.moves.moved_since(&p, sa),
+                })
+            })
+            .collect();
+        Ok(json!({"a": a, "b": b.unwrap_or("current"), "params": params}))
+    }
+
+    /// Engineer moves (for `engineer_moved` / `keep_engineer`).
+    fn drain_console_events(&mut self) {
+        let Some(rx) = &self.ext_rx else { return };
+        let evs: Vec<SurfaceEvent> = rx.try_iter().collect();
+        for ev in evs {
+            if let SurfaceEvent::ParamChanged {
+                param,
+                origin: mix_surface::surface::Origin::External,
+                ..
+            } = ev
+            {
+                self.moves.moved(param);
+            }
+        }
+    }
+
+    fn slots_status(&self) -> Value {
+        let count = match &self.slots {
+            Some(Ok(s)) => Some(s.slots().len()),
+            _ => None,
+        };
+        json!({
+            "count": count,
+            "active": self.active_slot,
+            "comparing": self.comparing.is_some(),
+            "live_confirmation_needed": self.live_confirmation_needed(),
+        })
     }
 }
 

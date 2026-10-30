@@ -27,6 +27,15 @@ pub trait RemitGate: Send {
         self.check_write(req, baseline)
     }
 
+    /// As [`check_write`](RemitGate::check_write) for a **slot recall** snap (M064): a deliberate, non-ramped
+    /// return to a state the engineer stored. Defaults to `check_write`; the safety layer keeps its holds, the
+    /// fader ceiling, the per-session boost limit and the remit envelopes here, but not the per-move boost limit
+    /// (a snap is not a move) nor the "discrete only when inaudible" rule (the engineer asked for the switch and
+    /// was told a model change may click).
+    fn check_recall(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        self.check_write(req, baseline)
+    }
+
     /// Decision for a solo/listen of `strip`.
     fn check_inspection(&self, kind: InspectionKind, strip: &StripId) -> Decision;
 

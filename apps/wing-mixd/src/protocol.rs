@@ -88,6 +88,48 @@ pub enum Request {
     Params {
         ids: Vec<String>,
     },
+    /// Mix slots (M064): store the managed console state (+ the active target) as slot `name` (default: the next
+    /// free letter A, B, C...; an existing name is overwritten, except `Original`).
+    SlotStore {
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Slots of this console + scene, with what differs from the console now.
+    SlotList,
+    /// Snap the console to slot `name` (one batch, not ramped) and make its target the active one. Pauses the loop
+    /// (comparison) until `slot_commit` / `slot_resume`. `keep_engineer` (default true): params the engineer moved
+    /// since the slot was stored keep the engineer's value. `confirm_live`: needed once per connection on a real
+    /// console (the audience hears the switch).
+    SlotRecall {
+        name: String,
+        #[serde(default)]
+        keep_engineer: Option<bool>,
+        #[serde(default)]
+        confirm_live: bool,
+    },
+    SlotRename {
+        name: String,
+        to: String,
+    },
+    SlotDelete {
+        name: String,
+    },
+    /// End the comparison on slot `name` (default: the active one) as one undoable journal batch.
+    SlotCommit {
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Continue tuning from the current slot (commits a running comparison first); `mode` default autopilot.
+    SlotResume {
+        #[serde(default)]
+        mode: Option<Mode>,
+    },
+    /// What differs between slot `a` and slot `b` (default `current`: the console now).
+    SlotDiff {
+        a: String,
+        #[serde(default)]
+        b: Option<String>,
+    },
     /// Turn this connection into an event stream.
     Subscribe,
     /// Shut the daemon down.

@@ -12,6 +12,7 @@ struct LiveView: View {
         Scroller {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if model.isConnectedToConsole { SlotStripView(model: model) }
                 safetyBanner
                 HStack(alignment: .top, spacing: 16) {
                     Box("Spectrum: current vs target (dB relative, ERB bands)") {

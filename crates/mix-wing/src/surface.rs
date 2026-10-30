@@ -847,6 +847,50 @@ impl Surface for WingSurface {
         convert::read(self.store(), n, &m).ok_or_else(|| SurfaceError::UnknownParam(param.clone()))
     }
 
+    /// One wire write for the whole batch (M064): every entry is validated and applied to the mirror, then the
+    /// accepted values go out together with a single barrier.
+    fn write_batch(&self, writes: &[(ParamId, Value)]) -> Vec<SurfaceResult<Value>> {
+        if let Err(e) = self.alive() {
+            return writes.iter().map(|_| Err(e.clone())).collect();
+        }
+        let g = self.client.write_guard();
+        let staged: Vec<SurfaceResult<(NodeId, Mapped)>> = writes
+            .iter()
+            .map(|(param, value)| {
+                let (n, m) = self.resolve(param)?;
+                let spec = self.spec_of(n, &m)?;
+                if spec.read_only {
+                    return Err(SurfaceError::ReadOnly(param.clone()));
+                }
+                spec.coerce(value)?;
+                let d = self
+                    .store()
+                    .desc(n)
+                    .ok_or_else(|| SurfaceError::UnknownParam(param.clone()))?;
+                let w = convert::to_wire(&m, d, value).ok_or(SurfaceError::TypeMismatch {
+                    param: param.clone(),
+                    got: value.type_name(),
+                })?;
+                convert::apply(self.store(), n, &w, ORIGIN_LOCAL)
+                    .map_err(|e| SurfaceError::Refused(format!("{param}: {e}")))?;
+                Ok((n, m))
+            })
+            .collect();
+        let nodes: Vec<NodeId> = staged.iter().flatten().map(|(n, _)| *n).collect();
+        let sent = self.client.send_values(&nodes).map_err(io);
+        drop(g);
+        staged
+            .into_iter()
+            .zip(writes)
+            .map(|(r, (param, _))| {
+                let (n, m) = r?;
+                sent.clone()?;
+                convert::read(self.store(), n, &m)
+                    .ok_or_else(|| SurfaceError::UnknownParam(param.clone()))
+            })
+            .collect()
+    }
+
     fn subscribe(&self) -> Receiver<SurfaceEvent> {
         let (tx, rx) = channel();
         lock(&self.subs).push(tx);
