@@ -7,6 +7,7 @@
 //! - [`gate`]: the remit gate with live-updatable roles; [`rta`]: console RTA -> safety monitor feed; [`signals`]:
 //!   SIGINT/SIGTERM -> clean shutdown.
 //! - [`tools`]: `PATH` repair for app-launched daemons and uv/claude availability.
+//! - [`slots`]: mix slots per console + scene (M064: store, persist, switching set, engineer moves).
 //! - [`events`]: event fan-out, in-memory log and `events.jsonl`; [`status`]: status.json, roles.json.
 
 pub mod analysis;
@@ -18,6 +19,7 @@ pub mod protocol;
 pub mod rta;
 pub mod server;
 pub mod signals;
+pub mod slots;
 pub mod source;
 pub mod status;
 pub mod taps;

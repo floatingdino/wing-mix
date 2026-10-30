@@ -34,3 +34,19 @@ WINGMIX_STATE_DIR=/tmp/wmx-shot WINGMIX_REMIT_SHOT=/Users/sam/code/wing-simulato
 ```
 
 Using your running wing-sim (console selection, USB-out taps, which direction is which): `setup-wing-simulator.md`.
+
+## Mix slots (M064)
+
+`live-slots.png`: the slot strip on the Live screen after a real run: autopilot towards the demo reference, slot A
+stored; then towards the description "warmer, more vocal", slot B stored; then A recalled (keys 1-9 switch; the
+comparison pauses tuning and the slot's target becomes active; *Commit* ends it as one undoable change, *Resume
+tuning* continues the autopilot). `Original` is the console as the session found it. `live-slots-diff.png`: the
+differences between A and B, per strip. On a real console the first recall per connection asks for confirmation
+(the audience hears the switch; a model change may click). Regenerate (a few minutes):
+
+```sh
+cargo build --release -p wing-mixd --example make_fixture && target/release/examples/make_fixture /tmp/wmx-fix 8
+make app
+WINGMIX_STATE_DIR=/tmp/wmx-slots WINGMIX_DEMO=/tmp/wmx-fix WINGMIX_SLOTS_SHOT=1 WINGMIX_SHOTS=docs/user \
+  apps/WingMix/build/WingMix.app/Contents/MacOS/WingMix
+```

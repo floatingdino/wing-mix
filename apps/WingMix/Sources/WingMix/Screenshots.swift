@@ -96,6 +96,40 @@ extension AppModel {
         NSApp.terminate(nil)
     }
 
+    /// `WINGMIX_SLOTS_SHOT=1` + `WINGMIX_DEMO` + `WINGMIX_SHOTS` (M064): autopilot towards the demo reference, store
+    /// slot A, then towards a description ("warmer, more vocal"), store B, recall A (comparison running) ->
+    /// `live-slots.png`; differences A vs B -> `live-slots-diff.png`. Quits afterwards (a few minutes).
+    func captureSlots(to dir: String) async {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        screen = .live
+        await setMode(.autopilot)
+        await waitForKeptMoves(2)
+        await storeSlot("A")
+        await send("load_description", ["text": "warmer, more vocal", "wait": true], timeout: 60)
+        await waitForKeptMoves(2)
+        await storeSlot("B")
+        await recallSlot("A")
+        try? await Task.sleep(for: .seconds(6))
+        await refreshStatus()
+        await refreshSlots()
+        render(.live, to: dir + "/live-slots.png")
+        diffA = "A"
+        diffB = "B"
+        await diffSlots()
+        render(.live, to: dir + "/live-slots-diff.png")
+        NSApp.terminate(nil)
+    }
+
+    /// Wait (up to ~3 min) until `n` more moves were kept.
+    private func waitForKeptMoves(_ n: Int) async {
+        let start = snapshot?.moves.filter { $0.outcome == "kept" }.count ?? 0
+        for _ in 0..<90 {
+            await refreshStatus()
+            if (snapshot?.moves.filter { $0.outcome == "kept" }.count ?? 0) >= start + n { return }
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
     private func render(_ s: Screen, to path: String) {
         let r = ImageRenderer(content: ShotView(model: self, screen: s)
             .frame(width: 1120)

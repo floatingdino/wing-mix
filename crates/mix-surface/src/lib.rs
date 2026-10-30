@@ -5,6 +5,7 @@
 //!   RTA) and its event/solo/meter types.
 //! - [`remit`]: policy loader, evaluator, role detection (docs/research/remit.md).
 //! - [`journal`]: undo/redo journal of applied changes and confirmations.
+//! - [`slots`]: which params a mix slot stores and whether a stored state is still safe to recall (M064).
 //! - [`testkit`]: `FakeSurface` (in-memory, records writes) and the shared conformance suite adapters run.
 //!
 //! Nothing in this crate is specific to one console; adapters (mix-wing, mix-sim) translate.
@@ -12,6 +13,7 @@
 pub mod journal;
 pub mod model;
 pub mod remit;
+pub mod slots;
 pub mod surface;
 pub mod testkit;
 

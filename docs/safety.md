@@ -96,6 +96,20 @@ than the actuator's `max_batch`. When a source is too quiet and its faders are a
 cutting the loudest other strips instead. What the plan cannot know stays a runtime refusal: holds (feedback,
 mains ceiling, stall) and discrete changes on an audible strip (model switches wait for live meters).
 
+## Slot recall (M064)
+
+A slot recall is the one deliberate exception to human-like ramps: the switching set is written as one console
+batch (`Actuator::snap`, `SnapRequest`). It goes through `RemitGate::check_recall`, where the safety layer keeps:
+the remit decision (forbidden/locked/unconfirmed/conditional-without-confirmation are skipped), every **hold**
+(mains ceiling, feedback suspect/latch, stalled analysis: increases refused), the **fader ceiling**, the
+**per-session** boost limit from the session baseline and the **remit envelopes**. It drops the **per-move** boost
+limit (a snap is not a move; the values were realised before) and the "discrete only when inaudible" rule (the
+engineer asked for the switch; the GUI says a model change may click and confirms the live caveat once per session).
+Refused params are skipped and reported, the rest is written. A snap preempts a running move (`Superseded`, ends in
+place), is refused while STOPped or disconnected, is journaled (audit; not an undo unit), and its writes count for
+PANIC like any other (session baseline captured before the first write). `Actuator::commit` makes the comparison's end
+state one undo unit.
+
 ## Connection loss
 
 `SurfaceEvent::Disconnected` (or a write failing with `Disconnected`): the running move ends in place

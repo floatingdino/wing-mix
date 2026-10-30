@@ -326,6 +326,21 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
 
         // no session yet: STOP and PANIC are refused with a message, not a hang
         await #expect(throws: ControlError.daemon("no session: nothing to stop")) { try await client.request("STOP") }
+
+        // mix slots (M064): store, list, recall (opens the session, starts the comparison), diff, commit
+        let stored = try await client.request("slot_store")
+        #expect(stored["name"]?.string == "A")
+        let slots = try await client.call(SlotList.self, "slot_list")
+        #expect(slots.slots.map(\.name) == ["A"] && slots.slots[0].differs == 0 && !slots.liveConfirmationNeeded)
+        let recall = try await client.call(SlotRecall.self, "slot_recall", ["name": "A"])
+        #expect(recall.name == "A" && recall.written == 0)
+        let comparing = try await client.call(SlotList.self, "slot_list")
+        #expect(comparing.comparing && comparing.active == "A")
+        #expect(comparing.slots.first?.name == "Original", "the session's baseline slot")
+        let diff = try await client.call(SlotDiff.self, "slot_diff", ["a": "A", "b": "Original"])
+        #expect(diff.a == "A" && diff.params.isEmpty)
+        _ = try await client.request("slot_commit")
+        #expect(try await client.call(SlotList.self, "slot_list").comparing == false)
         _ = try await client.request("quit")
         proc.waitUntilExit()
         #expect(!FileManager.default.fileExists(atPath: paths.socketURL.path(percentEncoded: false)))
@@ -428,5 +443,48 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
         #expect(again["PATH"] == env["PATH"], "idempotent")
         let s = try? DaemonStatus.decode(Data(#"{"running":true,"pid":1,"updated_unix":0,"tools":{"uv":{"path":null,"for":"stems"},"claude":{"path":"/x/claude","for":"llm"}}}"#.utf8))
         #expect(s?.missingTool("uv")?.for == "stems" && s?.missingTool("claude") == nil)
+    }
+}
+
+@Suite struct SlotTests {
+    let listJSON = #"""
+    {"slots":[{"name":"Original","builtin":true,"auto":false,"stored_unix":1.0,"target":null,"distance":null,
+               "params":2900,"differs":12,"engineer_moved":0,"active":false,"compatible":true},
+              {"name":"A","builtin":false,"auto":true,"target":{"kind":"reference","label":"/refs/Holy Forever.wav","live_context":"live"},
+               "distance":1.234,"params":2900,"differs":0,"engineer_moved":2,"active":true,"compatible":true},
+              {"name":"C","target":null,"params":10,"compatible":false,"refused":"input.1/x: unknown param"}],
+     "active":"A","comparing":true,"switching_set":14,"live_confirmation_needed":true,"target":{"kind":"reference","label":"x"},
+     "distance":1.3,"objective":0.4,"file":"/tmp/slots/sim+default.json"}
+    """#
+
+    @Test func `decodes slot lists and maps hotkeys in display order`() throws {
+        let l = try Wire.decoder.decode(SlotList.self, from: Data(listJSON.utf8))
+        #expect(l.slots.map(\.name) == ["Original", "A", "C"])
+        #expect(l.comparing && l.liveConfirmationNeeded && l.active == "A" && l.switchingSet == 14)
+        #expect(l.slot(forHotkey: 2)?.name == "A" && l.slot(forHotkey: 4) == nil && l.slot(forHotkey: 0) == nil)
+        #expect(l.hotkey(of: "C") == 3 && l.hotkey(of: "Z") == nil)
+        #expect(l.slots[0].targetLine == "session start")
+        #expect(l.slots[1].targetLine == "Holy Forever.wav")
+        #expect(l.slots[1].detailLine == "dist 1.23 · = console · 2 moved by you")
+        #expect(l.slots[2].compatible == false)
+        // an older daemon's (or empty) reply still decodes
+        let empty = try Wire.decoder.decode(SlotList.self, from: Data("{}".utf8))
+        #expect(empty.slots.isEmpty && !empty.comparing)
+    }
+
+    @Test func `recall summary and diff grouping`() throws {
+        let r = try Wire.decoder.decode(SlotRecall.self, from: Data(#"""
+        {"name":"B","written":9,"skipped":[{"type":"remit","param":"main.1/mute"}],"kept_engineer":["input.1/fader"],
+         "models":["input.1/eq/model"],"may_click":true,"phases":2,"write_ms":0.1,"request_ms":31.6}
+        """#.utf8))
+        #expect(r.summary == "B: 9 params in 2 batches (32 ms), model switch first, kept 1 of your moves, 1 not allowed")
+        let d = try Wire.decoder.decode(SlotDiff.self, from: Data(#"""
+        {"a":"A","b":"current","params":[
+          {"param":"input.1/fader","a":{"type":"float","value":-6.0},"b":{"type":"float","value":-3.5},"engineer_moved":true},
+          {"param":"input.2/pan","a":{"type":"float","value":10.0},"b":{"type":"float","value":0.0},"engineer_moved":false},
+          {"param":"input.1/eq/band.1.gain","a":{"type":"float","value":2.0},"b":null,"engineer_moved":false}]}
+        """#.utf8))
+        #expect(d.byStrip.map(\.strip) == ["input.1", "input.2"])
+        #expect(d.byStrip[0].rows.count == 2 && d.params[0].a?.text == "-6.0" && d.params[2].b == nil)
     }
 }

@@ -760,6 +760,14 @@ fn gain_kind(spec: &ParamSpec) -> Option<GainKind> {
     }
 }
 
+/// Which question the gate answers (the limits differ, see [`RemitGate`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Check {
+    Write,
+    Restore,
+    Recall,
+}
+
 /// Wraps a [`RemitGate`] with the safety limits (see the module docs). `inner` decides first; the safety layer
 /// can only tighten its decision.
 pub struct SafetyGate {
@@ -803,17 +811,11 @@ impl SafetyGate {
         }
     }
 
-    fn tighten(
-        &self,
-        req: &WriteRequest,
-        baseline: &Value,
-        d: Decision,
-        restoring: bool,
-    ) -> Decision {
+    fn tighten(&self, req: &WriteRequest, baseline: &Value, d: Decision, mode: Check) -> Decision {
         if d.class == Verdict::Forbidden {
             return d;
         }
-        match self.refuse(req, baseline, &d, restoring) {
+        match self.refuse(req, baseline, &d, mode) {
             Some(why) => Self::deny(&d, why),
             None => d,
         }
@@ -825,13 +827,18 @@ impl SafetyGate {
         req: &WriteRequest,
         baseline: &Value,
         d: &Decision,
-        restoring: bool,
+        mode: Check,
     ) -> Option<String> {
+        let restoring = mode == Check::Restore;
         let spec = self.surface.param_spec(&req.param).ok()?;
         let from = req.from.as_ref()?;
         let to = req.to.as_ref()?;
         if d.discrete {
-            return self.refuse_discrete(&req.param);
+            // M064: a slot recall switches models/polarity on the engineer's request (the GUI warns it may click)
+            return match mode {
+                Check::Recall => None,
+                _ => self.refuse_discrete(&req.param),
+            };
         }
         let (Some(from), Some(to)) = (from.as_f64(), to.as_f64()) else {
             return None;
@@ -869,7 +876,7 @@ impl SafetyGate {
                         lim.max_boost_per_move_db * scale,
                         lim.max_boost_per_session_db * scale,
                     );
-                    if to - from > mv + 1e-9 {
+                    if mode != Check::Recall && to - from > mv + 1e-9 {
                         return Some(format!(
                             "{} move of +{:.1} dB exceeds the {:.1} dB per-move limit{}",
                             k.name(),
@@ -972,12 +979,17 @@ impl SafetyGate {
 impl RemitGate for SafetyGate {
     fn check_write(&self, req: &WriteRequest, baseline: &Value) -> Decision {
         let d = self.inner.check_write(req, baseline);
-        self.tighten(req, baseline, d, false)
+        self.tighten(req, baseline, d, Check::Write)
     }
 
     fn check_restore(&self, req: &WriteRequest, baseline: &Value) -> Decision {
         let d = self.inner.check_restore(req, baseline);
-        self.tighten(req, baseline, d, true)
+        self.tighten(req, baseline, d, Check::Restore)
+    }
+
+    fn check_recall(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        let d = self.inner.check_recall(req, baseline);
+        self.tighten(req, baseline, d, Check::Recall)
     }
 
     fn check_inspection(&self, kind: InspectionKind, strip: &StripId) -> Decision {

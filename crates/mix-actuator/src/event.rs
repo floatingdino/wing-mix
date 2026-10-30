@@ -1,7 +1,7 @@
 //! Jobs the actuator accepts and the event stream it publishes (for the GUI / daemon).
 
 use crate::safety::Trip;
-use mix_core::action::Action;
+use mix_core::action::{Action, ParamChange};
 use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
 use mix_surface::journal::{Change, Conflict};
@@ -9,6 +9,7 @@ use mix_surface::remit::{Reason, Verdict};
 use mix_surface::surface::{RtaSource, SoloState, SoloTarget, Surface};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 /// Id of a submitted job (moves, inspections, undo, panic and the sub-moves of an inspection).
@@ -100,6 +101,59 @@ impl From<Action> for Job {
     }
 }
 
+/// A slot-recall **snap** (M064): the deliberate, audited exception to human-like ramps. Every change is written in
+/// one console batch ([`Surface::write_batch`]) as soon as the actuator thread receives it: the running move is
+/// ended in place and the queue dropped first (`AbortReason::Superseded`). A model switch goes first and the
+/// params of the switched block follow in a second batch once the surface re-resolved them (M038 ordering). Each
+/// write is checked by [`RemitGate::check_recall`](crate::RemitGate::check_recall) (remit, holds, ceiling, session
+/// envelope); refused params are skipped and reported, the rest is written. Recorded in the write log and as one
+/// journal entry (audit); it is **not** an undo unit: [`Actuator::commit`](crate::Actuator::commit) makes the
+/// comparison's end state one.
+pub struct SnapRequest {
+    pub label: String,
+    pub changes: Vec<ParamChange>,
+    /// Receives the report when the snap ends (done, refused or aborted).
+    pub reply: Option<Sender<SnapReport>>,
+}
+
+impl SnapRequest {
+    pub fn new(label: impl Into<String>, changes: Vec<ParamChange>) -> Self {
+        SnapRequest {
+            label: label.into(),
+            changes,
+            reply: None,
+        }
+    }
+
+    pub fn reply_to(mut self, tx: Sender<SnapReport>) -> Self {
+        self.reply = Some(tx);
+        self
+    }
+}
+
+/// Outcome of a snap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapReport {
+    pub id: MoveId,
+    pub label: String,
+    /// What was written (`from` = value before the snap, `to` = value stored by the surface).
+    pub changes: Vec<Change>,
+    /// Params not written: refused by the remit/safety gate or the surface, or of a block whose model switch failed.
+    pub skipped: Vec<Refusal>,
+    /// Console batches sent (2 when a model switch went first).
+    pub phases: u32,
+    /// Model params switched (the GUI warns that these may click).
+    pub models: Vec<ParamId>,
+    /// Wall time spent inside `write_batch` (ms).
+    pub write_ms: f64,
+    /// Wall time from the actuator taking the snap to its last write (ms; includes the wait for a model remap).
+    pub total_ms: f64,
+    /// The whole snap was refused (STOP in effect, link down, too large, duplicate params).
+    pub refused: Option<Refusal>,
+    /// Ended early (STOP/PANIC/link loss during the remap wait): `changes` holds what was written.
+    pub aborted: Option<AbortReason>,
+}
+
 /// Why a job was not started.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -168,6 +222,8 @@ pub enum AbortReason {
     DestructiveSolo,
     /// The connection to the console was lost (the move is not resumed on reconnect).
     Disconnected,
+    /// A slot-recall snap took over (M064): the move ends where it is.
+    Superseded,
 }
 
 /// Kind of a started job.
@@ -178,6 +234,8 @@ pub enum JobKind {
     Inspect,
     Undo,
     Panic,
+    /// Slot recall (M064): one non-ramped console batch.
+    Snap,
 }
 
 /// Event stream (subscribe with `Actuator::subscribe` / `ActuatorHandle::subscribe`).
@@ -266,6 +324,16 @@ pub enum ActuatorEvent {
     /// engineer, not overwritten).
     LinkRestored {
         drifted: Vec<ParamId>,
+    },
+    /// A slot-recall snap ended (M064).
+    Snapped {
+        report: SnapReport,
+    },
+    /// The comparison's end state was recorded as one undoable journal batch (`slot_commit`, M064).
+    Committed {
+        id: MoveId,
+        label: String,
+        changes: Vec<Change>,
     },
     /// STOP (or the end of a PANIC): frozen, no job runs until `resume`.
     Stopped,

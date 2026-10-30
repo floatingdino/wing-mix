@@ -25,6 +25,10 @@
 //!   inaudible); a [`SafetyMonitor`] fed with live analysis trips on rising narrowband energy (STOP + ramped revert
 //!   of the last move), mains true peak, and a stalled analysis. A lost connection freezes everything, drops the
 //!   queue (stale ramps are never replayed) and resyncs on reconnect. `write_log` and the undo stack are bounded.
+//! - **Snap** ([`SnapRequest`], M064 slot recall): the one audited exception to ramps. A whole switching set is
+//!   written as one console batch (model switches first, the switched blocks' params after the remap), each write
+//!   checked by [`RemitGate::check_recall`]; [`Actuator::commit`] turns the end of a comparison into one undoable
+//!   journal batch.
 //! - **Events** ([`ActuatorEvent`]) for the GUI: queued/started/progress/paused/done/aborted/refused/...
 //!
 //! [`Actuator`] is a deterministic core driven by `tick(now)` (tests use a virtual clock); [`runner::spawn`] runs
@@ -46,7 +50,7 @@ pub use actuator::Actuator;
 pub use config::{ActuatorConfig, Rates};
 pub use event::{
     AbortReason, ActuatorEvent, InspectRequest, InspectView, Job, JobKind, MoveId, Refusal,
-    WriteRecord,
+    SnapReport, SnapRequest, WriteRecord,
 };
 pub use gate::{PolicyGate, RemitGate};
 pub use runner::{spawn, ActuatorHandle};

@@ -81,6 +81,10 @@ impl RemitGate for LiveRolesGate {
         self.with(|g| g.check_restore(req, baseline))
     }
 
+    fn check_recall(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        self.with(|g| g.check_recall(req, baseline))
+    }
+
     fn check_inspection(&self, kind: InspectionKind, strip: &StripId) -> Decision {
         self.with(|g| g.check_inspection(kind, strip))
     }
