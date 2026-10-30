@@ -515,3 +515,35 @@ fn actuator_writes_the_model_switch_before_the_blocks_params() {
     let con = InProc::start();
     common::model_switch_is_written_before_the_blocks_params(std::sync::Arc::new(con.connect()));
 }
+
+/// M063: the claim's own RTA writes (and the refresh that precedes them) never surface as engineer moves.
+#[test]
+fn rta_claim_writes_are_not_external_events() {
+    let con = InProc::start();
+    con.console_set("cfg/rta/rtasrc", wing_model::Value::Int(12));
+    con.console_set_enum("cfg/rta/rtatap", "FXIN");
+    let s = con.connect();
+    let rx = s.subscribe();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    {
+        let _claim = s
+            .claim_rta(&RtaSource {
+                strip: StripId::new("bus", 2),
+                tap: "pre_fader".into(),
+            })
+            .unwrap();
+        s.client().barrier(Duration::from_secs(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    let evs: Vec<_> = rx.try_iter().collect();
+    let bad: Vec<_> = evs
+        .iter()
+        .filter(|e| {
+            matches!(e, SurfaceEvent::ParamChanged { param, origin: Origin::External, .. }
+                if param.as_str().starts_with("system/cfg/rta"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:?}\nall: {evs:?}");
+}

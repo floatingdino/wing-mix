@@ -197,6 +197,10 @@ fn rta_strip(n: i32, fx_tap: bool) -> Option<StripId> {
 }
 
 type Subs = Arc<Mutex<Vec<Sender<SurfaceEvent>>>>;
+/// Config nodes this surface wrote itself (RTA claim/restore, solo config) and when. Console echoes of them
+/// within [`OWN_WRITE_WINDOW`] are own-origin, not engineer moves (M063).
+type OwnWrites = Arc<Mutex<HashMap<NodeId, std::time::Instant>>>;
+const OWN_WRITE_WINDOW: Duration = Duration::from_secs(2);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -208,6 +212,7 @@ pub struct WingSurface {
     index: Index,
     info: SurfaceInfo,
     subs: Subs,
+    own_writes: OwnWrites,
     meters: Mutex<Option<Arc<MeterEngine>>>,
     timeout: Duration,
     solo: Vec<SoloLeaf>,
@@ -228,8 +233,10 @@ impl WingSurface {
         client.sync(opts.sync_timeout).map_err(io)?;
         let index = Index::build(client.store());
         let subs: Subs = Arc::new(Mutex::new(Vec::new()));
+        let own_writes: OwnWrites = Arc::new(Mutex::new(HashMap::new()));
         {
             let subs = subs.clone();
+            let own = own_writes.clone();
             let weak = Arc::downgrade(&client);
             let link = Link {
                 policy: opts.reconnect,
@@ -238,7 +245,7 @@ impl WingSurface {
             };
             std::thread::Builder::new()
                 .name("wing-events".into())
-                .spawn(move || dispatch(rx, weak, subs, link))
+                .spawn(move || dispatch(rx, weak, subs, own, link))
                 .map_err(io)?;
         }
         let (name, model, firmware) = match identity {
@@ -278,6 +285,7 @@ impl WingSurface {
                 },
             },
             subs,
+            own_writes,
             meters: Mutex::new(None),
             timeout: opts.timeout,
             solo: solo_leaves(),
@@ -368,9 +376,30 @@ impl WingSurface {
         )))
     }
 
+    /// Remember that we are about to write config node `n` ourselves: its echo is not an engineer move.
+    fn mark_own(&self, n: NodeId) {
+        let sc = Schema::get();
+        let mut g = lock(&self.own_writes);
+        g.retain(|_, t| t.elapsed() < OWN_WRITE_WINDOW);
+        let now = std::time::Instant::now();
+        g.insert(n, now);
+        // the console mirrors rtasrc/rtatap into the live `$src`/`$tap` leaves, which change right after
+        for (cfg, live) in [
+            ("cfg/rta/rtasrc", "cfg/rta/$src"),
+            ("cfg/rta/rtatap", "cfg/rta/$tap"),
+        ] {
+            if sc.by_path(cfg) == Some(n) {
+                if let Some(l) = sc.by_path(live) {
+                    g.insert(l, now);
+                }
+            }
+        }
+    }
+
     /// Set a node's raw value on the mirror and the console (inspection/config writes that bypass the param map).
     fn set_node(&self, node: NodeId, v: WValue) -> SurfaceResult<()> {
         self.alive()?;
+        self.mark_own(node);
         let _g = self.client.write_guard();
         self.store()
             .set_from(node, v, ORIGIN_LOCAL)
@@ -380,6 +409,7 @@ impl WingSurface {
 
     fn set_token(&self, node: NodeId, tok: &str) -> SurfaceResult<()> {
         self.alive()?;
+        self.mark_own(node);
         let _g = self.client.write_guard();
         self.store()
             .set_enum_name(node, tok, ORIGIN_LOCAL)
@@ -513,6 +543,7 @@ impl WingSurface {
     fn restore_rta_raw(&self, saved: (u32, u32)) -> SurfaceResult<()> {
         let (a, b) = self.rta_nodes()?;
         for (n, raw) in [(b, saved.1), (a, saved.0)] {
+            self.mark_own(n);
             let _g = self.client.write_guard();
             self.store()
                 .set_raw(n, raw, ORIGIN_LOCAL)
@@ -618,7 +649,13 @@ fn reconnect_loop(client: &Weak<NativeClient>, link: &Link, policy: ReconnectPol
     }
 }
 
-fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs, link: Link) {
+fn dispatch(
+    rx: Receiver<ClientMsg>,
+    client: Weak<NativeClient>,
+    subs: Subs,
+    own: OwnWrites,
+    link: Link,
+) {
     let s = Schema::get();
     let solo_names = |id: NodeId| map::is_solo_leaf(s.name(id)) || s.path(id) == "$stat/solo";
     let mut above_floor: HashMap<u16, bool> = HashMap::new();
@@ -641,7 +678,11 @@ fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs, lin
                 }
             };
             let id = ch.node();
-            let origin = if ch.origin == ORIGIN_REMOTE {
+            let echo = ch.origin == ORIGIN_REMOTE
+                && lock(&own)
+                    .get(&id)
+                    .is_some_and(|t| t.elapsed() < OWN_WRITE_WINDOW);
+            let origin = if ch.origin == ORIGIN_REMOTE && !echo {
                 Origin::External
             } else {
                 Origin::Local

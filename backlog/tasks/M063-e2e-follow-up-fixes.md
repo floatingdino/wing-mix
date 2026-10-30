@@ -2,10 +2,10 @@
 id: M063
 title: E2E follow-up fixes: RTA claim origin, feedback guard edge cases, PANIC vs engineer moves
 stage: S4
-status: todo
-owner: -
+status: in_progress
+owner: agent-M063
 depends: [M052]
-branch: -
+branch: task/M063
 model: sonnet
 ---
 
@@ -24,3 +24,4 @@ Each with a regression test (FakeSurface/SimSurface; feedback cases with the rea
 
 ## Log
 - 2026-10-31 coordinator: created from M052 findings.
+- 2026-10-31 agent-M063: started. (1) done: RTA claim echoes (console mirrors rtasrc/rtatap into live $src/$tap leaves, echoed as External) now Local via own-write window in mix-wing surface.rs; test wing_sim_rta_claim_is_not_an_engineer_move. Next: (4) PANIC baseline, then (2)(3) feedback guard.
