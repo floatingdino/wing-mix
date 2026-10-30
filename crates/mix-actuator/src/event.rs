@@ -1,11 +1,11 @@
 //! Jobs the actuator accepts and the event stream it publishes (for the GUI / daemon).
 
+use crate::safety::Trip;
 use mix_core::action::Action;
 use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
 use mix_surface::journal::{Change, Conflict};
 use mix_surface::remit::{Reason, Verdict};
-use crate::safety::Trip;
 use mix_surface::surface::{RtaSource, SoloState, SoloTarget, Surface};
 use serde::{Deserialize, Serialize};
 use std::fmt;

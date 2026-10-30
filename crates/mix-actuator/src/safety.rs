@@ -394,7 +394,11 @@ impl MonState {
             det.frames.clear();
         }
         det.frames.push_back((t, db.to_vec()));
-        while det.frames.front().is_some_and(|(t0, _)| t - t0 > cfg.window_s) {
+        while det
+            .frames
+            .front()
+            .is_some_and(|(t0, _)| t - t0 > cfg.window_s)
+        {
             det.frames.pop_front();
         }
         let hit = det.evaluate(&cfg);
@@ -627,13 +631,35 @@ impl SafetyGate {
         }
     }
 
+    fn tighten(
+        &self,
+        req: &WriteRequest,
+        baseline: &Value,
+        d: Decision,
+        restoring: bool,
+    ) -> Decision {
+        if d.class == Verdict::Forbidden {
+            return d;
+        }
+        match self.refuse(req, baseline, &d, restoring) {
+            Some(why) => Self::deny(&d, why),
+            None => d,
+        }
+    }
+
     /// `Some(why)` if the safety layer refuses the write.
-    fn refuse(&self, req: &WriteRequest, baseline: &Value, d: &Decision) -> Option<String> {
+    fn refuse(
+        &self,
+        req: &WriteRequest,
+        baseline: &Value,
+        d: &Decision,
+        restoring: bool,
+    ) -> Option<String> {
         let spec = self.surface.param_spec(&req.param).ok()?;
         let from = req.from.as_ref()?;
         let to = req.to.as_ref()?;
         if d.discrete {
-            return self.refuse_discrete(&req.param, from, to);
+            return self.refuse_discrete(&req.param);
         }
         let (Some(from), Some(to)) = (from.as_f64(), to.as_f64()) else {
             return None;
@@ -649,6 +675,9 @@ impl SafetyGate {
             if increase {
                 if let Some(why) = self.monitor.status().hold_reason(d.coupled) {
                     return Some(format!("{} increase refused: {why}", k.name()));
+                }
+                if restoring {
+                    return None; // only the holds apply to a restore
                 }
                 if k == GainKind::Fader && to > self.cfg.fader_max_db + 1e-9 {
                     return Some(format!(
@@ -688,6 +717,9 @@ impl SafetyGate {
                     }
                 }
             }
+        }
+        if restoring {
+            return None;
         }
         d.envelope.and_then(|env| {
             let delta = match spec.unit {
@@ -734,7 +766,7 @@ impl SafetyGate {
         })
     }
 
-    fn refuse_discrete(&self, param: &mix_core::ids::ParamId, _from: &Value, _to: &Value) -> Option<String> {
+    fn refuse_discrete(&self, param: &mix_core::ids::ParamId) -> Option<String> {
         if !self.cfg.discrete_requires_quiet {
             return None;
         }
@@ -749,7 +781,11 @@ impl SafetyGate {
                 }
                 None => return Some(format!("discrete change refused: no meter for {strip}")),
             },
-            Err(_) => return Some("discrete change refused: no meters to prove the strip is inaudible".into()),
+            Err(_) => {
+                return Some(
+                    "discrete change refused: no meters to prove the strip is inaudible".into(),
+                )
+            }
         };
         loud.map(|p| {
             format!(
@@ -763,13 +799,12 @@ impl SafetyGate {
 impl RemitGate for SafetyGate {
     fn check_write(&self, req: &WriteRequest, baseline: &Value) -> Decision {
         let d = self.inner.check_write(req, baseline);
-        if d.class == Verdict::Forbidden {
-            return d;
-        }
-        match self.refuse(req, baseline, &d) {
-            Some(why) => Self::deny(&d, why),
-            None => d,
-        }
+        self.tighten(req, baseline, d, false)
+    }
+
+    fn check_restore(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        let d = self.inner.check_restore(req, baseline);
+        self.tighten(req, baseline, d, true)
     }
 
     fn check_inspection(&self, kind: InspectionKind, strip: &StripId) -> Decision {
@@ -804,10 +839,18 @@ mod tests {
         let m = SafetyMonitor::new(SafetyConfig::without_watchdog());
         for i in 0..20 {
             // 100 ms frames, peak climbs 1 dB per frame from -50 to -31 over a -50 dB floor
-            m.feed_spectrum_at("main", i as f64 * 0.1, &frame(-50.0, 20, -50.0 + i as f32), &[]);
+            m.feed_spectrum_at(
+                "main",
+                i as f64 * 0.1,
+                &frame(-50.0, 20, -50.0 + i as f32),
+                &[],
+            );
         }
         let trips = m.take_trips();
-        assert!(matches!(trips.as_slice(), [Trip::Feedback { band: 20, .. }]), "{trips:?}");
+        assert!(
+            matches!(trips.as_slice(), [Trip::Feedback { band: 20, .. }]),
+            "{trips:?}"
+        );
         assert!(m.status().feedback_latched);
         m.clear_latches();
         assert!(!m.status().feedback_latched);
@@ -822,7 +865,12 @@ mod tests {
             let peak = if t < 1.0 { -50.0 } else { -20.0 };
             m.feed_spectrum_at("note", t, &frame(-50.0, 12, peak), &[]);
             // whole spectrum swells 1 dB per frame
-            m.feed_spectrum_at("swell", t, &frame(-50.0 + i as f32, 12, -50.0 + i as f32), &[]);
+            m.feed_spectrum_at(
+                "swell",
+                t,
+                &frame(-50.0 + i as f32, 12, -50.0 + i as f32),
+                &[],
+            );
         }
         assert!(m.take_trips().is_empty());
         assert!(!m.status().feedback_latched);
@@ -836,9 +884,15 @@ mod tests {
         assert!(!m.status().stalled);
         m.advance(2.5);
         assert!(m.status().stalled);
-        assert!(matches!(m.take_trips().as_slice(), [Trip::AnalysisStalled { .. }]));
+        assert!(matches!(
+            m.take_trips().as_slice(),
+            [Trip::AnalysisStalled { .. }]
+        ));
         m.advance(10.5);
-        assert!(matches!(m.take_trips().as_slice(), [Trip::AnalysisStopped { .. }]));
+        assert!(matches!(
+            m.take_trips().as_slice(),
+            [Trip::AnalysisStopped { .. }]
+        ));
         m.heartbeat();
         assert!(!m.status().stalled);
     }

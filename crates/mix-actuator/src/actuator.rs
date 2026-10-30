@@ -729,9 +729,12 @@ impl Actuator {
             from: Some(from.clone()),
             to: Some(to.clone()),
         };
-        let d = self
-            .gate
-            .check_write(&req, self.baseline.get(&c.param).unwrap_or(&from));
+        let base = self.baseline.get(&c.param).unwrap_or(&from);
+        let d = if restoring {
+            self.gate.check_restore(&req, base)
+        } else {
+            self.gate.check_write(&req, base)
+        };
         if !permitted(&d, restoring) {
             return Err(Refusal::Remit {
                 param: c.param.clone(),
@@ -831,8 +834,9 @@ impl Actuator {
             req.label, saved.active, req.target
         ));
         if let Some((ours, prior)) = &rta {
-            self.journal
-                .note(format!("{id}: RTA source saved {prior:?}, selected {ours:?}"));
+            self.journal.note(format!(
+                "{id}: RTA source saved {prior:?}, selected {ours:?}"
+            ));
         }
         let dwell = req.dwell.as_secs_f64();
         self.emit(ActuatorEvent::Started {
@@ -943,7 +947,11 @@ impl Actuator {
                 to: Some(w.value.clone()),
             };
             let base = self.baseline.get(&tr.spec.id).unwrap_or(&tr.from);
-            let d = self.gate.check_write(&req, base);
+            let d = if r.restoring {
+                self.gate.check_restore(&req, base)
+            } else {
+                self.gate.check_write(&req, base)
+            };
             if !permitted(&d, r.restoring) {
                 return Step::Aborted(AbortReason::Remit {
                     param: tr.spec.id.clone(),
@@ -1184,9 +1192,8 @@ impl Actuator {
             let _ = self.surface.set_solo(target, false);
         }
         let exact = res.is_ok() && self.surface.solo_state().is_ok_and(|s| s.active == want);
-        self.journal.note(format!(
-            "{id}: solo restored to {want:?} (exact: {exact})"
-        ));
+        self.journal
+            .note(format!("{id}: solo restored to {want:?} (exact: {exact})"));
         self.emit(ActuatorEvent::SoloRestored { id, exact });
     }
 
@@ -1201,8 +1208,9 @@ impl Actuator {
                     return;
                 }
                 let exact = res.is_ok() && self.surface.rta_source().is_ok_and(|s| s == *prior);
-                self.journal
-                    .note(format!("{id}: RTA source restored to {prior:?} (exact: {exact})"));
+                self.journal.note(format!(
+                    "{id}: RTA source restored to {prior:?} (exact: {exact})"
+                ));
                 self.emit(ActuatorEvent::RtaRestored { id, exact });
             }
             Ok(cur) => self.journal.note(format!(

@@ -643,7 +643,9 @@ name = "mix-actuator"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mix-analysis",
  "mix-core",
+ "mix-sim",
  "mix-surface",
  "serde",
  "serde_json",
