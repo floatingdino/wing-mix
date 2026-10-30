@@ -2,7 +2,7 @@
 id: M039
 title: Real-song convergence: width, tonal shape, subtle-fault detection
 stage: S3
-status: review
+status: done
 owner: agent-M039
 depends: [M036, M061]
 branch: task/M039
@@ -115,3 +115,4 @@ Report before/after on seed 7 (8/8 target) and the three real songs vs FOH (targ
     acoustic feedback (strip-attributed detection would remove the bass-note class of false trips for good); (6)
     stem tonal targets as energy means (lognormal estimate from p10/p50/p90 halves mix-sim's Other-stem low-mid bias,
     +9.7 -> +3.0 dB) would make stem-level subtle faults visible without the planner's console-state term.
+- 2026-10-31 coordinator: merged, make check passes. done (2/3 songs beat FOH, seed 7 8/8).
