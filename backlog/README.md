@@ -19,6 +19,8 @@ Rules for task agents
 7. `make check` (fast, < 5 min) must pass before `review` once the scaffold (M001) exists. Slow tests:
    `#[ignore = "slow: run with make check-full"]` with a sampled fast variant.
 8. RT rules: no alloc/lock/syscall/logging on audio callback threads.
+10. If the harness refuses to let you write a .md deliverable, do not work around it: put the complete file text in
+   your final reply between `=====BEGIN FILE <path>=====` and `=====END FILE=====` lines; the coordinator commits it.
 9. Research tasks write only their named output files (docs/research/*, data/*) on their branch.
 
 Coordinator: state of in-flight agents lives in backlog/COORDINATOR.md (resumable). Coordinator doesn't edit a task
