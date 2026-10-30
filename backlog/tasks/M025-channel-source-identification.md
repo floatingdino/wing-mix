@@ -2,7 +2,7 @@
 id: M025
 title: Channel source identification
 stage: S2
-status: review
+status: done
 owner: agent-M025
 depends: [M020, M010]
 branch: task/M025
@@ -48,3 +48,4 @@ Classify each input channel's source type (kick, snare, vocal, bass...) from str
     (3) Descriptor from the active part of a capture (loudest ShortTerm windows) instead of Session, to classify
     sparse sources (toms) from longer multichannel captures. (4) WING icon index → label map in mix-wing so `icon`
     evidence is populated; colour from the WING `col` param.
+- 2026-10-30 coordinator: merged, make check passes. done.
