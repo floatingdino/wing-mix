@@ -2,10 +2,10 @@
 id: M031
 title: mix-engine: diagnosis (current vs target → Problems)
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M031
 depends: [M020, M010, M005]
-branch: -
+branch: task/M031
 model: opus
 ---
 
@@ -18,3 +18,6 @@ Compare current Features (main + per-channel/solo where available) against Targe
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M031: claimed. Plan: `mix_engine::diagnosis` (Problem types, mix tonal/tilt/dynamics/stereo checks,
+  strip/stem level balance, masking pairs, source problems from sources.toml, intent deltas), stem masking helper
+  for `StemTargets.masking`, synthetic + ignored real-fixture tests.
