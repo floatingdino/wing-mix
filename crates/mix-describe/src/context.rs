@@ -162,9 +162,9 @@ impl ContextTargets {
 
 /// Live FOH norms, derived by [`derive`] from the engineer's FOH mix (52/53 of the fixture show) over the
 /// training songs `i-know-that-i-know` and `show-me-your-face` (14 sections passing `mix_fixtures::sanity`;
-/// `holy-forever` held out for validation). Measured live values per song (median): PLR 18.6 / 13.5 dB, PSR
+/// `holy-forever` held out for validation). Measured live values per song (median): PLR 18.5 / 13.4 dB, PSR
 /// 17.0 / 12.3 dB vs the records' section PLR 7-15 dB; side/mid −9..−12 dB in every band >= 250 Hz vs the
-/// records' −5..+4 dB. Re-derived and checked by `crates/mix-engine/tests/live_context.rs` (M037 log has the
+/// records' −12..+4 dB. Re-derived and checked by `crates/mix-engine/tests/live_context.rs` (M037 log has the
 /// tables).
 pub const LIVE: ContextTargets = ContextTargets {
     plr_floor_db: Some(16.0),
