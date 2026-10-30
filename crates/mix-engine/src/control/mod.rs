@@ -14,7 +14,9 @@
 //!    moved something. Moves needing a remit confirmation go to the **pending queue**
 //!    ([`ControlEvent::ConfirmationNeeded`], [`Controller::confirm`]) instead of running.
 //! 2. Take the next executable move of the plan: the [`guard`] skips moves on frozen/cooling params and moves of
-//!    penalised or banned action types. Budget: `max_batches` batches and `max_change_db` of dB-param travel.
+//!    penalised or banned action types. Budget ([`budget`], M067): net weighted deviation from the session baseline
+//!    (`max_net_db`; a move that would exceed it is skipped, the loop holds when nothing else fits), a rolling
+//!    per-minute rate (`max_db_per_min`: the batch waits, [`ControlEvent::Paced`]) and a batch backstop.
 //! 3. Submit it as one actuator job. When the plan inspects the strip first (solo phases), the job is an
 //!    inspection: the actuator solos the strip, dwells, calls our measure callback, which reads the solo bus through
 //!    [`MixMeter::solo_probe`] and returns the move as the inspection's adjustment (a strip that is silent in solo
@@ -51,6 +53,7 @@
 //! [`plan::score_with`]: crate::plan::score_with
 //! [`plan::plan_with`]: crate::plan::plan_with
 
+pub mod budget;
 pub mod config;
 pub mod event;
 pub mod guard;
@@ -87,6 +90,7 @@ use crate::plan::{
     PlannedMove, Remit, TransferModel,
 };
 
+pub use budget::{BudgetLimits, BudgetStatus, ChangeBudget};
 pub use config::{ControlConfig, KeepRule, Mode, SectionConfig};
 pub use event::{
     BatchRecord, ControlEvent, CyclePoint, HoldReason, MoveSummary, Outcome, PlanReason,
@@ -264,8 +268,12 @@ pub struct Controller<'k> {
     best: f64,
     since_best: u32,
     seq: u32,
-    batches: u32,
-    change_db: f64,
+    /// M067: change budget (net deviation, rate, batches).
+    budget: ChangeBudget,
+    /// M067: the next batch waits for the rate window until then.
+    paced_until: Option<f64>,
+    /// The current baseline window was started by a pacing wait (does not count as a cycle without progress).
+    pacing: bool,
     /// Value of every param before this controller first changed it (the safety gate's session baseline; M036:
     /// the planner plans boosts within the per-session limit from it).
     session_baseline: BTreeMap<ParamId, f64>,
@@ -335,8 +343,9 @@ impl<'k> Controller<'k> {
             best: f64::INFINITY,
             since_best: 0,
             seq: 0,
-            batches: 0,
-            change_db: 0.0,
+            budget: ChangeBudget::default(),
+            paced_until: None,
+            pacing: false,
             session_baseline: BTreeMap::new(),
             silent_in_solo: Default::default(),
             kept: 0,
@@ -441,9 +450,15 @@ impl<'k> Controller<'k> {
         self.hold
     }
 
-    /// Batches submitted and dB travelled (the change budget used).
+    /// Batches submitted and the weighted net deviation from the session baseline (dB) (the change budget used).
     pub fn budget_used(&self) -> (u32, f64) {
-        (self.batches, self.change_db)
+        (self.budget.batches, self.budget.net_db())
+    }
+
+    /// M067: the change budget in full (limits, net deviation, rate window, pacing).
+    pub fn budget_status(&self) -> BudgetStatus {
+        let mut b = self.budget.clone();
+        b.status(self.now, &self.cfg.budget_limits(), self.paced_until)
     }
 
     /// Last measured score.
@@ -1067,10 +1082,11 @@ impl<'k> Controller<'k> {
     fn measured(&mut self, sample: Sample, purpose: Purpose, exec: &mut dyn Executor) {
         let after = sample.score.objective;
         self.last = Some(sample);
+        let paced = std::mem::take(&mut self.pacing) && matches!(purpose, Purpose::Baseline);
         if after < self.best - self.cfg.min_progress {
             self.best = after;
             self.since_best = 0;
-        } else {
+        } else if !paced {
             self.since_best += 1;
         }
         if let Purpose::Verify(v) = purpose {
@@ -1158,11 +1174,7 @@ impl<'k> Controller<'k> {
         if let Some(v) = c.from.as_f64() {
             self.session_baseline.entry(c.param.clone()).or_insert(v);
         }
-        if guard::is_db_param(&c.param) {
-            if let (Some(a), Some(b)) = (c.from.as_f64(), c.to.as_f64()) {
-                self.change_db += (b - a).abs();
-            }
-        }
+        self.budget.changed(c);
         if let Some(n) = self
             .guard
             .record(&c.param, &c.from, &c.to, self.now, &self.cfg)
@@ -1388,7 +1400,8 @@ impl<'k> Controller<'k> {
             self.set_hold(HoldReason::NoProgress);
             return;
         }
-        if self.batches >= self.cfg.max_batches || self.change_db >= self.cfg.max_change_db {
+        let limits = self.cfg.budget_limits();
+        if self.budget.batches >= limits.max_batches {
             self.set_hold(HoldReason::Budget);
             return;
         }
@@ -1400,6 +1413,7 @@ impl<'k> Controller<'k> {
             fresh = self.make_plan(PlanReason::Exhausted);
         }
         let mut waiting = false;
+        let mut over_net = false;
         loop {
             let Some(b) = self.plan.pop_front() else {
                 if !fresh && !waiting {
@@ -1419,17 +1433,38 @@ impl<'k> Controller<'k> {
                 }
                 Err(Block::Never(_)) => continue,
             }
-            let travel: f64 =
-                b.mv.action
-                    .changes
-                    .iter()
-                    .filter(|c| guard::is_db_param(&c.param))
-                    .filter_map(|c| Some((c.to.as_f64()? - c.from.as_ref()?.as_f64()?).abs()))
-                    .sum();
-            if self.change_db + travel > self.cfg.max_change_db {
-                self.set_hold(HoldReason::Budget);
-                return;
+            match self.budget.fit(&b.mv.action, self.now, &limits) {
+                budget::Fit::Ok => {}
+                budget::Fit::OverNet => {
+                    // M067: a move that would take the mix further from the engineer's than agreed; others may fit
+                    over_net = true;
+                    continue;
+                }
+                budget::Fit::Batches => {
+                    self.set_hold(HoldReason::Budget);
+                    return;
+                }
+                budget::Fit::Pace { until } => {
+                    // M067: the rate window is full: keep the plan, measure meanwhile, decide again after it
+                    self.plan.push_front(b);
+                    if self.paced_until != Some(until) {
+                        let st = self.budget_status();
+                        self.emit(ControlEvent::Paced {
+                            until_s: until,
+                            rate_db: st.rate_db,
+                            max_db_per_min: limits.max_db_per_min,
+                        });
+                    }
+                    self.paced_until = Some(until);
+                    self.pacing = true;
+                    self.state = State::Settling {
+                        until: (until - self.cfg.window_s).max(self.now),
+                        purpose: Purpose::Baseline,
+                    };
+                    return;
+                }
             }
+            self.paced_until = None;
             self.submit(b, obj, exec);
             return;
         }
@@ -1437,6 +1472,8 @@ impl<'k> Controller<'k> {
         if waiting || self.info_coming() {
             // M062: or solo sweeps are still measuring strips the plan only had estimates of
             self.replan.get_or_insert(PlanReason::Exhausted);
+        } else if over_net {
+            self.set_hold(HoldReason::Budget);
         } else {
             self.set_hold(HoldReason::NoProgress);
         }
@@ -1455,7 +1492,7 @@ impl<'k> Controller<'k> {
 
     fn submit(&mut self, b: Batch, before: f64, exec: &mut dyn Executor) {
         self.seq += 1;
-        self.batches += 1;
+        self.budget.submitted(&b.mv.action, self.now);
         let seq = self.seq;
         let job = match (&b.inspect, self.cfg.inspect) {
             (Some((strip, dwell)), true) => {

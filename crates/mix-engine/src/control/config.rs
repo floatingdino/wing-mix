@@ -77,10 +77,15 @@ pub struct ControlConfig {
     /// Re-plan when the measured objective after a kept batch differs from the plan's expectation (objective
     /// measured when planning − Σ predicted gains of the batches kept since) by more than this.
     pub replan_drift: f64,
-    /// Per-session change budget: batches submitted (reverts not counted).
+    /// Per-session change budget backstop: batches submitted (reverts not counted).
     pub max_batches: u32,
-    /// Per-session change budget: Σ |Δ| of dB params (faders, gains, levels, trims), reverts included.
-    pub max_change_db: f64,
+    /// M067 change budget ([`super::budget`]): weighted net deviation of the loop's own dB changes from the session
+    /// baseline (makeup free, group/pair members share one count, reverted moves cost nothing).
+    pub max_net_db: f64,
+    /// M067 pacing: weighted forward travel per `rate_window_s` (reverts not charged); a batch over it waits.
+    pub max_db_per_min: f64,
+    /// Rolling window of the rate limit (s; scaled with test clocks).
+    pub rate_window_s: f64,
     /// Stop (hold) after this many measurement cycles without the best objective improving by `min_progress`.
     pub no_progress_cycles: u32,
     pub min_progress: f64,
@@ -132,8 +137,12 @@ impl ControlConfig {
                 abs_tol: 0.02,
             },
             replan_drift: 0.1,
-            max_batches: 40,
-            max_change_db: 120.0,
+            // M067: was 40 batches / 120 dB of total travel (every e2e and real-song run ended on it); the net
+            // deviation and the rate now limit what matters, the batch count is a backstop
+            max_batches: 100,
+            max_net_db: 60.0,
+            max_db_per_min: 24.0,
+            rate_window_s: 60.0,
             no_progress_cycles: 6,
             min_progress: 0.01,
             max_reversals: 2,
@@ -166,7 +175,18 @@ impl ControlConfig {
         self.window_s *= f;
         self.reversal_cooldown_s *= f;
         self.engineer_hold_s *= f;
+        self.rate_window_s *= f;
         self
+    }
+
+    /// M067: the change-budget limits.
+    pub fn budget_limits(&self) -> super::budget::BudgetLimits {
+        super::budget::BudgetLimits {
+            max_batches: self.max_batches,
+            max_net_db: self.max_net_db,
+            max_db_per_min: self.max_db_per_min,
+            rate_window_s: self.rate_window_s,
+        }
     }
 
     pub fn with_mode(mut self, mode: Mode) -> Self {

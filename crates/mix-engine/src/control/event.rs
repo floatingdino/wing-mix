@@ -39,7 +39,8 @@ pub enum HoldReason {
     /// Within `target_objective`. Resumes when the objective rises past `resume_factor ×` it, the section changes
     /// or the engineer moves something.
     Converged,
-    /// The per-session change budget is used up. Never resumes by itself.
+    /// The per-session change budget is used up: the batch backstop, or no executable move fits the net-deviation
+    /// limit (M067). Never resumes by itself.
     Budget,
     /// No improvement over `no_progress_cycles` cycles or nothing executable left. Resumes on a section change or
     /// an engineer move.
@@ -208,6 +209,12 @@ pub enum ControlEvent {
     },
     Resumed {
         reason: PlanReason,
+    },
+    /// M067: the next batch waits for the change budget's rate window (`max_db_per_min`) until `until_s`.
+    Paced {
+        until_s: f64,
+        rate_db: f64,
+        max_db_per_min: f64,
     },
     /// The actuator stopped (STOP, PANIC, safety trip, link loss): the loop waits until it is ready again.
     Paused {
