@@ -77,3 +77,5 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M055 | WingMix GUI polish (names, events, undo, states) | M051 | sonnet |
 | M060 | Second-surface proof: adapter guide + stub adapter | M011 | sonnet |
 | M061 | Genericity fixes from the X32 proof | M060, M036 | sonnet |
+| M062 | Solo-based per-strip measurement (stereo-tap setups) | M052, M039 | opus |
+| M063 | E2E follow-up fixes (RTA origin, guard edges, PANIC vs engineer) | M052 | sonnet |

@@ -2,7 +2,7 @@
 id: M052
 title: Milestone: end-to-end against wing-simulator
 stage: S6
-status: review
+status: done
 owner: agent-M052
 depends: [M050, M051, M041, M024, M025]
 branch: task/M052
@@ -56,3 +56,4 @@ Full run: wing-sim daemon + REAPER-free fixture playback (or SimSurface), refere
     at 100 Hz right after resume + no trip on a -40 LUFS mix; PANIC target after an engineer move; e2e scene that
     forces inspections on the WING path; ramp stats split by job kind; rerun after M039. WingMix.app smoke not
     re-run (covered by `make app`).
+- 2026-10-31 coordinator: merged, make check passes. done. Follow-ups → M062 (solo-based strip measurement), M063 (actuator/daemon/safety fixes).
