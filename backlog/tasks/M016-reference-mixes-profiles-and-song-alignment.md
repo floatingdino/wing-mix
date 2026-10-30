@@ -2,10 +2,10 @@
 id: M016
 title: Reference mixes: profiles + song alignment to the multitrack
 stage: S2
-status: todo
-owner: -
+status: in_progress
+owner: agent-M016
 depends: [M014, M022]
-branch: -
+branch: task/M016
 model: opus
 ---
 
@@ -32,3 +32,4 @@ only as small test expectations if needed (prefer computing at test time).
 
 ## Log
 - 2026-10-30 coordinator: created after the user added fixtures/mixes.
+- 2026-10-30 agent-M016: started in .worktrees/M016. Plan: align.rs (chroma STFT + subsequence DTW over 12 transpositions) on a 30 s-block 8 kHz mixdown of the multitrack; SONGS table with warp anchors; matched-pair helper (mix-fixtures gains mix-reference/mix-core deps); worship genre in mix-describe.
