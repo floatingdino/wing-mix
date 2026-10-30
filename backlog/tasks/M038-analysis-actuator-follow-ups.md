@@ -2,10 +2,10 @@
 id: M038
 title: Analysis + actuator follow-ups: noise floor stat, onset double-count, model-switch ordering
 stage: S4
-status: todo
-owner: -
+status: in_progress
+owner: agent-M038
 depends: [M035]
-branch: -
+branch: task/M038
 model: sonnet
 ---
 
