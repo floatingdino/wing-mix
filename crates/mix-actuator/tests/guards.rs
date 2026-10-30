@@ -601,3 +601,53 @@ fn write_log_and_undo_history_are_bounded() {
         .count();
     assert_eq!(nothing, 2);
 }
+
+/// Feed `secs` of 10 Hz frames: band 12 climbs `rate` dB/s for `ramp_s`, then holds. Returns the time of the first
+/// feedback trip, if any.
+fn feed_music(m: &SafetyMonitor, t0: f64, secs: f64, rate: f32, ramp_s: f64) -> Option<f64> {
+    let mut i = 0;
+    while i as f64 * 0.1 <= secs {
+        let t = i as f64 * 0.1;
+        let up = (t.min(ramp_s) as f32) * rate;
+        m.feed_spectrum_at("main", t0 + t, &spectrum(-50.0 + up, 12), &[]);
+        if m.take_trips()
+            .iter()
+            .any(|x| matches!(x, Trip::Feedback { .. }))
+        {
+            return Some(t);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// M063 (e2e gap 4): 2 s after a resume the guard tripped on music alone (a band gaining prominence on a short
+/// stub of fresh history). After `resume` no verdict is given until a full window of new history exists.
+#[test]
+fn no_feedback_verdict_on_the_stub_of_history_after_resume() {
+    // control: without the warm-up the same frames do trip, ~2 s in
+    let mut cfg = SafetyConfig::default();
+    cfg.feedback.resume_warmup_s = 0.0;
+    let m = SafetyMonitor::new(cfg);
+    m.clear_latches();
+    let t = feed_music(&m, 0.0, 8.0, 6.0, 2.5).expect("control trips");
+    assert!(t < 3.0, "{t}");
+
+    // with the warm-up: a band that settles within the first seconds never trips ...
+    let m = SafetyMonitor::new(SafetyConfig::default());
+    m.clear_latches();
+    assert_eq!(feed_music(&m, 0.0, 8.0, 6.0, 2.5), None);
+    assert!(!m.status().feedback_suspect && !m.status().feedback_latched);
+
+    // ... while one that keeps building is still caught, as soon as the warm-up ends
+    let m = SafetyMonitor::new(SafetyConfig::default());
+    m.clear_latches();
+    let t = feed_music(&m, 0.0, 12.0, 6.0, 20.0).expect("a real build-up trips");
+    let w = SafetyConfig::default().feedback.resume_warmup_s;
+    assert!((w..w + 1.0).contains(&t), "tripped at {t}");
+
+    // without a resume (start of the session) nothing is delayed
+    let m = SafetyMonitor::new(SafetyConfig::default());
+    let t = feed_music(&m, 0.0, 12.0, 6.0, 20.0).expect("trips");
+    assert!(t < 3.0, "{t}");
+}

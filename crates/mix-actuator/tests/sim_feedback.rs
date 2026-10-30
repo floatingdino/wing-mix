@@ -24,13 +24,22 @@ const TONE_HZ: f32 = 2500.0;
 
 /// Mono input: low white noise plus a 2.5 kHz tone whose level in dBFS is `tone_db(t)` (None = silent).
 fn input(seconds: f64, tone_db: impl Fn(f64) -> Option<f64>) -> Multitrack {
+    input_with_noise(seconds, -48.0, tone_db)
+}
+
+/// As [`input`] with the background noise (the "programme") at `noise_db` dBFS.
+fn input_with_noise(
+    seconds: f64,
+    noise_db: f32,
+    tone_db: impl Fn(f64) -> Option<f64>,
+) -> Multitrack {
     let mut rng = Rng::new(7);
     let n = (seconds * SR as f64) as usize;
     let mut phase = 0.0f64;
     let audio: Vec<f32> = (0..n)
         .map(|i| {
             let t = i as f64 / SR as f64;
-            let noise = rng.bipolar() * 10f32.powf(-48.0 / 20.0);
+            let noise = rng.bipolar() * 10f32.powf(noise_db / 20.0);
             let tone = tone_db(t).map_or(0.0, |db| {
                 phase += 2.0 * std::f64::consts::PI * TONE_HZ as f64 / SR as f64;
                 (phase.sin() * 10f64.powf(db / 20.0)) as f32
@@ -193,4 +202,35 @@ fn steady_tone_and_note_onset_do_not_trip() {
         r.log
     );
     assert!((r.fader() + 7.0).abs() < 1e-6);
+}
+
+/// M063 (e2e gap 5): a quiet programme must not blind the guard. The band floor used to be an absolute -70 dB, so on
+/// a quiet mix the tone only counted once it was far above the programme (late trip, prominence 23 dB at -55 dBFS
+/// noise); the floor is now just above the analyser's noise floor and the relative floor does the work.
+#[test]
+fn building_sine_in_a_quiet_mix_is_caught_as_early_as_in_a_louder_one() {
+    for noise_db in [-48.0f32, -52.0, -55.0] {
+        // tone from 1 s at 6 dB/s, starting 12 dB under the noise
+        let mut r = rig(input_with_noise(14.0, noise_db, |t| {
+            (t > 1.0).then(|| noise_db as f64 - 12.0 + 6.0 * (t - 1.0))
+        }));
+        r.actuator.submit(boost());
+        r.run(7.0);
+        let (t, ev) = r
+            .log
+            .iter()
+            .find(|(_, e)| matches!(e, ActuatorEvent::Safety { .. }))
+            .unwrap_or_else(|| panic!("noise {noise_db}: never tripped: {:#?}", r.log));
+        let ActuatorEvent::Safety {
+            trip: Trip::Feedback { prominence_db, .. },
+            ..
+        } = ev
+        else {
+            panic!("{ev:?}")
+        };
+        assert!(
+            *t < 3.0 && *prominence_db < 16.0,
+            "noise {noise_db}: tripped late ({t} s, prominence {prominence_db} dB)"
+        );
+    }
 }
