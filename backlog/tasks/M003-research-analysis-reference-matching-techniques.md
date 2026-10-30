@@ -2,10 +2,10 @@
 id: M003
 title: Research: analysis & reference-matching techniques and libraries
 stage: S0
-status: todo
-owner: -
+status: in_progress
+owner: agent-M003
 depends: []
-branch: -
+branch: task/M003
 model: opus
 ---
 
@@ -18,3 +18,4 @@ Write docs/research/analysis.md: survey and choose Rust crates (realfft/rustfft,
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M003: started; worktree .worktrees/M003. Next: read wing-simulator dsp-reuse/rta, verify crate versions/licences, write docs/research/analysis.md.
