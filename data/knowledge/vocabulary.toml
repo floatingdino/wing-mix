@@ -1,0 +1,790 @@
+# Wing Mix knowledge base: mix-description vocabulary -> measurable TargetProfile deltas (used by M024).
+# Rationale and citations: docs/research/mix-knowledge.md (section "vocabulary.toml").
+# Feature names and bands: data/knowledge/workflow.toml [features], [bands].
+
+[schema]
+version = 1
+file = "vocabulary"
+description = "Each [[term]] maps a descriptive word to deltas applied to the TargetProfile (not direct console moves). The planner then reaches the shifted target through the normal diagnosis -> plan loop, so vocabulary never bypasses remit, limits or workflow order."
+
+[schema.term_fields]
+id            = "canonical term (lowercase)"
+synonyms      = "other words/phrases that resolve to this term (lowercase, matched on word boundaries; hyphen/space-insensitive)"
+antonym       = "term id with roughly opposite deltas (used to resolve 'not X' / 'less X')"
+kind          = "tonal | dynamics | spatial | balance | fx | loudness | character"
+polarity      = "desirable | problem | neutral. problem terms describe a fault: 'muddy' in a description ('it's muddy', 'too muddy', 'less muddy') means apply the deltas NEGATED; desirable terms ('warm', 'more warm') apply them as written"
+default_scope = "mix | <source id> | <family>: what an unqualified use refers to (e.g. 'sibilant' -> vocal family)"
+scopable      = "true if the term can be qualified by a source/family ('punchy drums', 'warm bass'): deltas then apply to that stem's/strip's target and level features"
+deltas        = "list of { feature, delta = [lo, hi] }: shift of the TargetProfile value of that feature (band_dev_db.<band> shifts the target band in dB; level_dev_lu.<scope> shifts the target relative level; others shift the named target statistic). Planner uses the midpoint scaled by the intensity modifier, then clamps with [limits]"
+scoped_features = "A delta feature may end with a scope segment: level_dev_lu.lead_vocal, band_dev_db.presence.lead_vocal, wet_rel_dry_lu.lead_vocal, level_dev_lu.drums (source id or family). Without one, the term's scope (default_scope or the qualifier in the description) applies; for mix scope, level_dev_lu/wet_rel_dry_lu deltas apply to the qualifier's strips."
+antonym_empty  = "antonym = \"\" means no single opposite term"
+blocks_hint   = "processing blocks most likely to realise the change (planner hint, not a constraint)"
+conflicts     = "terms whose deltas oppose this one on a shared feature; if both are requested, combine by summing deltas and report the trade-off (M024/M030)"
+confidence    = "high | medium | low: strength of agreement on the term's meaning (semantic-audio studies show some terms, e.g. 'warm', vary between people)"
+sources       = "keys into workflow.toml [sources]"
+
+[modifiers]
+# Intensity words scale the delta midpoint. Matching is on the word immediately before the term (or 'a bit of X').
+intensity = { "slightly" = 0.5, "a bit" = 0.5, "a little" = 0.5, "a touch" = 0.5, "somewhat" = 0.75, "" = 1.0, "more" = 1.0, "very" = 1.5, "much" = 1.5, "really" = 1.5, "lots of" = 1.5, "super" = 2.0, "extremely" = 2.0, "massively" = 2.0 }
+negation = { words = ["not", "less", "no", "without", "reduce", "fewer", "too"], factor = -1.0, note = "'too X' / 'less X' => -1 x deltas of X (X describes the current state to move away from); for problem-polarity terms the negation is the default" }
+comparative = { words = ["more", "-er"], note = "'warmer' = 'more warm' = +1 x" }
+
+[limits]
+max_band_delta_db = 6.0        # sum of all term deltas on one band, after scaling
+max_level_delta_lu = 6.0
+max_width_delta_db = 6.0
+max_reverb_delta_db = 8.0
+max_crest_delta_db = 6.0
+note = "Clamps keep a stacked description ('very warm, very dark, very full') from producing an extreme target."
+
+# ======================================= TONAL (mix-level by default) ==========================================
+[[term]]
+id = "warm"
+synonyms = ["warmth", "warmer", "rich", "round", "rounder", "mellow"]
+antonym = "cold"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid_lo", delta = [1.5, 3.0] },
+  { feature = "band_dev_db.low_mid", delta = [0.0, 1.0] },
+  { feature = "band_dev_db.presence", delta = [-1.5, -0.5] },
+  { feature = "band_dev_db.brilliance", delta = [-2.0, -1.0] },
+  { feature = "band_dev_db.air", delta = [-2.0, -0.5] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["bright", "thin", "crisp"]
+confidence = "medium"
+sources = ["stables2014", "deman2016", "cartwright2013", "zacharakis2014", "gibson2019"]
+note = "SocialEQ: 'warm' is consistent within listeners but varies across them; corroborate with a reference when available"
+
+[[term]]
+id = "cold"
+synonyms = ["clinical", "sterile"]
+antonym = "warm"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid_lo", delta = [-3.0, -1.5] },
+  { feature = "band_dev_db.presence", delta = [0.5, 1.5] },
+  { feature = "band_dev_db.brilliance", delta = [1.0, 2.0] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["warm"]
+confidence = "low"
+sources = ["gibson2019", "practice"]
+
+[[term]]
+id = "bright"
+synonyms = ["brighter", "brilliant", "sparkly", "sparkle", "shiny"]
+antonym = "dark"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.presence", delta = [0.5, 1.5] },
+  { feature = "band_dev_db.brilliance", delta = [1.5, 3.0] },
+  { feature = "band_dev_db.air", delta = [1.5, 3.0] },
+  { feature = "tilt_dev_db_per_oct", delta = [0.2, 0.5] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["warm", "dark", "smooth"]
+confidence = "high"
+sources = ["stables2014", "deman2016", "zacharakis2014", "saitis2019"]
+note = "brightness is the most robust timbral descriptor; correlates with spectral centroid"
+
+[[term]]
+id = "dark"
+synonyms = ["darker", "dull", "veiled", "muffled", "dull-sounding"]
+antonym = "bright"
+kind = "tonal"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.brilliance", delta = [-3.0, -1.5] },
+  { feature = "band_dev_db.air", delta = [-3.0, -1.5] },
+  { feature = "tilt_dev_db_per_oct", delta = [-0.5, -0.2] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["bright", "airy", "crisp"]
+confidence = "high"
+sources = ["stables2014", "zacharakis2014"]
+note = "'dull'/'muffled' are usually complaints: treat as problem (negate) when phrased 'it sounds dull'"
+
+[[term]]
+id = "airy"
+synonyms = ["air", "open top", "breathy", "silky top", "sheen"]
+antonym = "dark"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.air", delta = [2.0, 4.0] },
+  { feature = "band_dev_db.brilliance", delta = [0.0, 1.0] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["dark"]
+confidence = "medium"
+sources = ["stables2014", "gibson2019", "owsinski2017"]
+note = "realised with a high shelf >= 10 kHz, after de-essing"
+
+[[term]]
+id = "muddy"
+synonyms = ["mud", "murky", "cloudy", "woolly", "congested"]
+antonym = "clear"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid", delta = [2.0, 4.0] },
+  { feature = "band_dev_db.low_mid_lo", delta = [1.0, 2.0] },
+]
+blocks_hint = ["Filter", "Eq", "FxSlot"]
+conflicts = ["clear", "crisp"]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "gibson2019"]
+
+[[term]]
+id = "clear"
+synonyms = ["clarity", "clean", "defined", "definition", "separated", "separation", "transparent"]
+antonym = "muddy"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid", delta = [-2.5, -1.0] },
+  { feature = "band_dev_db.presence", delta = [0.5, 1.5] },
+  { feature = "masking_db", delta = [-3.0, -1.0] },
+  { feature = "reverb_rel_dev_db", delta = [-2.0, 0.0] },
+]
+blocks_hint = ["Eq", "Pan", "Send"]
+conflicts = ["muddy", "warm", "wet"]
+confidence = "medium"
+sources = ["hafezi2015", "senior2011", "izhaki2018"]
+note = "clarity = less masking: resolution strategies in eq.toml [[masking_strategy]]"
+
+[[term]]
+id = "boomy"
+synonyms = ["boom", "boomier", "bloated", "flabby", "too much low end"]
+antonym = "tight"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.bass", delta = [2.0, 4.0] },
+  { feature = "band_dev_db.low_mid_lo", delta = [1.0, 3.0] },
+]
+blocks_hint = ["Eq", "Filter", "Dyn"]
+conflicts = ["thin", "tight"]
+confidence = "high"
+sources = ["owsinski2017", "gibson2019"]
+
+[[term]]
+id = "boxy"
+synonyms = ["box", "cardboard", "hollow", "honky low mids"]
+antonym = "open"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid", delta = [1.0, 2.0] },
+  { feature = "band_dev_db.mid", delta = [2.0, 4.0] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["open"]
+confidence = "high"
+sources = ["senior2011", "owsinski2017"]
+
+[[term]]
+id = "nasal"
+synonyms = ["honky", "honk", "horn-like", "telephone", "phone-like"]
+antonym = "smooth"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [ { feature = "band_dev_db.upper_mid", delta = [2.0, 4.0] } ]
+blocks_hint = ["Eq"]
+conflicts = []
+confidence = "medium"
+sources = ["owsinski2017", "gibson2019"]
+
+[[term]]
+id = "harsh"
+synonyms = ["harshness", "edgy", "abrasive", "piercing", "shrill", "fatiguing", "brittle", "strident"]
+antonym = "smooth"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.presence", delta = [2.0, 4.0] },
+  { feature = "band_dev_db.brilliance", delta = [0.0, 1.5] },
+]
+blocks_hint = ["Eq", "Dyn"]
+conflicts = ["smooth", "present"]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "moore2012"]
+note = "2-5 kHz is where hearing is most sensitive (equal-loudness contours), so small excesses read as harsh; prefer dynamic EQ when intermittent"
+
+[[term]]
+id = "smooth"
+synonyms = ["silky", "sweet", "creamy", "polite", "easy on the ears"]
+antonym = "harsh"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.presence", delta = [-2.0, -0.5] },
+  { feature = "sibilance_db", delta = [-3.0, -1.0] },
+]
+blocks_hint = ["Eq", "Dyn"]
+conflicts = ["harsh", "aggressive", "bright"]
+confidence = "medium"
+sources = ["gibson2019", "practice"]
+
+[[term]]
+id = "sibilant"
+synonyms = ["essy", "spitty", "lispy", "sss", "sibilance"]
+antonym = "smooth"
+kind = "tonal"
+polarity = "problem"
+default_scope = "vocal"
+scopable = true
+deltas = [ { feature = "sibilance_db", delta = [3.0, 6.0] } ]
+blocks_hint = ["Dyn"]
+conflicts = []
+confidence = "high"
+sources = ["senior2011", "owsinski2017"]
+
+[[term]]
+id = "thin"
+synonyms = ["weak", "lightweight", "anemic", "small", "no bottom"]
+antonym = "full"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.bass", delta = [-4.0, -2.0] },
+  { feature = "band_dev_db.low_mid_lo", delta = [-3.0, -1.5] },
+  { feature = "band_dev_db.sub", delta = [-3.0, -1.0] },
+]
+blocks_hint = ["Eq", "Filter", "Fader"]
+conflicts = ["full", "warm", "boomy"]
+confidence = "high"
+sources = ["owsinski2017", "gibson2019"]
+note = "first check the HPF on the scoped strip (over-filtering is a common cause)"
+
+[[term]]
+id = "full"
+synonyms = ["fat", "thick", "big", "body", "weighty", "beefy"]
+antonym = "thin"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.bass", delta = [1.0, 2.0] },
+  { feature = "band_dev_db.low_mid_lo", delta = [1.5, 3.0] },
+]
+blocks_hint = ["Eq", "Filter"]
+conflicts = ["thin", "clear"]
+confidence = "medium"
+sources = ["stables2014", "gibson2019", "zacharakis2014"]
+
+[[term]]
+id = "heavy"
+synonyms = ["bassy", "bass-heavy", "subby", "low end", "deep", "chesty"]
+antonym = "thin"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.sub", delta = [2.0, 3.0] },
+  { feature = "band_dev_db.bass", delta = [1.5, 3.0] },
+]
+blocks_hint = ["Eq", "Fader"]
+conflicts = ["thin", "tight"]
+confidence = "medium"
+sources = ["gibson2019", "practice"]
+note = "headroom cost: sub energy dominates peak level; check targets.mix_bus"
+
+[[term]]
+id = "tinny"
+synonyms = ["tiny", "radio", "cheap", "small-speaker"]
+antonym = "full"
+kind = "tonal"
+polarity = "problem"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.bass", delta = [-4.0, -2.0] },
+  { feature = "band_dev_db.low_mid_lo", delta = [-3.0, -1.0] },
+  { feature = "band_dev_db.upper_mid", delta = [1.0, 3.0] },
+  { feature = "band_dev_db.presence", delta = [1.0, 2.0] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["full", "warm"]
+confidence = "medium"
+sources = ["gibson2019", "practice"]
+
+[[term]]
+id = "crisp"
+synonyms = ["crispy", "snappy highs", "articulate", "detailed", "hi-fi"]
+antonym = "dark"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.presence", delta = [0.5, 1.5] },
+  { feature = "band_dev_db.brilliance", delta = [1.0, 2.0] },
+  { feature = "transient_db", delta = [0.5, 1.5] },
+]
+blocks_hint = ["Eq", "Dyn"]
+conflicts = ["warm", "dark", "smooth"]
+confidence = "medium"
+sources = ["stables2014", "gibson2019"]
+
+[[term]]
+id = "open"
+synonyms = ["opened up", "spacious top", "uncluttered"]
+antonym = "boxy"
+kind = "tonal"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid", delta = [-2.0, -1.0] },
+  { feature = "band_dev_db.mid", delta = [-1.5, -0.5] },
+  { feature = "band_dev_db.air", delta = [1.0, 2.0] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["boxy", "warm"]
+confidence = "low"
+sources = ["gibson2019", "practice"]
+
+[[term]]
+id = "scooped"
+synonyms = ["smiley", "smile curve", "v-shaped", "mid-scooped"]
+antonym = "mid_forward"
+kind = "tonal"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.mid", delta = [-4.0, -2.0] },
+  { feature = "band_dev_db.upper_mid", delta = [-2.0, -1.0] },
+  { feature = "band_dev_db.low_mid", delta = [-2.0, -1.0] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["mid_forward"]
+confidence = "medium"
+sources = ["gibson2019", "practice"]
+
+[[term]]
+id = "mid_forward"
+synonyms = ["midrangey", "mid-heavy", "honky mids", "in your face mids"]
+antonym = "scooped"
+kind = "tonal"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.mid", delta = [1.0, 2.5] },
+  { feature = "band_dev_db.upper_mid", delta = [1.0, 2.5] },
+]
+blocks_hint = ["Eq"]
+conflicts = ["scooped"]
+confidence = "low"
+sources = ["practice"]
+
+# ======================================= DYNAMICS ==============================================================
+[[term]]
+id = "punchy"
+synonyms = ["punch", "impact", "hard-hitting", "slam", "thump", "snappy"]
+antonym = "soft"
+kind = "dynamics"
+polarity = "desirable"
+default_scope = "drums"
+scopable = true
+deltas = [
+  { feature = "transient_db", delta = [2.0, 4.0] },
+  { feature = "crest_db", delta = [1.0, 3.0] },
+  { feature = "band_dev_db.bass", delta = [0.5, 1.5] },
+  { feature = "band_dev_db.low_mid", delta = [-1.5, -0.5] },
+  { feature = "level_dev_lu", delta = [0.5, 1.5] },
+]
+blocks_hint = ["Dyn", "Eq", "Fader"]
+conflicts = ["compressed", "soft", "wet"]
+confidence = "medium"
+sources = ["senior2011", "izhaki2018", "giannoulis2012"]
+note = "punch comes from transients surviving: slower compressor attack, less low-mid clutter, kick/bass separation"
+
+[[term]]
+id = "tight"
+synonyms = ["controlled", "focused", "tight low end"]
+antonym = "boomy"
+kind = "dynamics"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.low_mid_lo", delta = [-1.5, -0.5] },
+  { feature = "band_dev_db.sub", delta = [-1.5, 0.0] },
+  { feature = "lra_lu", delta = [-2.0, -1.0] },
+  { feature = "reverb_rel_dev_db", delta = [-3.0, -1.0] },
+]
+blocks_hint = ["Eq", "Dyn", "Gate", "Send"]
+conflicts = ["boomy", "heavy", "wet"]
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[term]]
+id = "dynamic"
+synonyms = ["breathing", "open dynamics", "uncompressed", "natural dynamics", "live-sounding"]
+antonym = "compressed"
+kind = "dynamics"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "crest_db", delta = [2.0, 4.0] },
+  { feature = "plr_db", delta = [2.0, 4.0] },
+  { feature = "lra_lu", delta = [1.0, 3.0] },
+]
+blocks_hint = ["Dyn"]
+conflicts = ["compressed", "loud"]
+confidence = "high"
+sources = ["katz2015", "ebu_r128"]
+
+[[term]]
+id = "compressed"
+synonyms = ["squashed", "squished", "dense", "glued", "glue", "cohesive", "flat dynamics", "brickwalled"]
+antonym = "dynamic"
+kind = "dynamics"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "crest_db", delta = [-4.0, -2.0] },
+  { feature = "plr_db", delta = [-4.0, -2.0] },
+  { feature = "lra_lu", delta = [-3.0, -1.0] },
+]
+blocks_hint = ["Dyn"]
+conflicts = ["dynamic", "punchy"]
+confidence = "high"
+sources = ["katz2015", "senior2011"]
+note = "'glued' wants small amounts (bus comp 1-3 dB GR); 'squashed' is usually a complaint: negate"
+
+[[term]]
+id = "soft"
+synonyms = ["gentle", "laid back", "laid-back", "relaxed", "subtle"]
+antonym = "aggressive"
+kind = "dynamics"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "transient_db", delta = [-2.0, -1.0] },
+  { feature = "band_dev_db.presence", delta = [-1.5, -0.5] },
+]
+blocks_hint = ["Dyn", "Eq"]
+conflicts = ["punchy", "aggressive"]
+confidence = "low"
+sources = ["practice"]
+
+[[term]]
+id = "aggressive"
+synonyms = ["edgy mix", "in your face", "raw", "gritty", "hard"]
+antonym = "soft"
+kind = "character"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.presence", delta = [1.0, 2.5] },
+  { feature = "band_dev_db.upper_mid", delta = [0.5, 1.5] },
+  { feature = "crest_db", delta = [-2.0, -0.5] },
+  { feature = "reverb_rel_dev_db", delta = [-3.0, -1.0] },
+]
+blocks_hint = ["Eq", "Dyn", "Send"]
+conflicts = ["smooth", "soft"]
+confidence = "low"
+sources = ["gibson2019", "practice"]
+
+[[term]]
+id = "loud"
+synonyms = ["louder", "hot", "hotter", "competitive"]
+antonym = "quiet"
+kind = "loudness"
+polarity = "neutral"
+default_scope = "mix"
+scopable = false
+deltas = [ { feature = "lufs_i", delta = [1.0, 3.0] }, { feature = "plr_db", delta = [-2.0, 0.0] } ]
+blocks_hint = ["Fader", "Dyn"]
+conflicts = ["dynamic"]
+confidence = "high"
+sources = ["katz2015", "ebu_r128"]
+note = "bounded by workflow.toml [targets] (true peak, delivery profile); live SPL is out of scope"
+
+[[term]]
+id = "quiet"
+synonyms = ["quieter", "lower", "turn it down"]
+antonym = "loud"
+kind = "loudness"
+polarity = "neutral"
+default_scope = "mix"
+scopable = false
+deltas = [ { feature = "lufs_i", delta = [-3.0, -1.0] } ]
+blocks_hint = ["Fader"]
+conflicts = ["loud"]
+confidence = "high"
+sources = ["ebu_r128"]
+
+# ======================================= SPATIAL / FX ==========================================================
+[[term]]
+id = "wide"
+synonyms = ["wider", "stereo", "spread", "panoramic", "big stereo"]
+antonym = "narrow"
+kind = "spatial"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "width_dev_db", delta = [2.0, 4.0] },
+  { feature = "correlation", delta = [-0.2, -0.05] },
+]
+blocks_hint = ["Pan", "Send", "FxSlot"]
+conflicts = ["narrow"]
+confidence = "high"
+sources = ["pestana2014", "izhaki2018", "owsinski2017"]
+note = "never at the cost of low-end mono: keep low_correlation >= 0.8 and correlation >= 0.2 (mono compatibility)"
+
+[[term]]
+id = "narrow"
+synonyms = ["narrower", "mono", "centred", "focused image", "tight image"]
+antonym = "wide"
+kind = "spatial"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [ { feature = "width_dev_db", delta = [-6.0, -3.0] }, { feature = "correlation", delta = [0.1, 0.3] } ]
+blocks_hint = ["Pan"]
+conflicts = ["wide"]
+confidence = "high"
+sources = ["izhaki2018"]
+
+[[term]]
+id = "wet"
+synonyms = ["wetter", "spacious", "ambient", "lush", "reverberant", "big room", "roomy", "epic", "atmospheric", "deep (space)"]
+antonym = "dry"
+kind = "fx"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [ { feature = "reverb_rel_dev_db", delta = [3.0, 6.0] }, { feature = "wet_rel_dry_lu", delta = [2.0, 5.0] } ]
+blocks_hint = ["Send", "FxSlot"]
+conflicts = ["dry", "clear", "tight", "punchy"]
+confidence = "medium"
+sources = ["izhaki2018", "senior2011"]
+note = "'roomy' on drums => drum_room send; 'lush' on vocals => longer plate/hall decay as well"
+
+[[term]]
+id = "dry"
+synonyms = ["drier", "intimate", "upfront", "close", "dead", "in your face (space)"]
+antonym = "wet"
+kind = "fx"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [ { feature = "reverb_rel_dev_db", delta = [-6.0, -3.0] }, { feature = "wet_rel_dry_lu", delta = [-5.0, -2.0] } ]
+blocks_hint = ["Send"]
+conflicts = ["wet"]
+confidence = "medium"
+sources = ["izhaki2018", "senior2011"]
+
+[[term]]
+id = "distant"
+synonyms = ["far", "pushed back", "behind", "in the background"]
+antonym = "present"
+kind = "spatial"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "level_dev_lu", delta = [-3.0, -1.0] },
+  { feature = "wet_rel_dry_lu", delta = [2.0, 4.0] },
+  { feature = "band_dev_db.air", delta = [-2.0, -0.5] },
+  { feature = "transient_db", delta = [-2.0, -0.5] },
+]
+blocks_hint = ["Fader", "Send", "Eq", "Dyn"]
+conflicts = ["present"]
+confidence = "medium"
+sources = ["izhaki2018", "moore2012"]
+note = "depth cues: lower level, more reverb relative to direct, less HF, softer transients"
+
+[[term]]
+id = "present"
+synonyms = ["presence", "forward", "upfront source", "in front", "pop out", "cut through"]
+antonym = "distant"
+kind = "balance"
+polarity = "desirable"
+default_scope = "lead_vocal"
+scopable = true
+deltas = [
+  { feature = "level_dev_lu", delta = [1.0, 3.0] },
+  { feature = "band_dev_db.presence", delta = [0.5, 2.0] },
+  { feature = "wet_rel_dry_lu", delta = [-3.0, -1.0] },
+  { feature = "transient_db", delta = [0.5, 1.5] },
+]
+blocks_hint = ["Fader", "Eq", "Send"]
+conflicts = ["distant", "harsh"]
+confidence = "medium"
+sources = ["izhaki2018", "senior2011"]
+
+# ======================================= BALANCE (compound, scope fixed) =======================================
+[[term]]
+id = "vocal_forward"
+synonyms = ["vocal-forward", "vocals up", "vocal on top", "more vocal", "loud vocals", "vocal-led", "hear the words"]
+antonym = "vocal_buried"
+kind = "balance"
+polarity = "desirable"
+default_scope = "lead_vocal"
+scopable = false
+deltas = [
+  { feature = "level_dev_lu.lead_vocal", delta = [2.0, 4.0] },
+  { feature = "band_dev_db.presence.lead_vocal", delta = [0.5, 1.5] },
+  { feature = "masking_db.presence.lead_vocal", delta = [-3.0, -1.0] },
+  { feature = "wet_rel_dry_lu.lead_vocal", delta = [-3.0, -1.0] },
+]
+blocks_hint = ["Fader", "Eq", "Send", "Dyn"]
+conflicts = ["vocal_buried", "wet"]
+confidence = "high"
+sources = ["pestana2014", "senior2011", "izhaki2018"]
+note = "prefer carving competitors' presence band (eq.toml complementary_cut) over raw vocal level to keep the band's power"
+
+[[term]]
+id = "vocal_buried"
+synonyms = ["vocal-buried", "vocals down", "vocal tucked in", "vocal sits back", "blended vocal"]
+antonym = "vocal_forward"
+kind = "balance"
+polarity = "neutral"
+default_scope = "lead_vocal"
+scopable = false
+deltas = [ { feature = "level_dev_lu.lead_vocal", delta = [-3.0, -1.0] }, { feature = "wet_rel_dry_lu.lead_vocal", delta = [0.5, 2.0] } ]
+blocks_hint = ["Fader", "Send"]
+conflicts = ["vocal_forward"]
+confidence = "medium"
+sources = ["senior2011"]
+note = "'vocal is buried' is a complaint => negate (i.e. bring it forward)"
+
+[[term]]
+id = "drum_heavy"
+synonyms = ["drums up", "big drums", "drum-led", "drum forward"]
+antonym = "drums_back"
+kind = "balance"
+polarity = "neutral"
+default_scope = "drums"
+scopable = false
+deltas = [ { feature = "level_dev_lu.drums", delta = [1.5, 3.0] } ]
+blocks_hint = ["Fader"]
+conflicts = ["drums_back"]
+confidence = "high"
+sources = ["practice"]
+
+[[term]]
+id = "drums_back"
+synonyms = ["drums down", "quieter drums", "softer drums"]
+antonym = "drum_heavy"
+kind = "balance"
+polarity = "neutral"
+default_scope = "drums"
+scopable = false
+deltas = [ { feature = "level_dev_lu.drums", delta = [-3.0, -1.5] } ]
+blocks_hint = ["Fader"]
+conflicts = ["drum_heavy"]
+confidence = "high"
+sources = ["practice"]
+
+[[term]]
+id = "guitar_driven"
+synonyms = ["guitars up", "more guitar", "wall of guitars", "guitar-heavy"]
+antonym = ""
+kind = "balance"
+polarity = "neutral"
+default_scope = "guitar"
+scopable = false
+deltas = [ { feature = "level_dev_lu.guitar", delta = [1.5, 3.0] }, { feature = "width_dev_db", delta = [0.5, 2.0] } ]
+blocks_hint = ["Fader", "Pan"]
+conflicts = ["vocal_forward"]
+confidence = "medium"
+sources = ["practice"]
+
+# ======================================= CHARACTER (low confidence, combinations) ==============================
+[[term]]
+id = "vintage"
+synonyms = ["retro", "old-school", "lo-fi", "lofi", "70s", "analog"]
+antonym = "modern"
+kind = "character"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.air", delta = [-4.0, -2.0] },
+  { feature = "band_dev_db.sub", delta = [-3.0, -1.0] },
+  { feature = "band_dev_db.mid", delta = [0.5, 1.5] },
+  { feature = "width_dev_db", delta = [-2.0, 0.0] },
+]
+blocks_hint = ["Eq", "Pan"]
+conflicts = ["modern", "airy"]
+confidence = "low"
+sources = ["pestana2013", "practice"]
+note = "Pestana et al. 2013 found long-term spectra of commercial releases shifted over decades (more extreme lows/highs recently); use a reference when possible"
+
+[[term]]
+id = "modern"
+synonyms = ["contemporary", "polished", "radio-ready", "slick", "produced"]
+antonym = "vintage"
+kind = "character"
+polarity = "neutral"
+default_scope = "mix"
+scopable = true
+deltas = [
+  { feature = "band_dev_db.sub", delta = [1.0, 2.0] },
+  { feature = "band_dev_db.air", delta = [1.0, 2.0] },
+  { feature = "crest_db", delta = [-2.0, -0.5] },
+  { feature = "sibilance_db", delta = [-2.0, 0.0] },
+]
+blocks_hint = ["Eq", "Dyn"]
+conflicts = ["vintage", "dynamic"]
+confidence = "low"
+sources = ["pestana2013", "practice"]
+
+[[term]]
+id = "natural"
+synonyms = ["balanced", "neutral", "honest", "uncoloured", "as is"]
+antonym = ""
+kind = "character"
+polarity = "desirable"
+default_scope = "mix"
+scopable = true
+deltas = []
+blocks_hint = []
+conflicts = []
+confidence = "medium"
+sources = ["practice"]
+note = "no delta: tightens tolerances instead (M031 halves band_tolerance_db) and discourages character moves"
