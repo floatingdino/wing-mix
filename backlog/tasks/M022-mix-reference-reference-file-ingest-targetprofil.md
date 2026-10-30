@@ -2,7 +2,7 @@
 id: M022
 title: mix-reference: reference file ingest → TargetProfile
 stage: S2
-status: review
+status: done
 owner: task-agent-M022
 depends: [M020]
 branch: task/M022
@@ -28,3 +28,4 @@ Decode reference (wav/flac/mp3/aac/m4a via symphonia), resample (rubato), loudne
   Design notes: audio normalised to -23 LUFS before analysis, original integrated LUFS restored in `loudness.integrated_lufs`; sections = Foote novelty boundaries (segments < 4 s merged), average-linkage clustering on RMS-dB/LU distance (threshold 3), labels intro/verse/chorus/bridge/outro (hints). Section times rounded to 1 ms, duration to 1 us so JSON round-trips exactly (serde_json f64 parse is not exact without float_roundtrip).
   Tests: WAV 16/24/f32 mono+stereo at several rates; FLAC via a hand-written verbatim-subframe encoder in tests (mono+stereo, multi-block); resample 44.1k->48k; sections on a generated V-C-V-C song (labels + boundaries within 3 s); JSON round trip; cache hit/miss/corrupt; stem hook; level-scaling invariance; CLI integration. mp3/aac/m4a decode is enabled but NOT covered by a test: no encoder available to generate data without committing binaries (garbage-mp3 error path is tested). #[ignore] fixture_mixdown_profile (60 s mixdown of the local multitrack at 3900 s) passes locally: 3 sections, valid profile.
   Proposed follow-ups: committed tiny mp3/aac/m4a fixtures (or a dev-only encoder) to cover lossy decode; section-aware stem targets in M023; gapless/encoder-delay trimming check for mp3.
+- 2026-10-30 coordinator: merged, make check passes. done. mp3/aac test via ffmpeg-if-present folded into M023.
