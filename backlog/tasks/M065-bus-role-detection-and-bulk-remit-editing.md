@@ -2,10 +2,10 @@
 id: M065
 title: Bus role detection accuracy (multi-hop routing, FX buses) + bulk remit editing
 stage: S5
-status: todo
-owner: -
+status: in_progress
+owner: agent-M065
 depends: [M061]
-branch: -
+branch: task/M065
 model: opus
 ---
 
@@ -62,3 +62,11 @@ Work:
 
 ## Log
 - 2026-10-31 coordinator: created from user report; findings (a)–(d) from inspecting state.snap and WingMix logs.
+- 2026-10-31 agent-M065: started. Diagnosis: `mix_surface::remit::detect_topology` already propagates bus->bus->main
+  (MainPath::Indirect) and uses FX inserts; on the user's scene via the WING adapter topology (`mix-wing::topology`)
+  it already yields 1-4 fx, 5-7 foh_group, 8-15 monitor, 16 comms. The bug is the embedded sim: `SimSurface::topology`
+  hand-builds a reduced topology (input sends + main assigns only: no bus->bus sends, inserts, FX slots, outputs,
+  talkback, re-inputs). Before (user scene loaded into SimSurface): bus 1/2 fx 0.71 -> unknown, 3/4 fx 0.86 ->
+  unknown, 5 foh_group 0.62, 6 foh_group 0.92 -> unknown, 7 foh_group, 8-15 monitor, 16 comms.
+  Plan: move the WING topology builder to mix-wing-map (shared, no network deps), use it in SimSurface; non-exposed
+  strips (aux, matrix, fx, unexposed channels) go to a new `Topology::context` so detection sees the full routing.
