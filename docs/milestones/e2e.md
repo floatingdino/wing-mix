@@ -78,7 +78,7 @@ Audits (all runs, all passing; asserted in `check()`):
 - **Zero forbidden writes**: every param a run changed (full-state diff through the generic surface + every
   change the observer saw) re-evaluated by an independent `PolicyGate` with the same policy on the observer's
   connection: 1-16 params per run, all `allowed` or `conditional` with a confirmation the operator gave (2 on Holy
-  Forever: monitor-coupled moves); **0 forbidden**. All changes were on input strips with role foh; nothing on the
+  Forever); **0 forbidden**. All changes were on input strips with role foh; nothing on the
   13 protected strips (IEM / comms / unconfirmed buses), matrices, mains 2-4, routing or the monitor section. The
   wing-sim snapshot (`save` over its control socket) before the session vs after PANIC: **0 differing paths**
   (RTA source restored too), apart from the harness's own engineer writes.
