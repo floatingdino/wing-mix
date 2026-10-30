@@ -2,10 +2,10 @@
 id: M002
 title: Research: controlling WING as a client (OSC/native), meters, RTA, solo
 stage: S0
-status: todo
-owner: -
+status: in_progress
+owner: agent-M002
 depends: []
-branch: -
+branch: task/M002
 model: opus
 ---
 
@@ -19,3 +19,4 @@ Write docs/research/wing-control.md. Using ../wing-simulator (docs/research/prot
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M002: started; worktree .worktrees/M002 on task/M002.
