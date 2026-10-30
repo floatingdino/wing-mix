@@ -2,10 +2,10 @@
 id: M011
 title: mix-wing: WING adapter (OSC client, topology, solo, meters)
 stage: S1
-status: todo
-owner: -
+status: in_progress
+owner: agent-M011
 depends: [M010, M002]
-branch: -
+branch: task/M011
 model: opus
 ---
 
@@ -23,3 +23,7 @@ Coordinator note (from M015): knowledge values are generic; the WING adapter/pla
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M011: started in .worktrees/M011. Plan: native client (wing_proto::nrp codec + a local
+  wing_model::ParamStore mirror fed by a `DA DC` dump, `$`-leaf gets and change events), functional WING<->generic
+  map (remit.md A.1; slot leaves named from the active model), topology builder, solo/meters/RTA, conformance via an
+  in-process wing_proto NativeServer (fast, in make check) and a headless wing-sim daemon on private ports.
