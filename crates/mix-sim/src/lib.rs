@@ -2,7 +2,7 @@
 //!
 //! - [`surface`]: [`SimSurface`] (set params, render N seconds of main/bus/solo/monitor taps from a [`Multitrack`],
 //!   meters from the engine's `LevelBank`), also a [`mix_surface::testkit::ConformanceDriver`].
-//! - [`map`]: minimal WING path <-> generic `ParamId` mapping (to be unified with mix-wing, see its docs).
+//! - [`map`]: sim strips and the binding of generic params to the in-process store, using the shared `mix-wing-map` mapping (identical to mix-wing's).
 //!
 //! Built on the wing-simulator daemon's own console (`wing_sim::audio`), so renders match what `wing-sim` outputs.
 //! Fixtures are generated at test time; no audio is committed.

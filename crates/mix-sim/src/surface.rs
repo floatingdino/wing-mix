@@ -184,7 +184,7 @@ impl Inner {
         self.params
             .retain(|id, _| !id.as_str().starts_with(&prefix));
         for b in map::strip_bindings(&self.store, strip) {
-            self.params.insert(b.spec.id.clone(), b);
+            self.params.insert(b.mapped.id.clone(), b);
         }
     }
 
@@ -203,14 +203,15 @@ impl Inner {
         allow_read_only: bool,
     ) -> SurfaceResult<Value> {
         let b = self.binding(id)?.clone();
-        if b.spec.read_only && !allow_read_only {
+        let spec = b.spec(&self.store)?;
+        if spec.read_only && !allow_read_only {
             return Err(SurfaceError::ReadOnly(id.clone()));
         }
-        let v = b.spec.coerce(&value)?;
+        let v = spec.coerce(&value)?;
         let changed = map::write_value(&self.store, &b, &v, origin)?;
         self.ctl.refresh(&self.store);
         let is_model = matches!(
-            b.spec.class,
+            spec.class,
             mix_surface::model::ParamClass::EqModel | mix_surface::model::ParamClass::DynamicsModel
         );
         if changed && is_model {
@@ -695,14 +696,15 @@ impl Surface for SimSurface {
             .filter(|s| st.strips.contains(s))
             .ok_or_else(|| SurfaceError::UnknownStrip(strip.clone()))?;
         // keep chain order as built by the mapping
-        Ok(map::strip_bindings(&st.store, s)
+        map::strip_bindings(&st.store, s)
             .into_iter()
-            .map(|b| b.spec)
-            .collect())
+            .map(|b| b.spec(&st.store))
+            .collect()
     }
 
     fn param_spec(&self, param: &ParamId) -> SurfaceResult<mix_surface::ParamSpec> {
-        Ok(self.st().binding(param)?.spec.clone())
+        let st = self.st();
+        st.binding(param)?.spec(&st.store)
     }
 
     fn read(&self, param: &ParamId) -> SurfaceResult<Value> {

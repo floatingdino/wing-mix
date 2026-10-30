@@ -42,6 +42,30 @@ pub struct ConnectOptions {
     pub sync_timeout: Duration,
     /// UDP port to probe for the console identity (default: the native port, as on a real WING). `None` skips.
     pub discovery_port: Option<u16>,
+    /// Reconnect automatically after the connection drops (default on). `None`: stay disconnected.
+    pub reconnect: Option<ReconnectPolicy>,
+}
+
+/// Backoff of the automatic reconnect: retry after `initial`, doubling up to `max`, until the surface is dropped.
+///
+/// While the link is down every call fails with [`SurfaceError::Disconnected`] and `SurfaceEvent::Disconnected`
+/// has been emitted. Once the TCP connection is back and the parameter mirror is fully resynchronised the surface
+/// emits [`SurfaceEvent::Reconnected`] followed by [`SurfaceEvent::TopologyChanged`]; the console may have changed
+/// anything meanwhile (or have been rebooted), so consumers re-read what they care about. The meter report is
+/// redefined by the meter receiver on its own once packets resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconnectPolicy {
+    pub initial: Duration,
+    pub max: Duration,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        ReconnectPolicy {
+            initial: Duration::from_millis(250),
+            max: Duration::from_secs(5),
+        }
+    }
 }
 
 impl Default for ConnectOptions {
@@ -50,6 +74,7 @@ impl Default for ConnectOptions {
             timeout: Duration::from_secs(5),
             sync_timeout: Duration::from_secs(30),
             discovery_port: Some(wing_proto::discovery::DISCOVERY_PORT),
+            reconnect: Some(ReconnectPolicy::default()),
         }
     }
 }
@@ -206,9 +231,14 @@ impl WingSurface {
         {
             let subs = subs.clone();
             let weak = Arc::downgrade(&client);
+            let link = Link {
+                policy: opts.reconnect,
+                timeout: opts.timeout,
+                sync_timeout: opts.sync_timeout,
+            };
             std::thread::Builder::new()
                 .name("wing-events".into())
-                .spawn(move || dispatch(rx, weak, subs))
+                .spawn(move || dispatch(rx, weak, subs, link))
                 .map_err(io)?;
         }
         let (name, model, firmware) = match identity {
@@ -275,6 +305,10 @@ impl WingSurface {
 
     fn resolve(&self, param: &ParamId) -> SurfaceResult<(NodeId, Mapped)> {
         let st = self.store();
+        if param.as_str().contains("/preamp/") {
+            return map::resolve_preamp_alias(st, param)
+                .ok_or_else(|| SurfaceError::UnknownParam(param.clone()));
+        }
         let node = self
             .index
             .node(st, param)
@@ -542,7 +576,46 @@ fn topology_relevant(m: &Mapped) -> bool {
     }
 }
 
-fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs) {
+/// Reconnect settings handed to the event thread.
+struct Link {
+    policy: Option<ReconnectPolicy>,
+    timeout: Duration,
+    sync_timeout: Duration,
+}
+
+fn broadcast(subs: &Subs, events: Vec<SurfaceEvent>) {
+    let mut g = lock(subs);
+    for ev in events {
+        g.retain(|tx| tx.send(ev.clone()).is_ok());
+    }
+}
+
+/// Retry [`NativeClient::reconnect`] with backoff until it works or the surface is dropped. `true` on success.
+fn reconnect_loop(client: &Weak<NativeClient>, link: &Link, policy: ReconnectPolicy) -> bool {
+    let mut delay = policy.initial;
+    loop {
+        // sleep in short slices so a dropped surface ends the loop promptly
+        let until = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < until {
+            if client.upgrade().is_none_or(|c| c.is_stopped()) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let Some(c) = client.upgrade() else {
+            return false;
+        };
+        if c.is_stopped() {
+            return false;
+        }
+        if c.reconnect(link.timeout, link.sync_timeout).is_ok() {
+            return true;
+        }
+        delay = (delay * 2).min(policy.max);
+    }
+}
+
+fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs, link: Link) {
     let s = Schema::get();
     let solo_names = |id: NodeId| map::is_solo_leaf(s.name(id)) || s.path(id) == "$stat/solo";
     let mut above_floor: HashMap<u16, bool> = HashMap::new();
@@ -559,7 +632,8 @@ fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs) {
             let ch = match msg {
                 ClientMsg::Change(ch) => ch,
                 ClientMsg::Disconnected => {
-                    disc = true;
+                    // a stale message from a connection that has since been replaced is not a disconnect
+                    disc |= !c.is_alive();
                     continue;
                 }
             };
@@ -584,9 +658,31 @@ fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs) {
                     });
                 }
             }
+            // re-patching (or switching to the alt source) moves the strip's preamp aliases to another source
+            if let Some(strip) = map::patch_strip_of(id) {
+                topo = true;
+                for (n, m) in map::preamp_aliases(st, &strip) {
+                    if let Some(value) = convert::read(st, n, &m) {
+                        events.push(SurfaceEvent::ParamChanged {
+                            param: m.id,
+                            value,
+                            origin,
+                        });
+                    }
+                }
+            }
             let Some(m) = map::map_node(st, id) else {
                 continue;
             };
+            for (_, am) in map::aliases_of_source(st, id) {
+                if let Some(value) = convert::read(st, id, &am) {
+                    events.push(SurfaceEvent::ParamChanged {
+                        param: am.id,
+                        value,
+                        origin,
+                    });
+                }
+            }
             if m.class == ParamClass::SendLevel {
                 let v = st.get_f64(id).unwrap_or(-144.0) > SEND_FLOOR_DB;
                 if above_floor.insert(ch.id, v).is_some_and(|old| old != v) {
@@ -615,9 +711,17 @@ fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs) {
             events.push(SurfaceEvent::Disconnected);
         }
         drop(c);
-        let mut g = lock(&subs);
-        for ev in events {
-            g.retain(|tx| tx.send(ev.clone()).is_ok());
+        broadcast(&subs, events);
+        if disc {
+            if let Some(policy) = link.policy {
+                if reconnect_loop(&client, &link, policy) {
+                    above_floor.clear();
+                    broadcast(
+                        &subs,
+                        vec![SurfaceEvent::Reconnected, SurfaceEvent::TopologyChanged],
+                    );
+                }
+            }
         }
     }
 }
@@ -656,6 +760,10 @@ impl Surface for WingSurface {
             if m.id.strip().as_ref() != Some(strip) {
                 continue;
             }
+            out.push(self.spec_of(n, &m)?);
+        }
+        // `<strip>/preamp/{gain,phantom}`: the source feeding the strip, resolved through its patch
+        for (n, m) in map::preamp_aliases(st, strip) {
             out.push(self.spec_of(n, &m)?);
         }
         Ok(out)

@@ -2,9 +2,9 @@
 //!
 //! - [`client`]: native protocol client (TCP 2222 via `wing_proto::nrp`): keepalive, get/set, change events, a
 //!   local `wing_model::ParamStore` mirror synchronised by a `DA DC` dump plus gets of the `$` live leaves.
-//! - [`map`]: WING tree <-> generic [`mix_surface::ParamId`] / class mapping (remit.md appendix A.1), slot params
+//! - [`map`] (crate `mix-wing-map`, shared with mix-sim): WING tree <-> generic [`mix_surface::ParamId`] / class mapping (remit.md appendix A.1), slot params
 //!   named through the active model.
-//! - [`convert`]: descriptor -> [`mix_surface::ParamSpec`], WING <-> generic values, knowledge-value clamps.
+//! - [`convert`] (crate `mix-wing-map`): descriptor -> [`mix_surface::ParamSpec`], WING <-> generic values, knowledge-value clamps.
 //! - [`topology`]: generic [`mix_surface::Topology`] (names, tags, chain, sends, inserts, outputs, re-inputs,
 //!   talkback, FX slots) for role detection.
 //! - [`meters`]: channel-3 meter subscription with renewal, UDP receiver, frame decoding (levels, GR, solo, RTA).
@@ -12,12 +12,12 @@
 //! - [`surface`]: [`WingSurface`], the [`mix_surface::Surface`] implementation (solo save/clear/restore, solo-mode
 //!   refusal, RTA claim/restore).
 
+pub use mix_wing_map::{convert, map};
+
 pub mod client;
-pub mod convert;
 pub mod discovery;
-pub mod map;
 pub mod meters;
 pub mod surface;
 pub mod topology;
 
-pub use surface::{ConnectOptions, RtaClaim, WingSurface};
+pub use surface::{ConnectOptions, ReconnectPolicy, RtaClaim, WingSurface};

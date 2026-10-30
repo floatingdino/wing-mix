@@ -19,7 +19,7 @@ pub mod signals;
 pub mod stats;
 
 pub use analyser::{AnalyserConfig, AnalysisError, StreamingAnalyser, ANALYSIS_VERSION};
-pub use masking::{masking, MaskingAnalysis, MaskingParams};
+pub use masking::{masking, stem_masking, MaskingAnalysis, MaskingParams, STORE_MSR_DB};
 pub use novelty::{novelty, Novelty};
 pub use offline::{analyse_buffer, OfflineAnalysis, OfflineOptions};
 pub use profile::{ProfileBuilder, Targets};

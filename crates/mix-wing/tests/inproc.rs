@@ -226,3 +226,182 @@ fn monitor_bus_classification_and_remit() {
     s.client().barrier(Duration::from_secs(2)).unwrap();
     common::check_monitor_classification(&s);
 }
+
+/// M018: `input.N/preamp/{gain,phantom}` alias the source feeding the strip, resolved through `in/conn`.
+#[test]
+fn preamp_alias_follows_the_patch_and_the_source() {
+    let con = InProc::start();
+    let s = con.connect();
+    let driver = con.connect();
+    let rx = s.subscribe();
+    let w = |d: &mix_wing::WingSurface, p: &str, v: Value| {
+        d.write(&ParamId::new(p), v).unwrap();
+    };
+    // unpatched: no alias
+    w(&driver, "input.3/source/grp", Value::Enum("OFF".into()));
+    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    let strip = StripId::new("input", 3);
+    let alias = ParamId::new("input.3/preamp/gain");
+    assert!(matches!(s.read(&alias), Err(SurfaceError::UnknownParam(_))));
+    assert!(!s.params(&strip).unwrap().iter().any(|p| p.id == alias));
+
+    // patch to A 5 and set the source gain: the alias reads and writes it
+    w(&driver, "input.3/source/grp", Value::Enum("A".into()));
+    w(&driver, "input.3/source/in", Value::Int(5));
+    w(&driver, "source.a.5/g", Value::Float(12.0));
+    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    let spec = s.param_spec(&alias).unwrap();
+    assert_eq!(spec.class, mix_surface::model::ParamClass::PreampGain);
+    assert_eq!(spec.unit, mix_core::units::Unit::Db);
+    let src_spec = s.param_spec(&ParamId::new("source.a.5/g")).unwrap();
+    assert_eq!((spec.range, spec.step), (src_spec.range, src_spec.step));
+    assert!(s.params(&strip).unwrap().iter().any(|p| p.id == alias));
+    assert!(s
+        .params(&strip)
+        .unwrap()
+        .iter()
+        .any(|p| p.id.as_str() == "input.3/preamp/phantom"));
+    assert_eq!(s.read(&alias).unwrap(), Value::Float(12.0));
+    assert_eq!(
+        s.write(&alias, Value::Float(18.5)).unwrap(),
+        Value::Float(18.5)
+    );
+    assert_eq!(
+        s.read(&ParamId::new("source.a.5/g")).unwrap(),
+        Value::Float(18.5)
+    );
+    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        driver.read(&ParamId::new("source.a.5/g")).unwrap(),
+        Value::Float(18.5),
+        "reached the console"
+    );
+
+    // another client moves the source: the alias reports an external change
+    while rx.try_recv().is_ok() {}
+    w(&driver, "source.a.5/g", Value::Float(7.0));
+    let seen = wait_for(
+        &rx,
+        |e| matches!(e, SurfaceEvent::ParamChanged { param, origin: Origin::External, .. } if *param == alias),
+    );
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            SurfaceEvent::ParamChanged { param, value: Value::Float(v), origin: Origin::External }
+                if *param == alias && (*v - 7.0).abs() < 0.01
+        )),
+        "{seen:?}"
+    );
+
+    // re-patching moves the alias to the other source
+    w(&driver, "source.a.6/g", Value::Float(-3.0));
+    while rx.try_recv().is_ok() {}
+    w(&driver, "input.3/source/in", Value::Int(6));
+    let seen = wait_for(
+        &rx,
+        |e| matches!(e, SurfaceEvent::ParamChanged { param, .. } if *param == alias),
+    );
+    assert!(seen.iter().any(|e| matches!(
+        e,
+        SurfaceEvent::ParamChanged { param, value: Value::Float(v), .. }
+            if *param == alias && (*v + 3.0).abs() < 0.01
+    )));
+    assert_eq!(s.read(&alias).unwrap(), Value::Float(-3.0));
+    // the alias of another strip sharing the new source sees the same gain
+    w(&driver, "input.4/source/grp", Value::Enum("A".into()));
+    w(&driver, "input.4/source/in", Value::Int(6));
+    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        s.read(&ParamId::new("input.4/preamp/gain")).unwrap(),
+        Value::Float(-3.0)
+    );
+    // phantom alias
+    w(&driver, "source.a.6/vph", Value::Bool(true));
+    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        s.read(&ParamId::new("input.3/preamp/phantom")).unwrap(),
+        Value::Bool(true)
+    );
+}
+
+/// M018: remit classifies the alias like the source param: conditional `preamp_gain` (needs the `AI` tag), phantom
+/// stays hard-forbidden, and the raw `source.*` domain is not a strip so it is never reachable by the engine.
+#[test]
+fn preamp_alias_is_classified_by_remit() {
+    use mix_surface::remit::{
+        detect_topology, effective_roles, evaluate, Policy, RemitContext, RemitSession,
+        ScoringDetector, WriteRequest,
+    };
+    let con = InProc::start();
+    let s = con.connect();
+    let driver = con.connect();
+    let w = |p: &str, v: Value| driver.write(&ParamId::new(p), v).unwrap();
+    w("input.3/source/grp", Value::Enum("A".into()));
+    w("input.3/source/in", Value::Int(5));
+    w("input.3/send/main.1/on", Value::Bool(true));
+    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    let policy = Policy::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/remit/wing-default.toml"),
+    )
+    .unwrap();
+    let decide = |tags: Option<&str>, p: &str, to: f64| {
+        if let Some(t) = tags {
+            w("input.3/meta/tags", Value::Text(t.into()));
+            driver.client().barrier(Duration::from_secs(2)).unwrap();
+            s.client().barrier(Duration::from_secs(2)).unwrap();
+        }
+        let topo = s.topology().unwrap();
+        let det = ScoringDetector::new(policy.detection.clone());
+        let found = detect_topology(&topo, &policy.detection, &det);
+        let roles = effective_roles(&found, &Default::default());
+        let ctx =
+            RemitContext::from_topology(&topo, &roles, &policy, &s.info().capabilities, false);
+        let spec = s.param_spec(&ParamId::new(p)).unwrap();
+        let from = s.read(&spec.id).unwrap();
+        evaluate(
+            &policy,
+            &ctx,
+            &RemitSession::default(),
+            &WriteRequest {
+                param: spec.id,
+                class: spec.class,
+                from: Some(from),
+                to: Some(Value::Float(to)),
+            },
+        )
+    };
+    let locked = decide(None, "input.3/preamp/gain", 3.0);
+    assert!(
+        !locked.is_allowed(),
+        "preamp gain needs the AI tag: {locked:?}"
+    );
+    assert_ne!(
+        locked.reason,
+        mix_surface::remit::Reason::Unknown,
+        "{locked:?}"
+    );
+    assert_ne!(
+        locked.reason,
+        mix_surface::remit::Reason::Hard,
+        "{locked:?}"
+    );
+    let unlocked = decide(Some("AI"), "input.3/preamp/gain", 3.0);
+    assert!(
+        unlocked.is_allowed(),
+        "AI tag unlocks the alias: {unlocked:?}"
+    );
+    // the raw source param is outside the strip model: never allowed
+    let raw = s.param_spec(&ParamId::new("source.a.5/g")).unwrap();
+    assert_eq!(raw.class, mix_surface::model::ParamClass::PreampGain);
+    let p = ParamId::new("input.3/preamp/phantom");
+    assert_eq!(
+        s.param_spec(&p).unwrap().class,
+        mix_surface::model::ParamClass::Phantom
+    );
+}

@@ -1,0 +1,11 @@
+[package]
+name = "mix-wing-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mix-core = { path = "../mix-core" }
+mix-surface = { path = "../mix-surface" }
+wing-model.workspace = true

@@ -111,6 +111,16 @@ impl Daemon {
         })
     }
 
+    /// Kill the daemon process (drops every connection).
+    pub fn kill(&mut self) {
+        self.inner.kill();
+    }
+
+    /// Kill and start a fresh daemon on the same ports (factory-default console).
+    pub fn restart(&mut self) -> bool {
+        self.inner.restart()
+    }
+
     pub fn connect(&self) -> WingSurface {
         let _ = &self.inner;
         WingSurface::connect(self.addr, &opts()).expect("connect wing-sim")

@@ -10,6 +10,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use mix_core::bands::{erb40_centre_rates, N_ERB};
+use mix_core::profile::{MaskingPair, StemKind, StemTargets};
 use mix_core::DB_FLOOR;
 
 /// Schroeder spreading function (dB) for a masker `dz` ERB-rate units below the masked band.
@@ -118,6 +119,50 @@ pub fn masking(sources: &[[f32; N_ERB]], params: MaskingParams) -> MaskingAnalys
         out.pair_msr_db.push(pairs);
         out.important.push(important);
         out.masked.push(masked);
+    }
+    out
+}
+
+// ---- reference stems ----
+
+/// MSR (dB) above which a reference pair is stored.
+pub const STORE_MSR_DB: f32 = -10.0;
+
+/// Pairwise masking between the reference stems (ordered pairs, masked first).
+pub fn stem_masking(stems: &StemTargets) -> Vec<MaskingPair> {
+    let kinds: Vec<StemKind> = stems
+        .stems
+        .iter()
+        .filter(|(_, p)| p.erb_rel_db.len() == N_ERB)
+        .map(|(k, _)| *k)
+        .collect();
+    let powers: Vec<[f32; N_ERB]> = kinds
+        .iter()
+        .map(|k| {
+            let p = &stems.stems[k];
+            let lvl = p.level_rel_mix_db.p50;
+            std::array::from_fn(|b| 10f32.powf((p.erb_rel_db[b].p50 + lvl) / 10.0))
+        })
+        .collect();
+    if kinds.len() < 2 {
+        return Vec::new();
+    }
+    let m = masking(&powers, MaskingParams::default());
+    let mut out = Vec::new();
+    for (i, &masked) in kinds.iter().enumerate() {
+        for (j, &masker) in kinds.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let msr = m.pair_msr_db[i][j];
+            if (0..N_ERB).any(|b| m.important[i][b] && msr[b] > STORE_MSR_DB) {
+                out.push(MaskingPair {
+                    masked,
+                    masker,
+                    erb_msr_db: msr.to_vec(),
+                });
+            }
+        }
     }
     out
 }

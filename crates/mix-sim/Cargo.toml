@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 mix-core = { path = "../mix-core" }
 mix-surface = { path = "../mix-surface" }
+mix-wing-map = { path = "../mix-wing-map" }
 mix-fixtures = { path = "../mix-fixtures" }
 wing-model.workspace = true
 wing-engine.workspace = true
