@@ -2,7 +2,7 @@
 id: M034
 title: Diagnosis calibration: no false positives on a matched mix
 stage: S3
-status: review
+status: done
 owner: agent-M034
 depends: [M032]
 branch: task/M034
@@ -108,3 +108,4 @@ is a competent human mix, so few high-severity problems are expected).
     (5) stem targets as energy means (or `Features` carrying window percentiles) would remove the session-vs-
     window mismatch the interval rule works around; (6) a group-bus tap per stem would remove the power-sum vs
     coherent-sum level bias (`stem_sum_tolerance_lu`).
+- 2026-10-31 coordinator: merged, make check passes. done. Live-vs-mastered gap + alignment check → M037; snare/keys misses + stem dynamics → M036.
