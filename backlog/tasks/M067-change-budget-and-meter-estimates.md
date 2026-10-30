@@ -36,3 +36,14 @@ Report before/after: e2e main+solo vs multichannel (re-measure both on current m
   strips without a tap (level, silence, activity), flagged as meter-refined; diagnosis runs level/balance checks on
   them with reduced confidence, spectral checks stay skipped. Baseline e2e (multi + solo) re-measured on main
   cd5c5c4 in .worktrees/M067-base.
+- 2026-10-31 agent-M067: progress. Done: control/budget.rs (net deviation + pacing, `paced` event, daemon
+  `session.change_budget`, start options `max_net_db`/`max_db_per_min`/`meters`, WingMix Live line); control/meters.rs
+  (meter window over the measurement window; priors take the metered level re main 1 while playing + a per-family
+  crest offset (calibrated from measured strips, else a prior), activity -> gated_fraction, silent strips dropped,
+  dyn GR); diagnosis: meter-refined taps join level/kit-balance checks at `meter_confidence` 0.5 (spectral,
+  masking, placement, source checks skip them), a metered working compressor answers a compression opportunity.
+  Sim (release): no-solo seed 7 priors only 1.119 -> 1.056, priors + meters 1.119 -> 0.814; solo-only vs multi
+  (no batch cap) 0.553 vs 0.442 (M062: 0.734 vs 0.571). FakeX32 (no meters): unchanged, 2.106 -> 0.182 converged.
+  Found: e2e baseline on main cd5c5c4: multichannel runs hold `no_progress` after 0-3 batches because the harness
+  never confirmed the confirmation requests made during suggest (events before the autopilot cursor); fixed in
+  the harness (also applied locally to the baseline worktree for a fair before). Next: e2e before/after tables.
