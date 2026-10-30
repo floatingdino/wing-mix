@@ -1,7 +1,7 @@
 //! Wing Mix headless CLI (analyse, match, dry-run against the simulator).
 //!
-//! Subcommands so far: `devices` (list audio input devices), `fixture info|excerpt|scan` (real multitrack fixture),
-//! `profile <file>` (reference file -> TargetProfile JSON), `describe` (mix description -> TargetProfile).
+//! Subcommands so far: `devices` (list audio input devices), `fixture info|excerpt|scan|align` (real multitrack
+//! fixture; `align` locates the fixtures/mixes references in the show), `profile <file>` (reference file -> TargetProfile JSON), `describe` (mix description -> TargetProfile).
 
 use mix_capture::list_input_devices;
 
