@@ -696,10 +696,10 @@ impl Surface for SimSurface {
             .filter(|s| st.strips.contains(s))
             .ok_or_else(|| SurfaceError::UnknownStrip(strip.clone()))?;
         // keep chain order as built by the mapping
-        Ok(map::strip_bindings(&st.store, s)
+        map::strip_bindings(&st.store, s)
             .into_iter()
             .map(|b| b.spec(&st.store))
-            .collect::<SurfaceResult<_>>()?)
+            .collect()
     }
 
     fn param_spec(&self, param: &ParamId) -> SurfaceResult<mix_surface::ParamSpec> {
