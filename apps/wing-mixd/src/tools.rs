@@ -169,7 +169,7 @@ mod tests {
         assert!(dirs.contains(&local), "{dirs:?}");
         assert_eq!(
             dirs.iter()
-                .filter(|d| **d == PathBuf::from("/usr/bin"))
+                .filter(|d| d.as_path() == Path::new("/usr/bin"))
                 .count(),
             1
         );
