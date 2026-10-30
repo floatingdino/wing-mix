@@ -12,7 +12,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 | M031 | background subagent (session-local) | opus | task/M031 (new base, normal merge OK) | 2026-10-30 |
 | M011 | background subagent (session-local) | opus | task/M011 | 2026-10-30 |
 | M012 | background subagent (session-local) | opus | task/M012 | 2026-10-30 |
-| M040 | background subagent (session-local) | opus | task/M040 | 2026-10-30 |
 | M016 | background subagent (session-local) | opus | task/M016 | 2026-10-30 |
 
 ## Decisions log
@@ -20,5 +19,5 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
   crates as git deps. Closed-loop testing via in-process wing-engine (mix-sim). LLM only via Claude Code CLI.
 - If agents are lost (new session), resume each in-flight task from its branch + Log with a fresh agent.
 - 2026-10-30: mix-core analysis types (bands/features/profile) owned by M020; surface/unit types by M010 (separate files).
-- 2026-10-30: main history rewritten (user approved) to drop fixture peaks/RPP, pushed to origin. Branches task/M011, M012, M016, M023, M040 are based on the OLD history (which contains the files): integrate them with `git cherry-pick $(git merge-base task/<ID> cce6d6c)..task/<ID>` on main (cce6d6c = a pre-rewrite commit still in their history), never a normal or squash merge (squash gives spurious conflicts), then verify `git ls-tree -r --name-only HEAD | grep fixtures/` shows only README.md before pushing. Push main after each merge.
+- 2026-10-30: main history rewritten (user approved) to drop fixture peaks/RPP, pushed to origin. Branches task/M011, M012, M016, M023, M040 are based on the OLD history (which contains the files): integrate them with `git cherry-pick $(git merge-base task/<ID> pre-rewrite-main)..task/<ID>` on main (local tag pre-rewrite-main = a6fa319b7c07184e975dc342eb7a6f010f6b9091, the old main tip; never push that tag), never a normal or squash merge (squash gives spurious conflicts), then verify `git ls-tree -r --name-only HEAD | grep fixtures/` shows only README.md before pushing. Push main after each merge.
 - 2026-10-30: M031 (diagnosis) and M025 (source ID) held back to cap concurrency at 5; dispatch next.

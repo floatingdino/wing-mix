@@ -2,7 +2,7 @@
 id: M040
 title: mix-actuator: human-like move scheduler + solo workflow
 stage: S4
-status: review
+status: done
 owner: agent-M040
 depends: [M010]
 branch: task/M040
@@ -51,3 +51,4 @@ Coordinator note (from M004): capture the session-start baseline of every touche
   restore model first, then re-apply dependent baselines. (4) RTA source save/restore workflow like solo
   (wing-control.md section 3). (5) write_log is unbounded: M050 should persist/rotate it. (6) Inspect callback must
   know which tap the capture carries (M021) to measure the soloed strip.
+- 2026-10-30 coordinator: cherry-picked onto main, make check passes. done. Follow-ups: discrete-param fades, RTA save/restore, bounded write_log, tap awareness → M041/M033.
