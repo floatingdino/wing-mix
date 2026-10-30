@@ -2,7 +2,7 @@
 id: M012
 title: mix-sim: offline closed-loop SimSurface + fixture generator
 stage: S1
-status: review
+status: done
 owner: agent-M012
 depends: [M010, M002]
 branch: task/M012
@@ -53,3 +53,4 @@ Coordinator note (after M002): follow docs/research/wing-control.md Â§mix-sim â€
     layer so conformance covers the production mapping; (2) confirm what recorder tracks 43/52/53/55/56 are
     (M014/M025) and fix their channel mapping; (3) RTA + listen points in SimSurface (RtaFeed is available
     in-process); (4) topology `outputs`/inserts/proc order are simplified (no output patch, fixed GEDI chain).
+- 2026-10-30 coordinator: cherry-picked onto main, make check passes. done. Open: real-fixture tracks 43/52/53/55/56 placement guessed (asked user); unify map.rs with mix-wing after M011.

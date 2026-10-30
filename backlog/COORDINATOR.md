@@ -11,7 +11,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 |---|---|---|---|---|
 | M031 | background subagent (session-local) | opus | task/M031 (new base, normal merge OK) | 2026-10-30 |
 | M011 | background subagent (session-local) | opus | task/M011 | 2026-10-30 |
-| M012 | background subagent (session-local) | opus | task/M012 | 2026-10-30 |
 | M016 | background subagent (session-local) | opus | task/M016 | 2026-10-30 |
 
 ## Decisions log
