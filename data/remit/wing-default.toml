@@ -1,0 +1,376 @@
+# Default remit policy for a Behringer WING used by a FOH mix assistant (M004 draft).
+#
+# Spec: docs/research/remit.md (format, evaluation order, detection heuristics, WING mapping appendix).
+# Everything below is written against the GENERIC surface model (strip kinds, strip roles, param classes,
+# generic ParamIds); the WING adapter maps WING paths onto those (remit.md appendix A). The same file shape works
+# for any surface; only `surface`, the detection vocabulary and the defaults differ.
+#
+# Evaluation (remit.md section 4), first decisive step wins:
+#   1. unknown / read-only param                -> forbidden          (default-deny)
+#   2. hard-forbidden list (compiled in)        -> forbidden          (cannot be changed by any policy)
+#   3. role / kind locks ([locks])              -> forbidden          (change the strip's role, not the rules)
+#   4. [[rule]]s: highest priority wins, ties -> most restrictive; no match -> forbidden (default-deny)
+#   5. unlock: conditional + strip tag in rule.unlock_tags, or a recorded user confirmation -> allowed
+#   6. [coupling.*]: param audibly changes a protected mix -> min(result, coupling class)
+#   7. [revive]: write makes a silent path audible -> min(result, revive class)
+# Classes order: forbidden < conditional < allowed ("min" = most restrictive).
+
+format = "wing-mix-remit/1"
+name = "WING default (FOH assistant)"
+surface = "wing"
+default = "forbidden"            # the loader rejects any other value
+
+# ---------------------------------------------------------------------------------------------------------------
+# Locks: strips whose every parameter is forbidden, including sends INTO them and FX slots inserted on them.
+# Not overridable by rules; the user changes the strip's role (GUI confirmation) or edits these lists.
+[locks]
+roles = ["monitor", "comms"]     # detected or confirmed performer mixes (IEM/wedge/fill) and comms/talkback
+kinds = ["matrix"]               # matrices feed PA zones/delays/broadcast: never touched by default
+unconfirmed = "forbidden"        # buses/inputs whose effective role is `unknown` (section 6.5)
+deny_tag = "NOAI"                # console-side strip tag: whole strip forbidden (WING: free word in strip tags)
+unlock_tag = "AI"                # console-side strip tag usable in rule.unlock_tags
+
+# ---------------------------------------------------------------------------------------------------------------
+# Role detection (remit.md section 6). Weights live in code (M010) and are tuned against data/remit/tests/;
+# thresholds and vocabulary are policy so a user/venue can adapt them.
+[detection]
+active_send_floor_db = -90.0              # a send counts as active if on and level > floor (subgroup mode: on)
+pre_fraction_monitor = 0.75               # >= : sends into the bus are "mostly pre-fader"
+pre_fraction_post = 0.25                  # <= : "mostly post-fader"
+auto_accept_confidence = 0.85             # permissive roles (foh_group, fx) need at least this ...
+auto_accept_max_protect_probability = 0.10  # ... and P(monitor)+P(comms) below this, and no monitor name hit
+protect_probability = 0.20                # P(monitor)+P(comms) >= this -> treat as unknown until confirmed
+name_hit_protects = true                  # any monitor/comms name token -> protected until user confirms otherwise
+
+[detection.names]
+# Matched as whole tokens after upper-casing and splitting on non-alphanumerics and letter/digit boundaries
+# ("IEM3" -> IEM, 3). `phrases` are matched against the name with all non-letters removed.
+monitor = ["IEM", "IEMS", "INEAR", "EAR", "EARS", "MON", "MONS", "MONITOR", "MONITORS", "WEDGE", "WEDGES", "WDG",
+           "FOLDBACK", "FB", "SIDEFILL", "DRUMFILL", "CUE", "PHONES", "HP", "HEADPHONE", "HEADPHONES", "PERS",
+           "PERSONAL", "STAGE", "CLICK"]
+monitor_phrases = ["IN EAR", "SIDE FILL", "DRUM FILL"]
+comms = ["COMMS", "COMS", "COMM", "TB", "TALK", "TALKBACK", "PROD", "CREW", "SM", "SHOUT", "INTERCOM", "CLEARCOM"]
+fx = ["FX", "EFX", "VERB", "VRB", "REV", "REVERB", "DLY", "DELAY", "ECHO", "PLATE", "HALL", "ROOM", "CHORUS",
+      "SLAP", "AMB", "AMBIENCE", "SPRING", "DOUBLER"]
+foh_group = ["GRP", "GROUP", "SUBGROUP", "SUBGRP", "FOH", "BAND", "DRUMS", "DRUM", "DRM", "VOX", "VOCALS", "VOCAL",
+             "BV", "BVS", "BGV", "KEYS", "GTR", "GTRS", "GUITARS", "HORNS", "BRASS", "STRINGS", "PERC", "INST",
+             "INSTR", "CHOIR", "PIANO", "PNO", "BASS", "TRACKS", "TX", "SYNTH", "COMP", "NY", "PARALLEL", "CRUSH",
+             "SMASH"]
+aux_feed = ["STREAM", "STRM", "REC", "RECORD", "BCAST", "BROADCAST", "VIDEO", "TV", "RADIO", "LOBBY", "FOYER", "ZONE",
+            "FRONTFILL", "OUTFILL", "INFILL", "BALCONY", "OVERFLOW", "PRESS", "WEB", "ONLINE", "LIVESTREAM", "SUB",
+            "SUBS", "SUBWOOFER", "LFE"]
+aux_feed_phrases = ["FRONT FILL", "LIVE STREAM", "UNDER BALCONY", "PRESS FEED"]
+
+# ---------------------------------------------------------------------------------------------------------------
+# Inspection: non-mixing actions the actuator uses to listen/measure. Always restored exactly (M040).
+# Hard rule regardless of this table: no solo/listen while the surface reports a destructive solo mode
+# (solo-in-place), and never through a write to solo configuration.
+[inspection]
+solo = "allowed"          # Surface::solo on any strip (incl. protected ones: listening does not change their mix)
+listen = "allowed"        # EQ-band / key / crossover listen (`inspect.listen`)
+rta = "allowed"           # claim the console RTA/meter source, restore on release
+
+# ---------------------------------------------------------------------------------------------------------------
+# Coupling: the param belongs to a writable strip but audibly changes a protected mix (monitor/comms), e.g. EQ on
+# a channel whose pre-fader IEM sends tap after the EQ, or an FX bus re-input into IEM mixes (section 5).
+[coupling.monitor]
+default = "conditional"            # any coupled class not listed below
+envelope_scale = 0.5               # allowed coupled moves get half the rule envelope (M041)
+trim = "conditional"
+balance = "conditional"
+preamp_gain = "conditional"
+polarity = "forbidden"
+input_delay = "forbidden"
+filter = "allowed"
+eq = "allowed"
+dynamics = "allowed"
+sidechain_filter = "allowed"
+fader = "conditional"              # only coupled through post-fader monitor sends
+pan = "conditional"
+width = "conditional"
+mute = "forbidden"
+send_level = "conditional"         # bus -> bus sends of a group that is re-input into monitor mixes
+send_on = "forbidden"
+insert_enable = "conditional"
+insert_slot = "forbidden"
+processing_order = "forbidden"
+filter_model = "forbidden"
+eq_model = "forbidden"
+dynamics_model = "forbidden"
+fx_param = "conditional"
+fx_mix = "conditional"
+fx_model = "forbidden"
+
+# Revive: a write that makes an inaudible path audible (fader or send from <= floor to above it, unmute, send on,
+# insert on, block on) is at most this class. The assistant never brings up what the engineer pulled down.
+[revive]
+class = "conditional"
+floor_db = -90.0
+
+# ---------------------------------------------------------------------------------------------------------------
+# Rules. Selectors (all optional, AND-ed; lists are OR-ed): kinds, roles, classes, params (ParamId globs),
+# dest_kinds, dest_roles (send params), fx_free, fx_host_kinds, fx_host_roles (fx slots: ALL hosts must match),
+# tags_any, tags_none. Effects: class (required), priority (default 0), unlock_tags, envelope, discrete, note.
+# Envelope keys are relative to the session baseline value (M041 enforces): max_delta_db, max_boost_db,
+# max_cut_db, max_delta_oct, max_delta_pct.
+
+# ---- Input channels (WING ch 1-40) and aux inputs (WING aux 1-8) that reach a main --------------------------------
+[[rule]]
+id = "input-gain-staging"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["trim", "balance"]
+class = "allowed"
+envelope = { max_delta_db = 6.0 }
+note = "Digital trim is the gain-staging tool; preamp gain is shared with splits/recorders."
+
+[[rule]]
+id = "input-preamp"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["preamp_gain"]
+class = "conditional"
+unlock_tags = ["AI"]
+envelope = { max_delta_db = 6.0 }
+note = "Preamp gain also changes every split of the source (recording, other consoles, IEM split)."
+
+[[rule]]
+id = "input-polarity-delay"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["polarity", "input_delay"]
+class = "conditional"
+discrete = true
+
+[[rule]]
+id = "input-tone"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["filter", "eq", "dynamics", "sidechain_filter"]
+class = "allowed"
+envelope = { max_boost_db = 6.0, max_cut_db = 12.0, max_delta_oct = 2.0 }
+
+[[rule]]
+id = "input-models"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["filter_model", "eq_model", "dynamics_model"]
+class = "conditional"
+discrete = true
+note = "Model switch re-maps every slot param (WING slot-positional ids); not rampable."
+
+[[rule]]
+id = "input-sidechain-routing"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["sidechain_source", "sidechain_tap"]
+class = "conditional"
+
+[[rule]]
+id = "input-inserts"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["insert_enable", "insert_slot"]
+class = "allowed"
+note = "insert_slot may only take a free FX slot (hard check)."
+
+[[rule]]
+id = "input-level-pan"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["fader", "pan", "width"]
+class = "allowed"
+envelope = { max_delta_db = 10.0, max_delta_pct = 50.0 }
+
+[[rule]]
+id = "input-mute"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["mute"]
+class = "conditional"
+note = "ARCHITECTURE lists input mute as allowed; proposed conditional (a wrong mute is a show-stopper)."
+
+[[rule]]
+id = "input-order"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["processing_order"]
+class = "conditional"
+discrete = true
+
+[[rule]]
+id = "input-sends-foh"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["send_level", "send_on", "send_pan"]
+dest_roles = ["foh_group", "fx"]
+class = "allowed"
+envelope = { max_delta_db = 10.0 }
+
+[[rule]]
+id = "input-main-level"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["send_level"]
+dest_kinds = ["main"]
+class = "allowed"
+envelope = { max_delta_db = 10.0 }
+
+[[rule]]
+id = "input-main-assign"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["send_on"]
+dest_kinds = ["main"]
+class = "conditional"
+note = "Main assignment changes (ARCHITECTURE: bus assignment changes are conditional)."
+
+[[rule]]
+id = "input-send-structure"
+kinds = ["input", "aux"]
+classes = ["send_tap", "send_pan_link", "tap_point", "tap_width", "automix"]
+class = "forbidden"
+note = "Tap/mode changes alter what every destination (incl. monitor mixes) receives."
+
+# ---- FOH buses (detected/confirmed foh_group or fx) ------------------------------------------------------------
+[[rule]]
+id = "bus-gain-tone"
+kinds = ["bus"]
+roles = ["foh_group", "fx"]
+classes = ["trim", "balance", "filter", "eq", "dynamics", "sidechain_filter", "insert_enable", "insert_slot"]
+class = "allowed"
+envelope = { max_delta_db = 6.0, max_boost_db = 6.0, max_cut_db = 12.0, max_delta_oct = 2.0 }
+
+[[rule]]
+id = "bus-discrete"
+kinds = ["bus"]
+roles = ["foh_group", "fx"]
+classes = ["polarity", "eq_model", "dynamics_model", "sidechain_source", "sidechain_tap", "mono", "mute"]
+class = "conditional"
+discrete = true
+
+[[rule]]
+id = "bus-level-pan"
+kinds = ["bus"]
+roles = ["foh_group", "fx"]
+classes = ["fader", "pan", "width"]
+class = "allowed"
+envelope = { max_delta_db = 6.0, max_delta_pct = 50.0 }
+
+[[rule]]
+id = "bus-sends-level"
+kinds = ["bus"]
+roles = ["foh_group", "fx"]
+classes = ["send_level"]
+dest_roles = ["foh_group", "fx"]
+class = "allowed"
+envelope = { max_delta_db = 6.0 }
+
+[[rule]]
+id = "bus-main-level"
+kinds = ["bus"]
+roles = ["foh_group", "fx"]
+classes = ["send_level"]
+dest_kinds = ["main"]
+class = "allowed"
+envelope = { max_delta_db = 6.0 }
+
+[[rule]]
+id = "bus-sends-assign"
+kinds = ["bus"]
+roles = ["foh_group", "fx"]
+classes = ["send_on", "send_tap"]
+class = "conditional"
+note = "Bus->bus/main assignment creates or removes summing paths (and possible loops)."
+
+[[rule]]
+id = "bus-aux-feed"
+kinds = ["bus", "main"]
+roles = ["aux_feed"]
+class = "forbidden"
+note = "Stream/record/zone/sub feeds are not the FOH mix. Documented explicitly; default-deny gives the same."
+
+# ---- Mains -----------------------------------------------------------------------------------------------------
+[[rule]]
+id = "main-processing"
+kinds = ["main"]
+roles = ["main"]
+classes = ["trim", "eq", "dynamics", "sidechain_filter", "insert_enable", "pan", "width"]
+class = "conditional"
+unlock_tags = ["AI"]
+envelope = { max_delta_db = 3.0, max_boost_db = 3.0, max_cut_db = 6.0, max_delta_oct = 1.0 }
+
+[[rule]]
+id = "main-fader"
+kinds = ["main"]
+roles = ["main"]
+classes = ["fader"]
+class = "conditional"
+unlock_tags = ["AI"]
+envelope = { max_delta_db = 3.0 }
+
+[[rule]]
+id = "main-discrete"
+kinds = ["main"]
+roles = ["main"]
+classes = ["insert_slot", "eq_model", "dynamics_model", "polarity", "mono", "sidechain_source", "sidechain_tap"]
+class = "conditional"
+discrete = true
+
+# ---- DCAs ------------------------------------------------------------------------------------------------------
+[[rule]]
+id = "dca-fader"
+kinds = ["dca"]
+classes = ["fader"]
+class = "conditional"
+unlock_tags = ["AI"]
+envelope = { max_delta_db = 6.0 }
+
+[[rule]]
+id = "dca-mute"
+kinds = ["dca"]
+classes = ["mute"]
+class = "forbidden"
+note = "A DCA mute may also mute members' pre-fader (monitor) sends (WING cfg/dcamgrp)."
+
+# ---- FX slots (pseudo-strips of kind fx; host = strip the slot is inserted on) ----------------------------------
+[[rule]]
+id = "fx-free-slot"
+kinds = ["fx"]
+fx_free = true
+classes = ["fx_model", "fx_mix", "fx_param"]
+class = "allowed"
+note = "Preparing an unused slot is inaudible until it is inserted."
+
+[[rule]]
+id = "fx-foh"
+kinds = ["fx"]
+fx_host_roles = ["foh", "foh_group", "fx"]
+classes = ["fx_mix", "fx_param"]
+class = "allowed"
+envelope = { max_delta_pct = 30.0, max_delta_db = 6.0 }
+
+[[rule]]
+id = "fx-foh-model"
+kinds = ["fx"]
+fx_host_roles = ["foh", "foh_group", "fx"]
+classes = ["fx_model"]
+class = "allowed"
+discrete = true
+note = "ARCHITECTURE allows FX model choice for FOH FX; actuator must ramp fx_mix (or the return) down first."
+
+[[rule]]
+id = "fx-on-main"
+kinds = ["fx"]
+fx_host_kinds = ["main"]
+classes = ["fx_mix", "fx_param", "fx_model"]
+class = "conditional"
+unlock_tags = ["AI"]
+
+# ---- Explicitly forbidden (documentation; default-deny and the hard list already cover these) ------------------
+[[rule]]
+id = "never-metadata"
+classes = ["metadata", "tags", "link", "solo_config", "automix", "out_delay"]
+class = "forbidden"
+priority = 100
+note = "Names/colours/tags (WING tags also carry DCA and mute-group membership), links, solo safes, automix, output delay."
