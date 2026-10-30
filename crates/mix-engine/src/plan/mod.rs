@@ -45,6 +45,7 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use mix_actuator::SafetyConfig;
 use mix_core::action::{Action, ParamChange};
 use mix_core::bands::N_ERB;
 use mix_core::features::Features;
@@ -114,6 +115,14 @@ pub struct PlanConfig {
     pub inspect_dwell_s: f64,
     pub candidates: CandidateConfig,
     pub diagnosis: DiagnosisConfig,
+    /// Safety gain limits the actuator's gate enforces (M036): every gain increase is planned within the
+    /// per-session limit and the fader ceiling ([`SafetyConfig::session_raise_to`]), and a move whose boost exceeds
+    /// the per-move limit is split into consecutive moves within it, so a plan never proposes a boost the gate would
+    /// refuse. `None`: no safety layer.
+    pub safety: Option<SafetyConfig>,
+    /// Session baseline per param (value when the session first touched it; the gate's per-session limit and
+    /// remit envelopes are measured from it). Params missing here start at their plan-time value.
+    pub session_baseline: BTreeMap<ParamId, f64>,
 }
 
 impl PlanConfig {
@@ -132,7 +141,14 @@ impl PlanConfig {
                 gate_opportunities: true,
                 ..DiagnosisConfig::default()
             },
+            safety: Some(SafetyConfig::default()),
+            session_baseline: BTreeMap::new(),
         }
+    }
+
+    /// Session baseline of `param` (else `start`, its plan-time value).
+    pub fn baseline_of(&self, param: &ParamId, start: f64) -> f64 {
+        self.session_baseline.get(param).copied().unwrap_or(start)
     }
 }
 
@@ -162,7 +178,7 @@ pub struct ProblemChange {
 }
 
 /// Predicted effect of one move (on the state left by the moves before it).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PredictedEffect {
     pub objective_before: f64,
     pub objective_after: f64,
@@ -184,6 +200,10 @@ pub struct PlannedMove {
     pub phase: String,
     pub problem: String,
     pub rules: Vec<String>,
+    /// Knowledge-base reasoning without numbers (merged moves: each distinct reason, `; `-joined).
+    #[serde(default)]
+    pub why: String,
+    /// `<action label>: <why> [problem ...] [rules ...] Predicted: ...` — the label is the move's total change.
     pub explanation: String,
     pub predicted: PredictedEffect,
     pub cost: f64,
@@ -425,10 +445,13 @@ struct Checked {
 
 fn check_remit(
     remit: &Remit<'_>,
+    start: &ConsoleState,
     state: &ConsoleState,
     mut c: Candidate,
-    allow_conditional: bool,
+    cfg: &PlanConfig,
 ) -> Result<Checked, String> {
+    let allow_conditional = cfg.allow_conditional;
+    let mut clamped = false;
     let mut confirm = Vec::new();
     let mut kept = Vec::new();
     // a model switch re-maps the slot: later changes are checked against the console after the switch
@@ -458,13 +481,39 @@ fn check_remit(
             }
             Verdict::Allowed => {}
         }
+        // the plan-time value and the session baseline (the gate measures envelopes and session limits from it)
+        let start_v = start.get(&ch.param).and_then(Value::as_f64);
+        let base = start_v.map(|v| cfg.baseline_of(&ch.param, v));
         let to = match (&d.envelope, &from) {
-            (Some(env), Some(f)) => match clamp_envelope(spec, f, &ch.to, env) {
-                Some(v) => st.coerce(&ch.param, v).unwrap_or(ch.to.clone()),
-                None => continue,
-            },
+            (Some(env), Some(f)) => {
+                let anchor = base.map_or_else(|| f.clone(), Value::Float);
+                match clamp_envelope(spec, &anchor, &ch.to, env) {
+                    Some(v) => st.coerce(&ch.param, v).unwrap_or(ch.to.clone()),
+                    // the target is the anchor itself
+                    None => anchor,
+                }
+            }
             _ => ch.to.clone(),
         };
+        // M036: gain increases within the safety limits (the plan's total change of a param is one move)
+        let to = match (&cfg.safety, start_v, base, to.as_f64()) {
+            (Some(sc), Some(s0), Some(b), Some(x)) => match sc.session_raise_to(spec, b, d.coupled)
+            {
+                Some(cap) if x > cap.max(s0) + 1e-9 => {
+                    let cap = cap.max(s0);
+                    st.coerce(&ch.param, Value::Float(cap))
+                        .unwrap_or(Value::Float(cap))
+                }
+                _ => to,
+            },
+            _ => to,
+        };
+        let cur = from.as_ref().and_then(Value::as_f64);
+        if let (Some(a), Some(b)) = (cur, to.as_f64()) {
+            if (b - a).abs() < spec.tolerance().max(1e-3) && matches!(to, Value::Float(_)) {
+                continue;
+            }
+        }
         // re-check the clamped value (value predicates)
         if to != ch.to {
             let mut req2 = req.clone();
@@ -473,6 +522,7 @@ fn check_remit(
                 return Err(format!("{}: forbidden after envelope clamp", ch.param));
             }
         }
+        clamped |= to != ch.to;
         let pc = ParamChange {
             param: ch.param,
             from,
@@ -487,6 +537,10 @@ fn check_remit(
     }
     if kept.is_empty() {
         return Err("nothing left inside the remit envelope".into());
+    }
+    if clamped {
+        // the generator's label named the unclamped value
+        c.label = describe_changes(&kept, state);
     }
     c.changes = kept;
     Ok(Checked { cand: c, confirm })
@@ -563,6 +617,15 @@ pub fn plan_with(
             .collect();
         let mid_fn = |s: &StripId| strip_mids.get(s).copied();
         let src_fn = |s: &StripId| source_of.get(s).cloned().flatten();
+        let raise_fn = |id: &ParamId| -> Option<f64> {
+            let sc = cfg.safety.as_ref()?;
+            let spec = input.state.spec(id)?;
+            let s0 = input.state.get(id)?.as_f64()?;
+            Some(
+                sc.session_raise_to(spec, cfg.baseline_of(id, s0), false)?
+                    .max(s0),
+            )
+        };
         let gen = candidates::Gen {
             kb,
             state: &state,
@@ -571,6 +634,7 @@ pub fn plan_with(
             strip_mid: &mid_fn,
             source_of: &src_fn,
             stems: &stems,
+            raise_to: &raise_fn,
         };
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut cands: Vec<Checked> = Vec::new();
@@ -592,7 +656,7 @@ pub fn plan_with(
                 if !seen.insert(key.clone()) || tried_bad.contains(&key) {
                     continue;
                 }
-                match check_remit(&input.remit, &state, c, cfg.allow_conditional) {
+                match check_remit(&input.remit, input.state, &state, c, cfg) {
                     Ok(k) => cands.push(k),
                     Err(e) => {
                         let reason = e
@@ -640,50 +704,6 @@ pub fn plan_with(
             break;
         };
         let c = k.cand;
-        let target = diag.problems.iter().find(|p| p.id == c.problem);
-        let problem = target.map(|p| ProblemChange {
-            id: p.id.clone(),
-            feature: p.evidence.feature.clone(),
-            unit: p.evidence.unit.clone(),
-            deviation_before: p.evidence.deviation,
-            deviation_after: d2
-                .problems
-                .iter()
-                .find(|q| q.id == p.id)
-                .map(|q| q.evidence.deviation),
-            tolerance: p.evidence.tolerance,
-        });
-        let touched: BTreeSet<StripId> = c.changes.iter().filter_map(|x| x.param.strip()).collect();
-        let strip_level_db: BTreeMap<StripId, f64> = touched
-            .iter()
-            .filter_map(|s| {
-                let a = pred.deltas.get(s).map_or(0.0, |d| d.level_db);
-                let b = p2.deltas.get(s)?.level_db;
-                Some((s.clone(), b - a))
-            })
-            .collect();
-        let main_level_db = (window_loudness(&p2.main) - window_loudness(&pred.main)) as f64;
-        let mut explanation = format!("{}: {}", c.label, c.why);
-        if let Some(p) = target {
-            explanation.push_str(&format!(" [problem {}: {}]", p.id, p.explanation));
-        }
-        if !c.rules.is_empty() {
-            explanation.push_str(&format!(" [rules: {}]", c.rules.join(", ")));
-        }
-        if let Some(pc) = &problem {
-            explanation.push_str(&format!(
-                " Predicted: {} {:+.1} -> {} {}",
-                pc.feature,
-                pc.deviation_before,
-                pc.deviation_after
-                    .map_or("within tolerance".to_string(), |x| format!("{x:+.1}")),
-                pc.unit
-            ));
-        }
-        explanation.push_str(&format!(
-            "; target distance {:.2} -> {:.2}, objective {:.3} -> {:.3}.",
-            cur.distance, s2.distance, cur.objective, s2.objective
-        ));
         let mv = PlannedMove {
             action: Action {
                 label: c.label.clone(),
@@ -693,16 +713,9 @@ pub fn plan_with(
             phase: PHASES[c.phase].to_string(),
             problem: c.problem.clone(),
             rules: c.rules.clone(),
-            explanation,
-            predicted: PredictedEffect {
-                objective_before: cur.objective,
-                objective_after: s2.objective,
-                distance_before: cur.distance,
-                distance_after: s2.distance,
-                problem,
-                strip_level_db,
-                main_level_db,
-            },
+            why: c.why.clone(),
+            explanation: String::new(),
+            predicted: PredictedEffect::default(),
             cost: c.cost,
             benefit: net + cfg.cost_weight * c.cost,
             needs_confirmation: k.confirm,
@@ -713,6 +726,7 @@ pub fn plan_with(
         diag = d2;
         cur = s2;
     }
+    let _ = (&pred, &diag);
 
     for (r, n) in &remit_drops {
         notes.push(format!("{n} candidate move(s) not proposed: remit {r}"));
@@ -720,7 +734,27 @@ pub fn plan_with(
     for u in unsupported {
         notes.push(u.to_string());
     }
-    let phases = order(&chosen, kb, input, cfg, &mut notes);
+    let mut phases = order(&chosen, kb, input, cfg, &mut notes);
+    // M036 plan hygiene: after merging, every move's predicted effect and explanation is re-derived in execution
+    // order (the sum of the per-move predicted gains is the plan's predicted gain; titles and texts carry the
+    // move's actual total change).
+    let mut st = input.state.clone();
+    let mut pred = model.predict(&st);
+    let mut diag = run(&pred)?;
+    let mut cur = before.clone();
+    for ph in &mut phases {
+        for step in &mut ph.steps {
+            let PlanStep::Move(m) = step else { continue };
+            st.apply(&m.action.changes);
+            let p2 = model.predict(&st);
+            let d2 = run(&p2)?;
+            let s2 = score_of(&d2, w, Some(&st));
+            annotate(m, &pred, &diag, &cur, &p2, &d2, &s2);
+            pred = p2;
+            diag = d2;
+            cur = s2;
+        }
+    }
     let mut confirmations: Vec<String> = Vec::new();
     for p in &phases {
         for s in &p.steps {
@@ -742,112 +776,299 @@ pub fn plan_with(
     })
 }
 
-/// Largest single step of a param when merging consecutive moves (`None`: never merged).
-fn merge_limit(param: &ParamId, cfg: &PlanConfig) -> Option<f64> {
-    let leaf = param.leaf();
-    if leaf == "fader" {
-        Some(cfg.candidates.max_fader_step_db)
-    } else if leaf.ends_with(".gain") && param.block() == Some("eq") {
-        Some(cfg.candidates.max_eq_step_db)
-    } else if leaf == "pan" {
-        Some(50.0)
-    } else {
-        None
-    }
+/// Short name of a param relative to its strip (`eq/band.4.gain`).
+fn rest_of(p: &ParamId) -> &str {
+    p.as_str().split_once('/').map_or(p.as_str(), |x| x.1)
 }
 
-/// Merge runs of consecutive moves (in execution order) that set the same numeric params of the same strip in the
-/// same phase, while the combined change stays within one step (the greedy search takes small steps; the
-/// actuator does not need to stop between them).
-fn merge_steps(
-    eff: Vec<(usize, usize, &PlannedMove)>,
-    cfg: &PlanConfig,
-) -> Vec<(usize, PlannedMove)> {
-    let mut out: Vec<(usize, PlannedMove)> = Vec::new();
-    for (ph, _, m) in eff {
-        if let Some((pph, prev)) = out.last_mut() {
-            let same_params = *pph == ph
-                && prev.strip == m.strip
-                && prev.action.changes.len() == m.action.changes.len()
-                && prev
-                    .action
-                    .changes
-                    .iter()
-                    .zip(&m.action.changes)
-                    .all(|(a, b)| a.param == b.param);
-            let within = same_params
-                && prev
-                    .action
-                    .changes
-                    .iter()
-                    .zip(&m.action.changes)
-                    .all(|(a, b)| {
-                        match (
-                            merge_limit(&a.param, cfg),
-                            a.from.as_ref().and_then(|v| v.as_f64()),
-                            b.to.as_f64(),
-                        ) {
-                            (Some(lim), Some(x0), Some(x1)) => (x1 - x0).abs() <= lim + 1e-9,
-                            _ => false,
-                        }
-                    });
-            if within {
-                for (a, b) in prev.action.changes.iter_mut().zip(&m.action.changes) {
-                    a.to = b.to.clone();
-                }
-                let desc: Vec<String> = prev
-                    .action
-                    .changes
-                    .iter()
-                    .map(|c| {
-                        let (x0, x1) = (
-                            c.from.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0),
-                            c.to.as_f64().unwrap_or(0.0),
-                        );
-                        format!(
-                            "{} {:+.1}",
-                            c.param
-                                .as_str()
-                                .split_once('/')
-                                .map_or(c.param.as_str(), |x| x.1),
-                            x1 - x0
-                        )
-                    })
-                    .collect();
-                prev.action.label = format!("{} {}", prev.strip, desc.join(", "));
-                prev.explanation = format!("{} Then: {}", prev.explanation, m.explanation);
-                prev.predicted.objective_after = m.predicted.objective_after;
-                prev.predicted.distance_after = m.predicted.distance_after;
-                if let (Some(a), Some(b)) = (
-                    prev.predicted.problem.as_mut(),
-                    m.predicted.problem.as_ref(),
-                ) {
-                    if a.id == b.id {
-                        a.deviation_after = b.deviation_after;
-                    }
-                }
-                for (k, v) in &m.predicted.strip_level_db {
-                    *prev.predicted.strip_level_db.entry(k.clone()).or_default() += v;
-                }
-                prev.predicted.main_level_db += m.predicted.main_level_db;
-                prev.cost += m.cost;
-                prev.benefit += m.benefit;
-                for k in &m.needs_confirmation {
-                    if !prev.needs_confirmation.contains(k) {
-                        prev.needs_confirmation.push(k.clone());
-                    }
-                }
-                for r in &m.rules {
-                    if !prev.rules.contains(r) {
-                        prev.rules.push(r.clone());
-                    }
-                }
-                continue;
+/// Label of a move from its actual changes (merged or clamped moves): `input.13 fader +2.9 dB`,
+/// `input.5 pan +0 -> -70`, `input.6 EQ band.4 -3.0 dB at 14142 Hz`, else `param from -> to`.
+pub fn describe_changes(changes: &[ParamChange], state: &ConsoleState) -> String {
+    let num = |c: &ParamChange| -> Option<(f64, f64)> {
+        Some((c.from.as_ref()?.as_f64()?, c.to.as_f64()?))
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let mut done: BTreeSet<&ParamId> = BTreeSet::new();
+    // an EQ band's freq/q are named with its gain change
+    for c in changes {
+        let l = c.param.leaf();
+        if c.param.block() == Some("eq") && (l.ends_with(".freq") || l.ends_with(".q")) {
+            let base = c.param.as_str().rsplit_once('.').map_or("", |x| x.0);
+            let gid = ParamId::new(format!("{base}.gain"));
+            if changes.iter().any(|x| x.param == gid) {
+                done.insert(&c.param);
             }
         }
-        out.push((ph, m.clone()));
+    }
+    for c in changes {
+        if done.contains(&c.param) {
+            continue;
+        }
+        let strip = c.param.strip().map_or(String::new(), |s| s.to_string());
+        let rest = rest_of(&c.param);
+        let leaf = c.param.leaf();
+        let text = match (leaf, num(c)) {
+            ("fader", Some((a, b))) => format!("{strip} fader {:+.1} dB", b - a),
+            ("pan", Some((a, b))) => format!("{strip} pan {a:+.0} -> {b:+.0}"),
+            (l, Some((a, b))) if l.ends_with(".gain") && c.param.block() == Some("eq") => {
+                let band = rest.trim_start_matches("eq/").trim_end_matches(".gain");
+                let fid = ParamId::new(format!(
+                    "{}.freq",
+                    c.param.as_str().trim_end_matches(".gain")
+                ));
+                let freq = changes
+                    .iter()
+                    .find(|x| x.param == fid)
+                    .and_then(|x| x.to.as_f64())
+                    .or_else(|| state.get(&fid).and_then(Value::as_f64));
+                match freq {
+                    Some(f) => format!("{strip} EQ {band} {:+.1} dB at {f:.0} Hz", b - a),
+                    None => format!("{strip} EQ {band} {:+.1} dB", b - a),
+                }
+            }
+            (_, Some((a, b))) => format!("{strip} {rest} {a:.1} -> {b:.1}"),
+            _ => format!("{strip} {rest} -> {}", c.to),
+        };
+        done.insert(&c.param);
+        parts.push(text);
+    }
+    // one strip: name it once
+    let strips: BTreeSet<Option<StripId>> = changes.iter().map(|c| c.param.strip()).collect();
+    if strips.len() == 1 && parts.len() > 1 {
+        if let Some(Some(s)) = strips.iter().next() {
+            let pre = format!("{s} ");
+            let rest: Vec<String> = parts
+                .iter()
+                .skip(1)
+                .map(|p| p.strip_prefix(&pre).unwrap_or(p).to_string())
+                .collect();
+            return format!("{}, {}", parts[0], rest.join(", "));
+        }
+    }
+    parts.join(", ")
+}
+
+/// M036 plan hygiene: one move per param. A move that touches a param an earlier move (in execution order)
+/// already set is folded into that earlier move: the union of both moves' changes, each param ending at its last
+/// planned value (the console ends in the same state). Changes that return a param to its plan-time value are
+/// dropped, and so is a move left without changes. Merged moves get a label from their actual total change.
+fn merge_moves(
+    eff: Vec<(usize, usize, &PlannedMove)>,
+    state: &ConsoleState,
+) -> Vec<(usize, PlannedMove)> {
+    let mut out: Vec<(usize, PlannedMove, bool)> = Vec::new();
+    for (ph, _, m) in eff {
+        let target = out.iter().position(|(_, prev, _)| {
+            prev.action
+                .changes
+                .iter()
+                .any(|a| m.action.changes.iter().any(|b| a.param == b.param))
+        });
+        let Some(i) = target else {
+            out.push((ph, m.clone(), false));
+            continue;
+        };
+        let (_, prev, merged) = &mut out[i];
+        *merged = true;
+        for b in &m.action.changes {
+            match prev.action.changes.iter_mut().find(|a| a.param == b.param) {
+                Some(a) => a.to = b.to.clone(),
+                None => prev.action.changes.push(b.clone()),
+            }
+        }
+        // the first reason stands for repeats of the same problem (later steps restate it with smaller numbers)
+        if m.problem != prev.problem && !prev.why.split("; ").any(|w| w == m.why) {
+            prev.why = format!("{}; {}", prev.why, m.why);
+        }
+        prev.cost += m.cost;
+        prev.benefit += m.benefit;
+        for k in &m.needs_confirmation {
+            if !prev.needs_confirmation.contains(k) {
+                prev.needs_confirmation.push(k.clone());
+            }
+        }
+        for r in &m.rules {
+            if !prev.rules.contains(r) {
+                prev.rules.push(r.clone());
+            }
+        }
+    }
+    out.into_iter()
+        .filter_map(|(ph, mut m, merged)| {
+            if merged {
+                m.action.changes.retain(|c| {
+                    let tol = state
+                        .spec(&c.param)
+                        .map_or(1e-6, |s| s.tolerance().max(1e-3));
+                    !c.from.as_ref().is_some_and(|f| f.approx_eq(&c.to, tol))
+                });
+                if m.action.changes.is_empty() {
+                    return None;
+                }
+                m.action.label = describe_changes(&m.action.changes, state);
+            }
+            Some((ph, m))
+        })
+        .collect()
+}
+
+/// M036: a move whose gain increase exceeds the safety per-move limit (remit-coupled params: the scaled limit) is
+/// split into `n` consecutive equal moves within it, labelled `(k/n)`; the actuator's gate checks each move from
+/// its own start value.
+fn split_moves(
+    moves: Vec<(usize, PlannedMove)>,
+    input: &PlanInput<'_>,
+    cfg: &PlanConfig,
+) -> Vec<(usize, PlannedMove)> {
+    let Some(sc) = cfg.safety.as_ref() else {
+        return moves;
+    };
+    let mut out = Vec::new();
+    for (ph, m) in moves {
+        let mut n = 1usize;
+        for c in &m.action.changes {
+            let (Some(spec), Some(a), Some(b)) = (
+                input.state.spec(&c.param),
+                c.from.as_ref().and_then(Value::as_f64),
+                c.to.as_f64(),
+            ) else {
+                continue;
+            };
+            let mut req = WriteRequest::new(c.param.clone(), spec.class);
+            req.from = c.from.clone();
+            req.to = Some(c.to.clone());
+            let coupled = evaluate(
+                input.remit.policy,
+                input.remit.ctx,
+                input.remit.session,
+                &req,
+            )
+            .coupled;
+            if let Some(lim) = sc.move_limit_db(spec, coupled) {
+                if b - a > lim + 1e-9 && lim > 0.0 {
+                    n = n.max(((b - a) / lim - 1e-9).ceil() as usize);
+                }
+            }
+        }
+        if n <= 1 {
+            out.push((ph, m));
+            continue;
+        }
+        let mut prev: Vec<Value> = m
+            .action
+            .changes
+            .iter()
+            .map(|c| c.from.clone().unwrap_or_else(|| c.to.clone()))
+            .collect();
+        for k in 1..=n {
+            let mut part = m.clone();
+            for (i, c) in part.action.changes.iter_mut().enumerate() {
+                let to = match (c.from.as_ref().and_then(Value::as_f64), c.to.as_f64()) {
+                    (Some(a), Some(b)) if matches!(c.to, Value::Float(_)) && k < n => {
+                        let x = a + (b - a) * k as f64 / n as f64;
+                        input
+                            .state
+                            .coerce(&c.param, Value::Float(x))
+                            .unwrap_or(Value::Float(x))
+                    }
+                    _ => c.to.clone(),
+                };
+                c.from = Some(prev[i].clone());
+                prev[i] = to.clone();
+                c.to = to;
+            }
+            // non-numeric changes (switches) go with the first part
+            if k > 1 {
+                part.action
+                    .changes
+                    .retain(|c| !c.from.as_ref().is_some_and(|f| f.approx_eq(&c.to, 1e-9)));
+            }
+            part.action.label = format!(
+                "{} ({k}/{n})",
+                describe_changes(&part.action.changes, input.state)
+            );
+            part.cost = m.cost / n as f64;
+            out.push((ph, part));
+        }
     }
     out
+}
+
+/// Display precision of predicted level changes (also keeps them exact through JSON).
+fn round4(x: f64) -> f64 {
+    (x * 1e4).round() / 1e4
+}
+
+/// Fill a move's predicted effect and explanation from the predictions before (`p1`, `d1`, `s1`) and after it.
+fn annotate(
+    m: &mut PlannedMove,
+    p1: &Prediction,
+    d1: &Diagnosis,
+    s1: &PlanScore,
+    p2: &Prediction,
+    d2: &Diagnosis,
+    s2: &PlanScore,
+) {
+    let target = d1.problems.iter().find(|p| p.id == m.problem);
+    let problem = target.map(|p| ProblemChange {
+        id: p.id.clone(),
+        feature: p.evidence.feature.clone(),
+        unit: p.evidence.unit.clone(),
+        deviation_before: p.evidence.deviation,
+        deviation_after: d2
+            .problems
+            .iter()
+            .find(|q| q.id == p.id)
+            .map(|q| q.evidence.deviation),
+        tolerance: p.evidence.tolerance,
+    });
+    let touched: BTreeSet<StripId> = m
+        .action
+        .changes
+        .iter()
+        .filter_map(|x| x.param.strip())
+        .collect();
+    let strip_level_db: BTreeMap<StripId, f64> = touched
+        .iter()
+        .filter_map(|s| {
+            let a = p1.deltas.get(s).map_or(0.0, |d| d.level_db);
+            let b = p2.deltas.get(s)?.level_db;
+            Some((s.clone(), round4(b - a)))
+        })
+        .collect();
+    let main_level_db = round4((window_loudness(&p2.main) - window_loudness(&p1.main)) as f64);
+    let mut explanation = format!("{}: {}", m.action.label, m.why);
+    if let Some(p) = target {
+        explanation.push_str(&format!(" [problem {}: {}]", p.id, p.explanation));
+    }
+    if !m.rules.is_empty() {
+        explanation.push_str(&format!(" [rules: {}]", m.rules.join(", ")));
+    }
+    if let Some(pc) = &problem {
+        explanation.push_str(&format!(
+            " Predicted: {} {:+.1} -> {} {}",
+            pc.feature,
+            pc.deviation_before,
+            pc.deviation_after
+                .map_or("within tolerance".to_string(), |x| format!("{x:+.1}")),
+            pc.unit
+        ));
+    }
+    explanation.push_str(&format!(
+        "; target distance {:.2} -> {:.2}, objective {:.3} -> {:.3}.",
+        s1.distance, s2.distance, s1.objective, s2.objective
+    ));
+    m.explanation = explanation;
+    m.benefit = s1.objective - s2.objective;
+    m.predicted = PredictedEffect {
+        objective_before: s1.objective,
+        objective_after: s2.objective,
+        distance_before: s1.distance,
+        distance_after: s2.distance,
+        problem,
+        strip_level_db,
+        main_level_db,
+    };
 }
 
 /// Group by phase (a move never runs before an earlier-selected move on the same param), insert inspect steps.
@@ -873,7 +1094,7 @@ fn order(
         eff.push((p, i, m));
     }
     eff.sort_by_key(|x| (x.0, x.1));
-    let eff = merge_steps(eff, cfg);
+    let eff = split_moves(merge_moves(eff, input.state), input, cfg);
     let orders: BTreeMap<String, u32> = kb
         .phases()
         .iter()

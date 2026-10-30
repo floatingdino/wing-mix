@@ -83,6 +83,39 @@ pub struct FeedbackConfig {
     pub floor_db: f64,
     /// Fraction of `prominence_db` / `rise_db` that raises the *suspect* state (blocks coupled boosts).
     pub suspect_fraction: f64,
+    /// M036 (music vs feedback): the band's own level must rise by at least this share of the prominence rise
+    /// over the window (a band whose neighbours fall away gains prominence without growing; feedback grows).
+    #[serde(default = "default_level_rise_share")]
+    pub level_rise_share: f64,
+    /// M036: the band must still be rising at the end: its level over the last `recent_s` seconds rose by at least
+    /// `recent_rise_db` (a held note after its onset plateaus; feedback keeps building until something stops it).
+    #[serde(default = "default_recent_s")]
+    pub recent_s: f64,
+    #[serde(default = "default_recent_rise_db")]
+    pub recent_rise_db: f64,
+    /// M036: reject a peak with harmonic partners: another narrowband peak (prominence >= the suspect level,
+    /// within `harmonic_window_db` of its level) at 1/3, 1/2, 2, 3 or 4 times its frequency. A note has partials;
+    /// incipient feedback is a sine.
+    #[serde(default = "default_true")]
+    pub reject_harmonic: bool,
+    #[serde(default = "default_harmonic_window_db")]
+    pub harmonic_window_db: f64,
+}
+
+fn default_level_rise_share() -> f64 {
+    0.6
+}
+fn default_recent_s() -> f64 {
+    1.0
+}
+fn default_recent_rise_db() -> f64 {
+    1.5
+}
+fn default_true() -> bool {
+    true
+}
+fn default_harmonic_window_db() -> f64 {
+    25.0
 }
 
 /// Analysis-stall watchdog.
@@ -150,6 +183,11 @@ impl Default for SafetyConfig {
                 monotonic_share: 0.8,
                 floor_db: -70.0,
                 suspect_fraction: 0.5,
+                level_rise_share: default_level_rise_share(),
+                recent_s: default_recent_s(),
+                recent_rise_db: default_recent_rise_db(),
+                reject_harmonic: true,
+                harmonic_window_db: default_harmonic_window_db(),
             },
             watchdog: WatchdogConfig {
                 require_analysis: true,
@@ -174,6 +212,49 @@ impl SafetyConfig {
             GainKind::Send => self.send,
             GainKind::Trim => self.trim,
             GainKind::EqGain => self.eq_gain,
+        }
+    }
+
+    /// Largest gain increase of one move of `spec` (dB), scaled by `monitor_caution_scale` when `coupled`; `None`
+    /// when the param is not a gain the gate limits.
+    pub fn move_limit_db(&self, spec: &ParamSpec, coupled: bool) -> Option<f64> {
+        let k = gain_kind(spec)?;
+        Some(self.limits(k).max_boost_per_move_db * self.caution(coupled))
+    }
+
+    /// Highest value `spec` may reach in the session (M036: planners plan within the limits instead of proposing
+    /// moves the gate refuses): `baseline` (its value when the session first touched it) plus the per-session
+    /// limit, and the fader ceiling for faders; scaled when `coupled`. `None` when the param is not a gain the gate
+    /// limits. Holds (feedback, ceilings, stall) are not included.
+    pub fn session_raise_to(&self, spec: &ParamSpec, baseline: f64, coupled: bool) -> Option<f64> {
+        let k = gain_kind(spec)?;
+        let mut cap =
+            baseline.max(-80.0) + self.limits(k).max_boost_per_session_db * self.caution(coupled);
+        if k == GainKind::Fader {
+            cap = cap.min(self.fader_max_db);
+        }
+        Some(cap)
+    }
+
+    /// Highest value one move of `spec` from `from` may reach: [`Self::move_limit_db`] and
+    /// [`Self::session_raise_to`], never below `from` (a param already above its limits may stay).
+    pub fn max_raise_to(
+        &self,
+        spec: &ParamSpec,
+        from: f64,
+        baseline: f64,
+        coupled: bool,
+    ) -> Option<f64> {
+        let mv = self.move_limit_db(spec, coupled)?;
+        let sess = self.session_raise_to(spec, baseline, coupled)?;
+        Some((from + mv).min(sess).max(from))
+    }
+
+    fn caution(&self, coupled: bool) -> f64 {
+        if coupled {
+            self.monitor_caution_scale
+        } else {
+            1.0
         }
     }
 }
@@ -287,6 +368,25 @@ fn prominence(frame: &[f32], b: usize) -> f64 {
     frame[b] as f64 - sum / n
 }
 
+/// Third-octave band offsets of the partials of a tone in band `b`: 1/3, 1/2, 2, 3 and 4 times its frequency
+/// (10·log10(n)/1 dB per third octave ≈ 3.32 log2(n) bands).
+const HARMONIC_OFFSETS: [isize; 5] = [-5, -3, 3, 5, 6];
+
+/// Another narrowband peak at a harmonic relation to band `b` (see [`FeedbackConfig::reject_harmonic`]).
+fn harmonic_partner(frame: &[f32], b: usize, cfg: &FeedbackConfig) -> bool {
+    let level = frame[b] as f64;
+    HARMONIC_OFFSETS.iter().any(|&o| {
+        let j = b as isize + o;
+        if j < 0 || j as usize >= frame.len() {
+            return false;
+        }
+        let j = j as usize;
+        (frame[j] as f64) > level - cfg.harmonic_window_db
+            && (frame[j] as f64) >= cfg.floor_db
+            && prominence(frame, j) >= cfg.prominence_db * cfg.suspect_fraction
+    })
+}
+
 impl Detector {
     fn evaluate(&self, cfg: &FeedbackConfig) -> Option<Hit> {
         let first = self.frames.front()?;
@@ -330,6 +430,36 @@ impl Detector {
             }
             let rise = series[series.len() - 1].1 - series[0].1;
             if rise < cfg.rise_db * cfg.suspect_fraction {
+                continue;
+            }
+            // M036: the band itself grows, steadily, and is still growing at the end
+            let levels: Vec<(f64, f64)> = self
+                .frames
+                .iter()
+                .filter(|(_, f)| f.len() == last.1.len())
+                .map(|(t, f)| (*t, f[b] as f64))
+                .collect();
+            let lv_last = levels[levels.len() - 1].1;
+            if lv_last - levels[0].1 < cfg.level_rise_share * rise {
+                continue;
+            }
+            let lv_mono = levels
+                .windows(2)
+                .filter(|w| w[1].1 - w[0].1 >= -0.5)
+                .count();
+            if (lv_mono as f64) < cfg.monotonic_share * steps as f64 {
+                continue;
+            }
+            let recent_from = last.0 - cfg.recent_s;
+            let lv_recent = levels
+                .iter()
+                .rev()
+                .find(|(t, _)| *t <= recent_from + 1e-9)
+                .map_or(levels[0].1, |x| x.1);
+            if lv_last - lv_recent < cfg.recent_rise_db {
+                continue;
+            }
+            if cfg.reject_harmonic && harmonic_partner(&last.1, b, cfg) {
                 continue;
             }
             let trip = prom >= cfg.prominence_db && rise >= cfg.rise_db;

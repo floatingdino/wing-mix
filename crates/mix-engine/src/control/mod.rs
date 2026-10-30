@@ -229,6 +229,9 @@ pub struct Controller<'k> {
     seq: u32,
     batches: u32,
     change_db: f64,
+    /// Value of every param before this controller first changed it (the safety gate's session baseline; M036:
+    /// the planner plans boosts within the per-session limit from it).
+    session_baseline: BTreeMap<ParamId, f64>,
     kept: u32,
     pending: Vec<Pending>,
     inspections: Arc<Mutex<Vec<Inspection>>>,
@@ -281,6 +284,7 @@ impl<'k> Controller<'k> {
             seq: 0,
             batches: 0,
             change_db: 0.0,
+            session_baseline: BTreeMap::new(),
             kept: 0,
             pending: Vec::new(),
             inspections: Arc::new(Mutex::new(Vec::new())),
@@ -761,6 +765,9 @@ impl<'k> Controller<'k> {
     }
 
     fn note_change(&mut self, c: &Change) {
+        if let Some(v) = c.from.as_f64() {
+            self.session_baseline.entry(c.param.clone()).or_insert(v);
+        }
         if guard::is_db_param(&c.param) {
             if let (Some(a), Some(b)) = (c.from.as_f64(), c.to.as_f64()) {
                 self.change_db += (b - a).abs();
@@ -1067,6 +1074,7 @@ impl<'k> Controller<'k> {
                 session: &self.session,
             },
         };
+        self.cfg.plan.session_baseline = self.session_baseline.clone();
         let Ok(p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
             return false;
         };

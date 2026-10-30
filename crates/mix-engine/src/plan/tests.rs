@@ -300,6 +300,7 @@ fn same_param_moves_keep_selection_order_across_phases() {
         phase: String::new(),
         problem: String::new(),
         rules: vec![],
+        why: String::new(),
         explanation: String::new(),
         predicted: PredictedEffect {
             objective_before: 1.0,

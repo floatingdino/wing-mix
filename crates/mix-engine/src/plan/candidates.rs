@@ -91,6 +91,8 @@ pub struct Gen<'a> {
     pub source_of: &'a dyn Fn(&StripId) -> Option<String>,
     /// Stems the target has.
     pub stems: &'a [StemKind],
+    /// Highest value a gain param may be raised to in this plan (safety limits, M036); `None` = unlimited.
+    pub raise_to: &'a dyn Fn(&ParamId) -> Option<f64>,
 }
 
 fn pid(s: &StripId, rest: &str) -> ParamId {
@@ -170,7 +172,12 @@ impl Gen<'_> {
         if cur <= -100.0 || st.mute {
             return None;
         }
-        let d = delta.clamp(-self.cfg.max_fader_step_db, self.cfg.max_fader_step_db);
+        let mut d = delta.clamp(-self.cfg.max_fader_step_db, self.cfg.max_fader_step_db);
+        if d > 0.0 {
+            if let Some(cap) = (self.raise_to)(&pid(s, "fader")) {
+                d = d.min(cap - cur);
+            }
+        }
         if d.abs() < 0.25 {
             return None;
         }
@@ -878,6 +885,48 @@ impl Gen<'_> {
 
     fn level(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
         let members = self.members(p);
+        // M036: a source too quiet whose faders are at their safety limit is raised by cutting everything else
+        if dev < -0.5 {
+            let room = members
+                .iter()
+                .filter_map(|s| {
+                    let cur = self.settings(s).fader_db?;
+                    let cap = (self.raise_to)(&pid(s, "fader"))?;
+                    Some(cap - cur)
+                })
+                .fold(f64::INFINITY, f64::min);
+            let short = -dev - room.max(0.0);
+            if room.is_finite() && short > 0.5 {
+                let d = -short.min(self.cfg.max_fader_step_db);
+                let mut changes = Vec::new();
+                for o in &self.model.strips {
+                    let s = &o.tap.strip;
+                    if o.tap.fx_return || members.contains(s) || self.kind(s) == StripKind::Main {
+                        continue;
+                    }
+                    let st = self.settings(s);
+                    let Some(cur) = st.fader_db.filter(|&c| c > -100.0 && !st.mute) else {
+                        continue;
+                    };
+                    changes.extend(self.change(pid(s, "fader"), fv(cur + d)));
+                }
+                if !changes.is_empty() {
+                    out.push(Candidate {
+                        phase: 6,
+                        strip: changes[0].param.strip().unwrap_or_else(|| members[0].clone()),
+                        label: format!("all but {} faders {d:+.1} dB", p.scope.subject.label()),
+                        changes,
+                        problem: p.id.clone(),
+                        rules: p.rules.clone(),
+                        why: format!(
+                            "{}: too quiet ({dev:+.1} LU) with its fader(s) at the safety boost limit: cut the rest instead",
+                            p.scope.subject.label()
+                        ),
+                        cost: 1.5 * (d.abs() / 3.0 + 0.1),
+                    });
+                }
+            }
+        }
         let why = format!(
             "{}: move the level towards target ({:+.1} LU off)",
             p.scope.subject.label(),
