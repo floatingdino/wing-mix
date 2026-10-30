@@ -75,3 +75,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M054 | Wire live-context targets into wing-mixd | M037, M053 | sonnet |
 | M055 | WingMix GUI polish (names, events, undo, states) | M051 | sonnet |
 | M060 | Second-surface proof: adapter guide + stub adapter | M011 | sonnet |
+| M061 | Genericity fixes from the X32 proof | M060, M036 | sonnet |

@@ -2,7 +2,7 @@
 id: M060
 title: Second-surface proof: adapter guide + stub adapter
 stage: S6
-status: review
+status: done
 owner: task-agent-M060
 depends: [M011]
 branch: task/M060
@@ -30,3 +30,4 @@ Write docs/adapters.md (how to add a console) and a minimal second adapter (e.g.
   Proposed follow-ups: F1 skip solo_state when !capabilities.solo (mix-engine control + PolicyGate::build); F2 SendTap::Unknown;
   F3 EQ-shape-aware EQ view + injectable/X32 TransferModel; F4 console factory in wing-mixd; F5 load policy by SurfaceInfo.surface;
   F6 X32 meters/gate/dyn/DCA/solo/reconnect + hardware verification.
+- 2026-10-31 coordinator: merged, make check passes. done. Genericity fixes F1–F5 → M061.
