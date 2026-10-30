@@ -105,6 +105,17 @@ final class AppModel {
     // Live
     var mode: MixMode = .observe
 
+    // Mix slots (M064)
+    var slots: SlotList?
+    var lastRecall: SlotRecall?
+    /// Params you moved since a slot was stored keep your value on recall (the daemon's default).
+    var keepEngineerMoves = true
+    var slotDiff: SlotDiff?
+    var diffA = ""
+    var diffB = "current"
+    /// A slot recall waiting for the live-console confirmation (asked once per connection).
+    var pendingLiveRecall: String?
+
     init(paths: DaemonPaths = .standard(), locator: BinaryLocator = .standard()) {
         self.paths = paths
         self.locator = locator
@@ -235,6 +246,7 @@ final class AppModel {
                 if let a = snapshot?.liveContextApplied { liveContextApplied = a }
                 if let m = snapshot?.mode, let mm = MixMode(rawValue: m), mm != mode { mode = mm }
                 if let info = snapshot?.target?.info { targetInfo = info }
+                if screen == .live || frozenSnapshot != nil { await refreshSlots() }
             } else {
                 snapshot = nil
                 names = StripNames()
@@ -317,6 +329,63 @@ final class AppModel {
     func confirm(key: String) async {
         await send("confirm", ["key": .string(key)])
         await refreshStatus()
+    }
+
+    // Mix slots (M064)
+
+    func refreshSlots() async {
+        if let l = try? await client.call(SlotList.self, "slot_list") {
+            slots = l
+            if diffA.isEmpty || !l.slots.contains(where: { $0.name == diffA }) { diffA = l.slots.first?.name ?? "" }
+        }
+    }
+
+    /// Recall a slot; on a live console the first recall per connection asks first (`pendingLiveRecall`).
+    func recallSlot(_ name: String, confirmLive: Bool = false) async {
+        if slots?.liveConfirmationNeeded == true, !confirmLive {
+            pendingLiveRecall = name
+            return
+        }
+        let args: [String: JSONValue] = ["name": .string(name), "keep_engineer": .bool(keepEngineerMoves),
+                                         "confirm_live": .bool(confirmLive)]
+        if let r = await fetch(SlotRecall.self, "slot_recall", args) { lastRecall = r }
+        await refreshSlots()
+        await refreshStatus()
+    }
+
+    func storeSlot(_ name: String? = nil) async {
+        var args: [String: JSONValue] = [:]
+        if let n = name { args["name"] = .string(n) }
+        await send("slot_store", args)
+        await refreshSlots()
+    }
+
+    func commitSlot() async {
+        await send("slot_commit")
+        await refreshSlots()
+        await refreshStatus()
+    }
+
+    func resumeTuning() async {
+        if let r = await send("slot_resume"), let m = r["mode"]?.string.flatMap(MixMode.init(rawValue:)) { mode = m }
+        await refreshSlots()
+        await refreshStatus()
+    }
+
+    func renameSlot(_ name: String, to: String) async {
+        await send("slot_rename", ["name": .string(name), "to": .string(to)])
+        await refreshSlots()
+    }
+
+    func deleteSlot(_ name: String) async {
+        await send("slot_delete", ["name": .string(name)])
+        if slotDiff?.a == name || slotDiff?.b == name { slotDiff = nil }
+        await refreshSlots()
+    }
+
+    func diffSlots() async {
+        guard !diffA.isEmpty else { return }
+        slotDiff = await fetch(SlotDiff.self, "slot_diff", ["a": .string(diffA), "b": .string(diffB)])
     }
 
     // Target
