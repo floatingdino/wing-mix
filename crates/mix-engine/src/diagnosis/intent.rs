@@ -98,12 +98,12 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
                 .filter(|s| {
                     !s.estimated
                         && s.source.as_deref().is_some_and(|src| {
-                        src == scope
-                            || cx
-                                .kb
-                                .source(src)
-                                .is_some_and(|x| x.family.as_str() == scope)
-                    })
+                            src == scope
+                                || cx
+                                    .kb
+                                    .source(src)
+                                    .is_some_and(|x| x.family.as_str() == scope)
+                        })
                 })
                 .map(|s| Contributor {
                     strip: s.strip.clone(),

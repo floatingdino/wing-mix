@@ -401,7 +401,12 @@ pub fn priors(
     let prior_p: f64 = rel.iter().map(|&r| p(r)).sum();
     let scale = db(residual / prior_p);
     // spectrum: same total-power convention as the main's rel curve
-    let main_rel_p: f64 = main.spectrum.erb_mid_rel_db.iter().map(|&x| p(x as f64)).sum();
+    let main_rel_p: f64 = main
+        .spectrum
+        .erb_mid_rel_db
+        .iter()
+        .map(|&x| p(x as f64))
+        .sum();
     let centres = erb40_centres_hz();
     let band_of = |f: f32| -> usize {
         (0..N_BROAD)
@@ -492,7 +497,11 @@ fn source_weight(kb: &KnowledgeBase, source: Option<&str>) -> f64 {
 /// Strips implicated by the mix-level problems of `d`: Σ problem score × the strip's share of the band.
 pub fn implicated(d: &Diagnosis) -> BTreeMap<StripId, f64> {
     let mut out: BTreeMap<StripId, f64> = BTreeMap::new();
-    for pr in d.problems.iter().filter(|p| matches!(p.scope.subject, Subject::Mix)) {
+    for pr in d
+        .problems
+        .iter()
+        .filter(|p| matches!(p.scope.subject, Subject::Mix))
+    {
         for c in &pr.contributors {
             *out.entry(c.strip.clone()).or_default() += (pr.score() * c.share) as f64;
         }
@@ -550,7 +559,11 @@ pub fn candidates(
             })
         })
         .collect();
-    out.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.strip.cmp(&b.strip)));
+    out.sort_by(|a, b| {
+        b.priority
+            .total_cmp(&a.priority)
+            .then(a.strip.cmp(&b.strip))
+    });
     out
 }
 
@@ -642,7 +655,11 @@ mod tests {
     fn state() -> ConsoleState {
         ConsoleState::from_parts(
             Topology {
-                strips: vec![Strip::new(StripId::new("input", 1), StripKind::Input, "VOX")],
+                strips: vec![Strip::new(
+                    StripId::new("input", 1),
+                    StripKind::Input,
+                    "VOX",
+                )],
             },
             Vec::new(),
         )
@@ -660,13 +677,19 @@ mod tests {
         ];
         let pr = priors(&main, &[], &missing, kb(), 0.1);
         assert_eq!(pr.len(), 3, "no prior without a source type");
-        assert!(pr.iter().all(|t| t.estimated && t.features.validate().is_ok()));
+        assert!(pr
+            .iter()
+            .all(|t| t.estimated && t.features.validate().is_ok()));
         let ml = window_loudness(&main) as f64;
         let tot: f64 = pr
             .iter()
             .map(|t| p(window_loudness(&t.features) as f64 - ml))
             .sum();
-        assert!((db(tot)).abs() < 0.05, "priors sum to the main: {}", db(tot));
+        assert!(
+            (db(tot)).abs() < 0.05,
+            "priors sum to the main: {}",
+            db(tot)
+        );
         let lvl = |s: &str| {
             pr.iter()
                 .find(|t| t.source.as_deref() == Some(s))
@@ -678,17 +701,27 @@ mod tests {
             ((lvl("lead_vocal") - lvl("kick")) - (kbd("lead_vocal") - kbd("kick"))).abs() < 1e-3
         );
         // the kick's prototype puts its energy low
-        let k = pr.iter().find(|t| t.source.as_deref() == Some("kick")).unwrap();
+        let k = pr
+            .iter()
+            .find(|t| t.source.as_deref() == Some("kick"))
+            .unwrap();
         let rel = &k.features.spectrum.erb_mid_rel_db;
         let c = erb40_centres_hz();
-        let lo = (0..N_ERB).filter(|&b| c[b] < 250.0).map(|b| rel[b]).fold(f32::MIN, f32::max);
-        let hi = (0..N_ERB).filter(|&b| c[b] > 2500.0).map(|b| rel[b]).fold(f32::MIN, f32::max);
+        let lo = (0..N_ERB)
+            .filter(|&b| c[b] < 250.0)
+            .map(|b| rel[b])
+            .fold(f32::MIN, f32::max);
+        let hi = (0..N_ERB)
+            .filter(|&b| c[b] > 2500.0)
+            .map(|b| rel[b])
+            .fold(f32::MIN, f32::max);
         assert!(lo > hi + 20.0, "{lo} vs {hi}");
         // a louder fader is a louder prior
         let mut m2 = missing.clone();
         m2[0].fader_db = -4.0;
         let pr2 = priors(&main, &[], &m2, kb(), 0.1);
-        let v = |pr: &[StripTap]| window_loudness(&pr[0].features) - window_loudness(&pr[1].features);
+        let v =
+            |pr: &[StripTap]| window_loudness(&pr[0].features) - window_loudness(&pr[1].features);
         assert!((v(&pr2) - v(&pr) - 6.0).abs() < 1e-3);
     }
 
@@ -732,7 +765,17 @@ mod tests {
         ];
         let st = state();
         let none = BTreeMap::new();
-        let c = candidates(&cfg, kb(), &book, &eligible, &BTreeSet::new(), &st, 0.0, &none, &BTreeSet::new());
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book,
+            &eligible,
+            &BTreeSet::new(),
+            &st,
+            0.0,
+            &none,
+            &BTreeSet::new(),
+        );
         let order: Vec<u32> = c.iter().map(|c| c.strip.index().unwrap()).collect();
         assert_eq!(order[..2], [1, 2], "vocal, then kick: {order:?}");
         assert_eq!(*order.last().unwrap(), 4, "unidentified last");
@@ -742,30 +785,92 @@ mod tests {
         book.merge();
         book.add_silent(StripId::new("input", 3), 0.0);
         let tapped = BTreeSet::from([StripId::new("input", 2)]);
-        let c = candidates(&cfg, kb(), &book, &eligible, &tapped, &st, 10.0, &none, &BTreeSet::new());
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book,
+            &eligible,
+            &tapped,
+            &st,
+            10.0,
+            &none,
+            &BTreeSet::new(),
+        );
         let ids: Vec<u32> = c.iter().map(|c| c.strip.index().unwrap()).collect();
         assert_eq!(ids, vec![5, 6, 4]);
         // implicated and planned strips jump the queue
         let imp = BTreeMap::from([(StripId::new("input", 4), 1.0)]);
         let planned = BTreeSet::from([StripId::new("input", 6)]);
-        let c = candidates(&cfg, kb(), &book, &eligible, &tapped, &st, 10.0, &imp, &planned);
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book,
+            &eligible,
+            &tapped,
+            &st,
+            10.0,
+            &imp,
+            &planned,
+        );
         let ids: Vec<u32> = c.iter().map(|c| c.strip.index().unwrap()).collect();
         assert_eq!(ids, vec![6, 4, 5]);
         // staleness: after a section change or max_age the vocal is due again (below the never-measured ones)
         book.section_changed(20.0);
-        let c = candidates(&cfg, kb(), &book, &eligible, &tapped, &st, 30.0, &none, &BTreeSet::new());
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book,
+            &eligible,
+            &tapped,
+            &st,
+            30.0,
+            &none,
+            &BTreeSet::new(),
+        );
         let v = c.iter().find(|c| c.strip.index() == Some(1)).unwrap();
         assert_eq!(v.due, Due::Stale);
         let mut book2 = StripBook::default();
         book2.add(StripId::new("input", 1), measured(tap(1, "VOX"), 0.0, 0));
         book2.merge();
-        let c = candidates(&cfg, kb(), &book2, &eligible[..1], &BTreeSet::new(), &st, cfg.max_age_s - 1.0, &none, &BTreeSet::new());
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book2,
+            &eligible[..1],
+            &BTreeSet::new(),
+            &st,
+            cfg.max_age_s - 1.0,
+            &none,
+            &BTreeSet::new(),
+        );
         assert!(c.is_empty());
-        let c = candidates(&cfg, kb(), &book2, &eligible[..1], &BTreeSet::new(), &st, cfg.max_age_s + 1.0, &none, &BTreeSet::new());
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book2,
+            &eligible[..1],
+            &BTreeSet::new(),
+            &st,
+            cfg.max_age_s + 1.0,
+            &none,
+            &BTreeSet::new(),
+        );
         assert_eq!(c[0].due, Due::Stale);
         // silent strips are retried after silent_retry_s
-        let c = candidates(&cfg, kb(), &book, &eligible, &tapped, &st, cfg.silent_retry_s + 1.0, &none, &BTreeSet::new());
-        assert!(c.iter().any(|c| c.strip.index() == Some(3) && c.due == Due::Retry));
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book,
+            &eligible,
+            &tapped,
+            &st,
+            cfg.silent_retry_s + 1.0,
+            &none,
+            &BTreeSet::new(),
+        );
+        assert!(c
+            .iter()
+            .any(|c| c.strip.index() == Some(3) && c.due == Due::Retry));
     }
 
     #[test]
@@ -798,7 +903,10 @@ mod tests {
         // never while a section jump is pending or right after one
         let mut s = SweepScheduler::default();
         assert_eq!(s.may_start(&cfg, 10.0, true, None), Err(Wait::Section));
-        assert_eq!(s.may_start(&cfg, 10.0, false, Some(5.0)), Err(Wait::Section));
+        assert_eq!(
+            s.may_start(&cfg, 10.0, false, Some(5.0)),
+            Err(Wait::Section)
+        );
         assert_eq!(s.may_start(&cfg, 11.5, false, Some(5.0)), Ok(()));
         // back-off
         s.back_off(11.5, 5.0);

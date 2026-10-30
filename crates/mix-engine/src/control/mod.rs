@@ -290,6 +290,8 @@ pub struct Controller<'k> {
     inspect_values: Option<(StripId, BTreeMap<ParamId, Value>, Option<f64>)>,
     /// The console's channel solo tap is pre-fader (`None`: not asked yet).
     solo_pfl: Option<bool>,
+    /// No sweep could start last time (no solo, remit, engineer solo, refusal): estimates stay estimates for now.
+    sweep_blocked: bool,
 }
 
 impl<'k> Controller<'k> {
@@ -352,6 +354,7 @@ impl<'k> Controller<'k> {
             tapped: Default::default(),
             inspect_values: None,
             solo_pfl: None,
+            sweep_blocked: false,
             cfg,
         }
     }
@@ -801,9 +804,7 @@ impl<'k> Controller<'k> {
             return raw.clone();
         }
         let ids: Vec<StripId> = missing.iter().map(|e| e.strip.clone()).collect();
-        let solo = self
-            .book
-            .taps_for(&ids, state, &raw.main, &*self.transfer);
+        let solo = self.book.taps_for(&ids, state, &raw.main, &*self.transfer);
         let have: std::collections::BTreeSet<StripId> =
             solo.iter().map(|t| t.strip.clone()).collect();
         let rest: Vec<strips::Eligible> = missing
@@ -892,13 +893,16 @@ impl<'k> Controller<'k> {
             return;
         }
         if !self.surface.info().capabilities.solo {
+            self.sweep_blocked = true;
             self.sweeper.back_off(now, 60.0);
             return;
         }
         match self.surface.solo_state() {
-            Ok(st) if !st.is_destructive() && (st.active.is_empty() || !c.respect_engineer_solo) => {}
+            Ok(st)
+                if !st.is_destructive() && (st.active.is_empty() || !c.respect_engineer_solo) => {}
             _ => {
                 // the engineer is listening to something (or the solo mode mutes the PA): later
+                self.sweep_blocked = true;
                 self.sweeper.back_off(now, 5.0);
                 return;
             }
@@ -943,9 +947,11 @@ impl<'k> Controller<'k> {
             evaluate_inspection(&self.policy, &ctx, InspectionKind::Solo, &k.strip).class
                 == Verdict::Allowed
         }) else {
+            self.sweep_blocked = true;
             self.sweeper.back_off(now, 30.0);
             return;
         };
+        self.sweep_blocked = false;
         let values = strips::strip_values(&state, &pick.strip);
         let pre_fader_db = self
             .solo_is_pfl()
@@ -994,6 +1000,7 @@ impl<'k> Controller<'k> {
         let feat = self.sweep_sink.lock().unwrap().take().flatten();
         if err.is_some() {
             // refused (remit, destructive solo, no solo) or aborted (STOP, engineer): try later
+            self.sweep_blocked = true;
             self.sweeper.back_off(now, 30.0);
             return;
         }
@@ -1351,11 +1358,13 @@ impl<'k> Controller<'k> {
                 has(self)
             };
             if !worthwhile {
-                self.set_hold(HoldReason::Converged);
+                if !self.info_coming() {
+                    self.set_hold(HoldReason::Converged);
+                }
                 return;
             }
         }
-        if self.since_best >= self.cfg.no_progress_cycles {
+        if self.since_best >= self.cfg.no_progress_cycles && !self.info_coming() {
             self.set_hold(HoldReason::NoProgress);
             return;
         }
@@ -1405,11 +1414,23 @@ impl<'k> Controller<'k> {
             return;
         }
         // nothing executable in this plan
-        if waiting {
+        if waiting || self.info_coming() {
+            // M062: or solo sweeps are still measuring strips the plan only had estimates of
             self.replan.get_or_insert(PlanReason::Exhausted);
         } else {
             self.set_hold(HoldReason::NoProgress);
         }
+    }
+
+    /// M062: solo sweeps are still bringing in measurements of strips the loop only has estimates of (so a
+    /// converged / no-progress verdict would be premature).
+    fn info_coming(&self) -> bool {
+        self.cfg.mode == Mode::Autopilot
+            && self.cfg.strips.sweep
+            && self.cfg.inspect
+            && self.probe.is_some()
+            && !self.sweep_blocked
+            && (self.sweep.is_some() || self.book.has_pending() || self.coverage.estimated > 0)
     }
 
     fn submit(&mut self, b: Batch, before: f64, exec: &mut dyn Executor) {
