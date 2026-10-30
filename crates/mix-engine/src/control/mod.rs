@@ -998,9 +998,10 @@ impl<'k> Controller<'k> {
         let now = self.now;
         self.sweeper.ended(&self.cfg.strips, now);
         let feat = self.sweep_sink.lock().unwrap().take().flatten();
-        if err.is_some() {
-            // refused (remit, destructive solo, no solo) or aborted (STOP, engineer): try later
-            self.sweep_blocked = true;
+        if let Some(e) = err {
+            // refused (remit, destructive solo, no solo: blocked for now) or aborted (STOP, PANIC, link loss, the
+            // solo mode turned destructive): try later
+            self.sweep_blocked |= e.starts_with("refused");
             self.sweeper.back_off(now, 30.0);
             return;
         }
@@ -1163,6 +1164,10 @@ impl<'k> Controller<'k> {
         let inspections: Vec<Inspection> = std::mem::take(&mut *self.inspections.lock().unwrap());
         let mut silent = false;
         let values = self.inspect_values.take();
+        if v.batch.inspect.is_some() {
+            // the engineer's phones just came back: no sweep solos straight after a plan inspection
+            self.sweeper.ended(&self.cfg.strips, self.now);
+        }
         for i in inspections {
             if let (true, Some(f), Some((s, vals, pre))) = (i.active, &i.features, &values) {
                 // M062: the solo capture before the move is a measurement of the strip

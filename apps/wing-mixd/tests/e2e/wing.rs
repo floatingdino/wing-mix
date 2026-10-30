@@ -717,14 +717,22 @@ pub fn run(
         .filter(|e| ev_type(&e.v) == "solo_restored")
         .map(|e| e.at)
         .collect();
+    let soloed: Vec<Instant> = evs
+        .iter()
+        .filter(|e| ev_type(&e.v) == "soloed")
+        .map(|e| e.at)
+        .collect();
     let log = obs.solo_log();
     let mut bad = Vec::new();
     for t in &restored {
-        if let Some((_, st)) = log
+        // the observer's view just after the restore (before the next inspection soloes again)
+        let next = soloed
             .iter()
-            .rev()
-            .find(|(at, _)| *at <= *t + Duration::from_millis(400))
-        {
+            .find(|&&s| s > *t)
+            .map_or(*t + Duration::from_millis(400), |&s| {
+                s.min(*t + Duration::from_millis(400))
+            });
+        if let Some((_, st)) = log.iter().rev().find(|(at, _)| *at <= next) {
             if st != &solo0 {
                 bad.push(format!("{st:?}"));
             }
