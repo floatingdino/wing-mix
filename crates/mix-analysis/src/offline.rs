@@ -21,7 +21,11 @@ pub struct OfflineOptions {
 
 impl Default for OfflineOptions {
     fn default() -> Self {
-        OfflineOptions { tap: "main".into(), snapshot_hop_s: 0.1, novelty: true }
+        OfflineOptions {
+            tap: "main".into(),
+            snapshot_hop_s: 0.1,
+            novelty: true,
+        }
     }
 }
 

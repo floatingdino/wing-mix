@@ -20,6 +20,8 @@
 //! After [`StreamingAnalyser::new`], [`StreamingAnalyser::push`] and [`StreamingAnalyser::snapshot_into`] do not
 //! allocate (tested with a counting allocator), unless [`AnalyserConfig::novelty`] is set (offline only).
 
+#![allow(clippy::needless_range_loop)] // index-parallel DSP arrays read clearer with explicit indices
+
 use std::sync::Arc;
 
 use ebur128::{EbuR128, Mode};
@@ -97,12 +99,19 @@ impl AnalyserConfig {
             return bad(format!("sample_rate {} out of range", self.sample_rate));
         }
         if !self.fft_size.is_power_of_two() || self.fft_size < 256 {
-            return bad(format!("fft_size {} must be a power of two >= 256", self.fft_size));
+            return bad(format!(
+                "fft_size {} must be a power of two >= 256",
+                self.fft_size
+            ));
         }
         if self.hop == 0 || self.hop > self.fft_size {
             return bad(format!("hop {} must be in 1..=fft_size", self.hop));
         }
-        if !(self.long_tau_s > 0.0) || !(self.range_history_s > 0.0) {
+        if self.long_tau_s.is_nan()
+            || self.long_tau_s <= 0.0
+            || self.range_history_s.is_nan()
+            || self.range_history_s <= 0.0
+        {
             return bad("long_tau_s and range_history_s must be > 0".into());
         }
         Ok(())
@@ -397,7 +406,9 @@ impl StreamingAnalyser {
         let n_post = (0.05 * fps).ceil().max(1.0) as i64;
         let min_spacing = (0.05 * fps).ceil().max(1.0) as usize;
         let range_decim = (0.1 * fps).round().max(1.0) as u32;
-        let range_cap = ((cfg.range_history_s as f64 * fps) / range_decim as f64).ceil().max(1.0) as usize;
+        let range_cap = ((cfg.range_history_s as f64 * fps) / range_decim as f64)
+            .ceil()
+            .max(1.0) as usize;
         let ema_k = (-(cfg.hop as f64) / (sr as f64 * cfg.long_tau_s as f64)).exp();
 
         let mk_hist = || Histogram::new(DB_FLOOR, 20.0, 0.1);
@@ -457,7 +468,9 @@ impl StreamingAnalyser {
             m_frames,
             n_post,
             fps,
-            novelty: cfg.novelty.then(|| NoveltyCollector::new(n, sr, (0.5 * fps).round().max(1.0) as usize)),
+            novelty: cfg
+                .novelty
+                .then(|| NoveltyCollector::new(n, sr, (0.5 * fps).round().max(1.0) as usize)),
             cfg,
         })
     }
@@ -473,7 +486,8 @@ impl StreamingAnalyser {
 
     /// Seconds of audio pushed so far.
     pub fn time_s(&self) -> f64 {
-        (self.frame_idx as f64 * self.cfg.hop as f64 + self.hop_fill as f64) / self.cfg.sample_rate as f64
+        (self.frame_idx as f64 * self.cfg.hop as f64 + self.hop_fill as f64)
+            / self.cfg.sample_rate as f64
     }
 
     /// Records capture-side overruns (reported in `Quality::dropouts`).
@@ -535,10 +549,19 @@ impl StreamingAnalyser {
         for c in 0..self.cfg.channels {
             let (a, b) = self.hist[c].split_at(self.hist_pos);
             let (wa, wb) = self.window.split_at(b.len());
-            for ((o, s), w) in self.fft_in.iter_mut().zip(b.iter().chain(a)).zip(wa.iter().chain(wb)) {
+            for ((o, s), w) in self
+                .fft_in
+                .iter_mut()
+                .zip(b.iter().chain(a))
+                .zip(wa.iter().chain(wb))
+            {
                 *o = s * w;
             }
-            let _ = self.fft.process_with_scratch(&mut self.fft_in, &mut self.spec[c], &mut self.fft_scratch);
+            let _ = self.fft.process_with_scratch(
+                &mut self.fft_in,
+                &mut self.spec[c],
+                &mut self.fft_scratch,
+            );
         }
         {
             let [bl, br, bx, bm, bs] = &mut self.bins;
@@ -589,9 +612,17 @@ impl StreamingAnalyser {
         // Gate on momentary loudness vs max(-70, integrated - 20).
         let m = self.ebu.loudness_momentary().unwrap_or(f64::NEG_INFINITY);
         let i = self.ebu.loudness_global().unwrap_or(f64::NEG_INFINITY);
-        let gate = if i.is_finite() { (i - REL_GATE_LU).max(ABS_GATE_LUFS) } else { ABS_GATE_LUFS };
+        let gate = if i.is_finite() {
+            (i - REL_GATE_LU).max(ABS_GATE_LUFS)
+        } else {
+            ABS_GATE_LUFS
+        };
         rec.gated_in = m.is_finite() && m > gate;
-        rec.loud = if m.is_finite() { 10f64.powf(m / 10.0) as f32 } else { 0.0 };
+        rec.loud = if m.is_finite() {
+            10f64.powf(m / 10.0) as f32
+        } else {
+            0.0
+        };
         rec.peak = self.hop_peak;
         rec.tp = self.hop_tp.max(self.hop_peak);
         rec.ms = (self.hop_ms / self.cfg.hop as f64) as f32;
@@ -713,12 +744,18 @@ impl StreamingAnalyser {
                 (a, short_term, t_end - k as f64 * hop_s, a.frames)
             }
             Window::Long { .. } => {
-                out.window = Window::Long { tau_s: self.cfg.long_tau_s };
+                out.window = Window::Long {
+                    tau_s: self.cfg.long_tau_s,
+                };
                 let mut a = self.ema;
                 a.peak = st.peak;
                 a.tp = st.tp;
                 a.clipped = st.clipped;
-                let l = if a.w_in > 0.0 { db(a.loud / a.w_in) } else { DB_FLOOR };
+                let l = if a.w_in > 0.0 {
+                    db(a.loud / a.w_in)
+                } else {
+                    DB_FLOOR
+                };
                 let tau = self.cfg.long_tau_s as f64;
                 let frames = self.committed.min((tau * self.fps).round() as u64);
                 (a, l, t_end - tau, frames)
@@ -740,8 +777,16 @@ impl StreamingAnalyser {
         let tp_db = amp_db(agg.tp.max(agg.peak));
         lo.true_peak_dbtp = tp_db;
         lo.sample_peak_dbfs = amp_db(agg.peak);
-        lo.rms_dbfs = if agg.w_tot > 0.0 { db(agg.ms / agg.w_tot) } else { DB_FLOOR };
-        lo.crest_db = if agg.peak > 0.0 { lo.sample_peak_dbfs - lo.rms_dbfs } else { 0.0 };
+        lo.rms_dbfs = if agg.w_tot > 0.0 {
+            db(agg.ms / agg.w_tot)
+        } else {
+            DB_FLOOR
+        };
+        lo.crest_db = if agg.peak > 0.0 {
+            lo.sample_peak_dbfs - lo.rms_dbfs
+        } else {
+            0.0
+        };
         lo.psr_db = amp_db(st.tp.max(st.peak)) - short_term;
         if matches!(out.window, Window::Session) {
             let i = lufs(self.ebu.loudness_global().unwrap_or(f64::NEG_INFINITY));
@@ -802,7 +847,11 @@ impl StreamingAnalyser {
         if matches!(out.window, Window::Session) {
             for b in 0..N_BROAD {
                 let h = &self.session_range[b];
-                dy.range_db[b] = if h.total() > 0 { h.percentile(0.95) - h.percentile(0.10) } else { 0.0 };
+                dy.range_db[b] = if h.total() > 0 {
+                    h.percentile(0.95) - h.percentile(0.10)
+                } else {
+                    0.0
+                };
             }
         } else {
             let n = self.range_len;
@@ -817,7 +866,8 @@ impl StreamingAnalyser {
                     *v = self.range_ring[(self.range_pos + cap - 1 - i) % cap][b];
                 }
                 dy.range_db[b] = if n > 0 {
-                    percentile_in_place(&vals[..n], tmp, 0.95) - percentile_in_place(&vals[..n], tmp, 0.10)
+                    percentile_in_place(&vals[..n], tmp, 0.95)
+                        - percentile_in_place(&vals[..n], tmp, 0.10)
                 } else {
                     0.0
                 };
@@ -855,17 +905,31 @@ impl StreamingAnalyser {
 
         // Transients.
         let tr = &mut out.transients;
-        let rate = |w: f64| if agg.w_tot > 0.0 { (w / agg.w_tot * self.fps) as f32 } else { 0.0 };
+        let rate = |w: f64| {
+            if agg.w_tot > 0.0 {
+                (w / agg.w_tot * self.fps) as f32
+            } else {
+                0.0
+            }
+        };
         tr.onset_rate_hz = rate(agg.onsets[0]);
         for b in 0..N_BAND3 {
             tr.band_onset_rate_hz[b] = rate(agg.onsets[1 + b]);
         }
-        tr.flux_mean = if agg.w_tot > 0.0 { (agg.flux / agg.w_tot) as f32 } else { 0.0 };
+        tr.flux_mean = if agg.w_tot > 0.0 {
+            (agg.flux / agg.w_tot) as f32
+        } else {
+            0.0
+        };
 
         // Quality.
         let q = &mut out.quality;
         q.frames = frames.min(u32::MAX as u64) as u32;
-        q.gated_fraction = if agg.w_tot > 0.0 { (1.0 - agg.w_in / agg.w_tot).clamp(0.0, 1.0) as f32 } else { 1.0 };
+        q.gated_fraction = if agg.w_tot > 0.0 {
+            (1.0 - agg.w_in / agg.w_tot).clamp(0.0, 1.0) as f32
+        } else {
+            1.0
+        };
         q.clipped_samples = agg.clipped;
         q.dropouts = self.dropouts;
     }
@@ -902,7 +966,12 @@ impl StreamingAnalyser {
         if total <= 0.0 {
             return (0.0, 0.0, 0.0);
         }
-        let centroid = erb.iter().zip(self.erb_centre).map(|(p, f)| p * f as f64).sum::<f64>() / total;
+        let centroid = erb
+            .iter()
+            .zip(self.erb_centre)
+            .map(|(p, f)| p * f as f64)
+            .sum::<f64>()
+            / total;
         let mut acc = 0.0;
         let mut rolloff = self.erb_edges[N_ERB];
         for b in 0..N_ERB {
@@ -924,7 +993,11 @@ impl StreamingAnalyser {
             sum_ln += psd.ln();
             sum += psd;
         }
-        let flatness = if n > 0 && sum > 0.0 { ((sum_ln / n as f64).exp() / (sum / n as f64)) as f32 } else { 0.0 };
+        let flatness = if n > 0 && sum > 0.0 {
+            ((sum_ln / n as f64).exp() / (sum / n as f64)) as f32
+        } else {
+            0.0
+        };
         (centroid as f32, rolloff, flatness.clamp(0.0, 1.0))
     }
 

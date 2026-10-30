@@ -59,7 +59,11 @@ impl OnsetDetector {
         }
         let s = &mut tmp[..k];
         s.sort_unstable_by(f32::total_cmp);
-        let median = if k % 2 == 1 { s[k / 2] } else { 0.5 * (s[k / 2 - 1] + s[k / 2]) };
+        let median = if k % 2 == 1 {
+            s[k / 2]
+        } else {
+            0.5 * (s[k / 2 - 1] + s[k / 2])
+        };
         let cand = t - 1;
         let is_onset = c > ONSET_ALPHA * median + self.delta
             && c > prev
@@ -79,13 +83,16 @@ mod tests {
     #[test]
     fn picks_isolated_peaks_with_spacing() {
         let mut d = OnsetDetector::new(1, 3);
-        let mut flux = vec![0.01f32; 40];
+        let mut flux = [0.01f32; 40];
         flux[10] = 5.0;
         flux[11] = 4.0; // shoulder, not a separate onset
         flux[12] = 4.5; // too close to the onset at 10
         flux[25] = 3.0;
-        let onsets: Vec<i64> =
-            flux.iter().enumerate().filter_map(|(t, f)| d.push(*f, t as i64).then_some(t as i64 - 1)).collect();
+        let onsets: Vec<i64> = flux
+            .iter()
+            .enumerate()
+            .filter_map(|(t, f)| d.push(*f, t as i64).then_some(t as i64 - 1))
+            .collect();
         assert_eq!(onsets, vec![10, 25]);
     }
 

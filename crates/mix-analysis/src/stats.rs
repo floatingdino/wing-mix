@@ -53,12 +53,21 @@ pub(crate) struct Histogram {
 impl Histogram {
     pub(crate) fn new(lo: f32, hi: f32, step: f32) -> Self {
         let bins = ((hi - lo) / step).ceil() as usize;
-        Histogram { lo, step, counts: vec![0; bins.max(1)], total: 0 }
+        Histogram {
+            lo,
+            step,
+            counts: vec![0; bins.max(1)],
+            total: 0,
+        }
     }
 
     pub(crate) fn add(&mut self, v: f32) {
         let i = ((v - self.lo) / self.step).floor();
-        let i = if i.is_nan() { 0 } else { (i.max(0.0) as usize).min(self.counts.len() - 1) };
+        let i = if i.is_nan() {
+            0
+        } else {
+            (i.max(0.0) as usize).min(self.counts.len() - 1)
+        };
         self.counts[i] += 1;
         self.total += 1;
     }

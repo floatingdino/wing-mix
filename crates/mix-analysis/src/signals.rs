@@ -27,7 +27,9 @@ impl Rng {
 /// Sine of `amp` peak amplitude.
 pub fn sine(freq_hz: f32, amp: f32, n: usize, sample_rate: u32, phase: f32) -> Vec<f32> {
     let w = std::f64::consts::TAU * freq_hz as f64 / sample_rate as f64;
-    (0..n).map(|i| amp * (w * i as f64 + phase as f64).sin() as f32).collect()
+    (0..n)
+        .map(|i| amp * (w * i as f64 + phase as f64).sin() as f32)
+        .collect()
 }
 
 /// Uniform white noise scaled to `rms`.
@@ -47,10 +49,10 @@ pub fn pink(n: usize, rms: f32, seed: u64) -> Vec<f32> {
         let w = r.uniform();
         b[0] = 0.99886 * b[0] + w * 0.0555179;
         b[1] = 0.99332 * b[1] + w * 0.0750759;
-        b[2] = 0.96900 * b[2] + w * 0.1538520;
-        b[3] = 0.86650 * b[3] + w * 0.3104856;
-        b[4] = 0.55000 * b[4] + w * 0.5329522;
-        b[5] = -0.7616 * b[5] - w * 0.0168980;
+        b[2] = 0.969 * b[2] + w * 0.153_852;
+        b[3] = 0.8665 * b[3] + w * 0.3104856;
+        b[4] = 0.55 * b[4] + w * 0.5329522;
+        b[5] = -0.7616 * b[5] - w * 0.016_898;
         let out = b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + w * 0.5362;
         b[6] = w * 0.115926;
         v.push(out);
@@ -107,7 +109,13 @@ mod tests {
     fn levels() {
         assert!((rms(&white(48000, 0.1, 1)) - 0.1).abs() < 1e-4);
         assert!((rms(&pink(48000, 0.1, 1)) - 0.1).abs() < 1e-4);
-        assert!((rms(&sine(1000.0, 1.0, 48000, 48000, 0.0)) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3);
-        assert_eq!(interleave(&[1.0, 2.0], &[3.0, 4.0]), vec![1.0, 3.0, 2.0, 4.0]);
+        assert!(
+            (rms(&sine(1000.0, 1.0, 48000, 48000, 0.0)) - std::f32::consts::FRAC_1_SQRT_2).abs()
+                < 1e-3
+        );
+        assert_eq!(
+            interleave(&[1.0, 2.0], &[3.0, 4.0]),
+            vec![1.0, 3.0, 2.0, 4.0]
+        );
     }
 }

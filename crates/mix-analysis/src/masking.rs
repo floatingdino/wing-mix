@@ -7,6 +7,8 @@
 //! `MSR > 0 dB` (both thresholds are [`MaskingParams`]). The masking index is the energy-weighted share of `i`'s
 //! important bands that are masked.
 
+#![allow(clippy::needless_range_loop)]
+
 use mix_core::bands::{erb40_centre_rates, N_ERB};
 use mix_core::DB_FLOOR;
 
@@ -27,7 +29,10 @@ pub struct MaskingParams {
 
 impl Default for MaskingParams {
     fn default() -> Self {
-        MaskingParams { important_floor_db: -15.0, msr_threshold_db: 0.0 }
+        MaskingParams {
+            important_floor_db: -15.0,
+            msr_threshold_db: 0.0,
+        }
     }
 }
 
@@ -93,7 +98,8 @@ pub fn masking(sources: &[[f32; N_ERB]], params: MaskingParams) -> MaskingAnalys
         let max_e = e.iter().cloned().fold(0.0f32, f32::max);
         let floor = max_e as f64 * 10f64.powf(params.important_floor_db as f64 / 10.0);
         let important: [bool; N_ERB] = std::array::from_fn(|b| max_e > 0.0 && e[b] as f64 >= floor);
-        let masked: [bool; N_ERB] = std::array::from_fn(|b| important[b] && msr[b] > params.msr_threshold_db);
+        let masked: [bool; N_ERB] =
+            std::array::from_fn(|b| important[b] && msr[b] > params.msr_threshold_db);
         let (mut w_imp, mut w_mask) = (0.0f64, 0.0f64);
         for b in 0..N_ERB {
             if important[b] {
@@ -103,7 +109,11 @@ pub fn masking(sources: &[[f32; N_ERB]], params: MaskingParams) -> MaskingAnalys
                 }
             }
         }
-        out.masking_index.push(if w_imp > 0.0 { (w_mask / w_imp) as f32 } else { 0.0 });
+        out.masking_index.push(if w_imp > 0.0 {
+            (w_mask / w_imp) as f32
+        } else {
+            0.0
+        });
         out.msr_db.push(msr);
         out.pair_msr_db.push(pairs);
         out.important.push(important);

@@ -6,8 +6,9 @@
 
 use mix_core::bands::{N_BAND3, N_BROAD, N_ERB, N_THIRD_OCT};
 use mix_core::{
-    DynamicsTarget, Features, LoudnessTarget, MatchWeights, ProfileSource, SectionProfile, SectionRef, Stat,
-    StereoTarget, TargetProfile, TonalTarget, TransientTarget, DB_FLOOR, PROFILE_SCHEMA_VERSION,
+    DynamicsTarget, Features, LoudnessTarget, MatchWeights, ProfileSource, SectionProfile,
+    SectionRef, Stat, StereoTarget, TargetProfile, TonalTarget, TransientTarget, DB_FLOOR,
+    PROFILE_SCHEMA_VERSION,
 };
 
 use crate::offline::OfflineAnalysis;
@@ -34,7 +35,12 @@ pub struct ProfileBuilder<'a> {
 impl<'a> ProfileBuilder<'a> {
     pub fn new(a: &'a OfflineAnalysis) -> Self {
         let integrated = a.session.loudness.integrated_lufs.unwrap_or(DB_FLOOR);
-        ProfileBuilder { a, integrated, gate: (integrated - 20.0).max(-70.0), min_window_s: a.duration_s.min(3.0) }
+        ProfileBuilder {
+            a,
+            integrated,
+            gate: (integrated - 20.0).max(-70.0),
+            min_window_s: a.duration_s.min(3.0),
+        }
     }
 
     /// Integrated loudness of the whole buffer (LUFS).
@@ -52,8 +58,11 @@ impl<'a> ProfileBuilder<'a> {
             .filter(|f| f.t_end_s >= start_s.max(0.0) && f.t_end_s <= end_s + 1e-9)
             .filter(|f| f.t_end_s >= self.min_window_s - 1e-9)
             .collect();
-        let gated: Vec<&Features> =
-            in_range.iter().copied().filter(|f| f.loudness.short_term_lufs >= self.gate).collect();
+        let gated: Vec<&Features> = in_range
+            .iter()
+            .copied()
+            .filter(|f| f.loudness.short_term_lufs >= self.gate)
+            .collect();
         if gated.is_empty() {
             in_range
         } else {
@@ -75,16 +84,23 @@ impl<'a> ProfileBuilder<'a> {
             short_term_rel_lu: it(&|f| f.loudness.short_term_lufs - self.integrated),
         };
         let stereo_src = self.a.channels == 2;
-        let erb_mid_rel_db: Vec<Stat> = (0..N_ERB).map(|b| it(&|f| f.spectrum.erb_mid_rel_db[b])).collect();
+        let erb_mid_rel_db: Vec<Stat> = (0..N_ERB)
+            .map(|b| it(&|f| f.spectrum.erb_mid_rel_db[b]))
+            .collect();
         let erb_side_rel_db: Vec<Stat> = if stereo_src {
-            (0..N_ERB).map(|b| it(&|f| f.spectrum.erb_side_rel_db[b])).collect()
+            (0..N_ERB)
+                .map(|b| it(&|f| f.spectrum.erb_side_rel_db[b]))
+                .collect()
         } else {
             Vec::new()
         };
         let third_oct_rel_db = (0..N_THIRD_OCT)
             .map(|b| it(&|f| f.spectrum.third_oct_mid_db[b] - f.loudness.short_term_lufs))
             .collect();
-        let tolerance_db = erb_mid_rel_db.iter().map(|s| s.half_spread().max(1.0)).collect();
+        let tolerance_db = erb_mid_rel_db
+            .iter()
+            .map(|s| s.half_spread().max(1.0))
+            .collect();
         let tonal = TonalTarget {
             erb_mid_rel_db,
             erb_side_rel_db,
@@ -107,7 +123,9 @@ impl<'a> ProfileBuilder<'a> {
         let low = st(&|s| s.low_mono_correlation, 1.0);
         let stereo = StereoTarget {
             correlation: st(&|s| s.correlation, 1.0),
-            band_width_db: std::array::from_fn::<Stat, N_BROAD, _>(|b| st(&|s| s.band_width_db[b], DB_FLOOR)),
+            band_width_db: std::array::from_fn::<Stat, N_BROAD, _>(|b| {
+                st(&|s| s.band_width_db[b], DB_FLOOR)
+            }),
             low_mono_min_correlation: low.p10.clamp(-1.0, 1.0),
             balance_db: st(&|s| s.balance_db, 0.0),
         };
@@ -117,7 +135,13 @@ impl<'a> ProfileBuilder<'a> {
                 it(&|f| f.transients.band_onset_rate_hz[b])
             }),
         };
-        Targets { loudness, tonal, dynamics, stereo, transients }
+        Targets {
+            loudness,
+            tonal,
+            dynamics,
+            stereo,
+            transients,
+        }
     }
 
     /// Section summary relative to the whole song.
@@ -139,7 +163,12 @@ impl<'a> ProfileBuilder<'a> {
 
     /// A complete profile: top-level targets for `focus` (None = whole song), a [`SectionProfile`] per entry of
     /// `sections`, no stems, default weights.
-    pub fn build(&self, source: ProfileSource, sections: &[SectionRef], focus: Option<&SectionRef>) -> TargetProfile {
+    pub fn build(
+        &self,
+        source: ProfileSource,
+        sections: &[SectionRef],
+        focus: Option<&SectionRef>,
+    ) -> TargetProfile {
         let t = self.targets(focus.map(|s| (s.start_s, s.end_s)));
         TargetProfile {
             schema_version: PROFILE_SCHEMA_VERSION,

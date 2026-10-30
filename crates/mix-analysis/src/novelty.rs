@@ -89,22 +89,42 @@ impl NoveltyCollector {
 }
 
 /// Foote novelty over `frames` (see module docs). `kernel_half_widths_s` default `[8.0, 16.0]`.
-pub fn novelty(frames: &[[f32; NOVELTY_DIMS]], hop_s: f64, kernel_half_widths_s: &[f64], min_spacing_s: f64) -> Novelty {
+pub fn novelty(
+    frames: &[[f32; NOVELTY_DIMS]],
+    hop_s: f64,
+    kernel_half_widths_s: &[f64],
+    min_spacing_s: f64,
+) -> Novelty {
     let n = frames.len();
     if n < 4 {
-        return Novelty { hop_s, curve: vec![0.0; n], boundaries_s: Vec::new() };
+        return Novelty {
+            hop_s,
+            curve: vec![0.0; n],
+            boundaries_s: Vec::new(),
+        };
     }
     // z-score each dimension.
     let mut z: Vec<[f32; NOVELTY_DIMS]> = frames.to_vec();
     for d in 0..NOVELTY_DIMS {
         let mean = frames.iter().map(|f| f[d] as f64).sum::<f64>() / n as f64;
-        let var = frames.iter().map(|f| (f[d] as f64 - mean).powi(2)).sum::<f64>() / n as f64;
+        let var = frames
+            .iter()
+            .map(|f| (f[d] as f64 - mean).powi(2))
+            .sum::<f64>()
+            / n as f64;
         let sd = var.sqrt();
         for f in z.iter_mut() {
-            f[d] = if sd > 1e-9 { ((f[d] as f64 - mean) / sd) as f32 } else { 0.0 };
+            f[d] = if sd > 1e-9 {
+                ((f[d] as f64 - mean) / sd) as f32
+            } else {
+                0.0
+            };
         }
     }
-    let norms: Vec<f32> = z.iter().map(|f| f.iter().map(|v| v * v).sum::<f32>().sqrt()).collect();
+    let norms: Vec<f32> = z
+        .iter()
+        .map(|f| f.iter().map(|v| v * v).sum::<f32>().sqrt())
+        .collect();
     let mut ssm = vec![0.0f32; n * n];
     for i in 0..n {
         for j in i..n {
@@ -156,7 +176,12 @@ pub fn novelty(frames: &[[f32; NOVELTY_DIMS]], hop_s: f64, kernel_half_widths_s:
         }
     }
     let mean = curve.iter().map(|v| *v as f64).sum::<f64>() / n as f64;
-    let sd = (curve.iter().map(|v| (*v as f64 - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+    let sd = (curve
+        .iter()
+        .map(|v| (*v as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n as f64)
+        .sqrt();
     let thr = (mean + 0.5 * sd) as f32;
     let mut peaks: Vec<usize> = (1..n - 1)
         .filter(|&t| curve[t] > thr && curve[t] >= curve[t - 1] && curve[t] >= curve[t + 1])
@@ -165,14 +190,21 @@ pub fn novelty(frames: &[[f32; NOVELTY_DIMS]], hop_s: f64, kernel_half_widths_s:
     let min_sep = (min_spacing_s / hop_s).round() as i64;
     let mut chosen: Vec<usize> = Vec::new();
     for p in peaks {
-        if chosen.iter().all(|c| (*c as i64 - p as i64).abs() >= min_sep) {
+        if chosen
+            .iter()
+            .all(|c| (*c as i64 - p as i64).abs() >= min_sep)
+        {
             chosen.push(p);
         }
     }
     chosen.sort_unstable();
     // Boundary time: the start of frame t is where the right half of the kernel begins.
     let boundaries_s = chosen.into_iter().map(|t| t as f64 * hop_s).collect();
-    Novelty { hop_s, curve, boundaries_s }
+    Novelty {
+        hop_s,
+        curve,
+        boundaries_s,
+    }
 }
 
 #[cfg(test)]
