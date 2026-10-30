@@ -5,3 +5,4 @@ target/
 *.mp3
 /build/
 .venv/
+.worktrees/

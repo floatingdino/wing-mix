@@ -6,7 +6,7 @@ Every task is one file `backlog/tasks/<ID>-<slug>.md` with a YAML-ish header (id
 
 Rules for task agents
 1. Only work tasks whose `depends` are all `done`. Set `status: in_progress`, `owner`, `branch` on your task branch.
-2. Work in your own git worktree: `git -C /Users/sam/code/wing-mix worktree add /Users/sam/code/wing-mix-wt/<ID> -b task/<ID> main`.
+2. Work in your own git worktree: `git -C /Users/sam/code/wing-mix worktree add /Users/sam/code/wing-mix/.worktrees/<ID> -b task/<ID> main`.
    Never edit files in /Users/sam/code/wing-mix (main checkout) directly; never commit to `main`.
 3. Atomic + resumable: append to the Log after each meaningful step (done / next / gotchas) and commit on
    `task/<ID>` early and often, so another agent can resume from the file + branch alone.
