@@ -212,7 +212,7 @@ fn building_sine_in_a_quiet_mix_is_caught_as_early_as_in_a_louder_one() {
     for noise_db in [-48.0f32, -52.0, -55.0] {
         // tone from 1 s at 6 dB/s, starting 12 dB under the noise
         let mut r = rig(input_with_noise(14.0, noise_db, |t| {
-            (t > 1.0).then(|| noise_db as f64 - 12.0 + 6.0 * (t - 1.0))
+            (t > 1.0).then_some(noise_db as f64 - 12.0 + 6.0 * (t - 1.0))
         }));
         r.actuator.submit(boost());
         r.run(7.0);

@@ -490,7 +490,10 @@ fn panic_returns_a_re_moved_param_to_the_engineers_value() {
         -9.0,
         "PANIC must not undo the engineer's move"
     );
-    // a second engineer move after PANIC's re-base target, and a param the engineer never touched, still go to
-    // the session baseline
-    assert_eq!(r.a.baseline()[&p("input.2/fader")], f(0.0), "safety baseline unchanged");
+    // the envelope/safety baseline is not re-based
+    assert_eq!(
+        r.a.baseline()[&p("input.2/fader")],
+        f(0.0),
+        "safety baseline unchanged"
+    );
 }
