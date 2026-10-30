@@ -2,7 +2,7 @@
 id: M053
 title: wing-mixd follow-ups: signals, mid-session roles, RTA safety feed, live-context setting
 stage: S5
-status: review
+status: done
 owner: agent-M053
 depends: [M050]
 branch: task/M053
@@ -41,3 +41,4 @@ log it). Update docs/control-protocol.md.
   - Gotchas: RTA claim lives on its own thread (RtaClaim borrows the surface). Roles mid-session reset the controller's
     move history (same as a target reload). Proposed follow-ups: when M037 merges, apply the context transform in
     `set_live_context`/`poll_loading` and flip `applied`; persist the live-context setting in the state dir.
+- 2026-10-31 coordinator: merged, make check passes. done. Live-context TODO seam → M054.
