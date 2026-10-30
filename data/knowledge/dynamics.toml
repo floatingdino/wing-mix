@@ -16,23 +16,23 @@ threshold_clamp     = "optional { max_rel = stat, max_offset_db = n } upper boun
 target_gr_db        = "[lo, hi] gain reduction on the 95th-percentile peaks the setting should produce (compressors), or on sibilants (de-esser)"
 ratio               = "[lo, hi] N:1 (compressor) ; expander_ratio = [lo, hi] meaning 1:N below threshold"
 range_db            = "[lo, hi] maximum attenuation (gate/expander/de-esser)"
-attack_ms, hold_ms, release_ms = "[lo, hi] ms. Attack/release are 'time to reach ~63 %' (Giannoulis 2012 convention); console definitions vary, so M032 predicts with the adapter's own block model"
+attack_hold_release_ms = "attack_ms, hold_ms, release_ms: [lo, hi] ms. Attack/release are 'time to reach ~63 %' (Giannoulis 2012 convention); console definitions vary, so M032 predicts with the adapter's own block model"
 knee_db             = "[lo, hi] soft-knee width in dB"
 detector            = "peak | rms"
 makeup              = "rule: loudness_match (set makeup so strip lufs_s is unchanged) | none"
 mix_pct             = "[lo, hi] wet/dry for parallel compression, default 100"
-sidechain_hpf_hz, sidechain_lpf_hz = "optional key filter range"
+sidechain_filters   = "sidechain_hpf_hz, sidechain_lpf_hz: optional key filter range [lo, hi] Hz"
 freq_hz             = "de-esser/dynamic EQ centre or split frequency range"
-confidence, sources = "as in sources.toml"
+common              = "confidence, sources: as in sources.toml; note: free text"
 
 [schema.rule_fields]
 id         = "string"
 applies_to = "list of source ids (sources.toml) or families, or [\"*\"] for any strip, [\"mix\"] for the main bus"
-when       = "conditions (AND); when_any (OR)"
+when       = "conditions (AND); when_any (OR) - grammar in workflow.toml [schema.condition]"
 adjust     = "list of { param, by = [lo, hi] (relative change) | to = [lo, hi] (absolute) } applied to the strip's current Dyn/Gate block"
 action     = "alternatively a full block action (insert a block when absent)"
 priority   = "1 (highest) .. 5; ties broken by severity"
-confidence, sources, note = "as above"
+common     = "confidence, sources, note as in preset_fields; feature_basis: see workflow.toml [schema.action]"
 
 # ======================================= GATES / EXPANDERS =====================================================
 # Threshold is placed between the idle (bleed/noise) level and the source's hits: start noise_floor + offset,
