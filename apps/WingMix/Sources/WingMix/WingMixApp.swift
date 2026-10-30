@@ -8,6 +8,7 @@ import WingMixCore
 /// line and quit after a second; used by `smoke.sh` / `make app`.
 /// `WINGMIX_DEMO=<dir>` + `WINGMIX_SCREEN=target|listen|remit|live`: demo session for the screenshots.
 /// `WINGMIX_REMIT_SHOT=<scene.snap>` + `WINGMIX_SHOTS=<dir>`: Remit bulk-editing screenshots (Screenshots.swift).
+/// `WINGMIX_SLOTS_SHOT=1` + `WINGMIX_DEMO` + `WINGMIX_SHOTS`: mix-slot screenshots (Screenshots.swift).
 @main
 struct WingMixApp: App {
     @State private var model = AppModel()
@@ -39,6 +40,10 @@ struct WingMixApp: App {
                         return
                     }
                     if let dir = env["WINGMIX_DEMO"], !dir.isEmpty { await model.runDemo(dir: dir) }
+                    if env["WINGMIX_SLOTS_SHOT"] == "1", let shots = env["WINGMIX_SHOTS"], !shots.isEmpty {
+                        await model.captureSlots(to: shots)
+                        return
+                    }
                     if let shots = env["WINGMIX_SHOTS"], !shots.isEmpty { await model.captureScreens(to: shots) }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
