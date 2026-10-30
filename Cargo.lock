@@ -758,6 +758,7 @@ name = "mix-sim"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mix-analysis",
  "mix-core",
  "mix-fixtures",
  "mix-surface",

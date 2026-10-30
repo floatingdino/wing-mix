@@ -304,3 +304,148 @@ fn snapshots_are_finite_and_json_safe() {
     }
     assert_eq!(a.session.quality.gated_fraction, 1.0);
 }
+
+/// Drum-like hits (decaying tone + noise) at `rate_hz` with an exactly known `floor_rms` noise bed.
+fn hits_over_floor(
+    rate_hz: f32,
+    f0: f32,
+    tau: f32,
+    amp: f32,
+    floor_rms: f32,
+    n: usize,
+    seed: u64,
+) -> Vec<f32> {
+    use mix_analysis::signals::{white, Rng};
+    let mut x = white(n, floor_rms, seed);
+    let mut rng = Rng::new(seed + 1);
+    let period = (SR as f32 / rate_hz) as usize;
+    let mut start = secs(0.3);
+    while start + secs(0.8) < n {
+        for i in 0..secs(0.8) {
+            let t = i as f32 / SR as f32;
+            let env = (-t / tau).exp();
+            x[start + i] += amp
+                * env
+                * ((std::f32::consts::TAU * f0 * t).sin() + 0.3 * (rng.uniform() * 2.0 - 1.0));
+        }
+        start += period;
+    }
+    x
+}
+
+#[test]
+fn onset_rate_is_not_inflated_by_weaker_bleed_hits() {
+    // A kick track: own hits at 1.2 Hz plus the snare and hats bleeding in between at -30..-34 dB.
+    let n = secs(24.0);
+    let mut x = hits_over_floor(1.2, 60.0, 0.12, 0.6, 1e-4, n, 21);
+    let snare = hits_over_floor(1.2, 190.0, 0.1, 0.6 * db_amp(-34.0), 0.0, n, 22);
+    let hats = hits_over_floor(2.4, 5000.0, 0.03, 0.6 * db_amp(-30.0), 0.0, n, 23);
+    for i in 0..n {
+        // snare half a period after the kick, hats on the 8ths
+        let j = (i + secs(0.42)) % n;
+        x[i] += snare[j] + hats[(i + secs(0.17)) % n];
+    }
+    let a = offline_mono(&x);
+    close(
+        a.session.transients.onset_rate_hz,
+        1.2,
+        0.2,
+        "kick onset rate with bleed",
+    );
+    // Without bleed the same hits read the same rate.
+    let clean = hits_over_floor(1.2, 60.0, 0.12, 0.6, 1e-4, n, 21);
+    close(
+        offline_mono(&clean).session.transients.onset_rate_hz,
+        1.2,
+        0.2,
+        "clean",
+    );
+}
+
+#[test]
+fn onset_rate_on_drum_hits_and_click_trains() {
+    let n = secs(20.0);
+    for rate in [1.1f32, 2.0, 3.0] {
+        for (f0, tau) in [(60.0f32, 0.08f32), (190.0, 0.12), (110.0, 0.12)] {
+            let x = hits_over_floor(rate, f0, tau, 0.5, 1e-4, n, 3);
+            let got = offline_mono(&x).session.transients.onset_rate_hz;
+            close(
+                got,
+                rate,
+                0.12 * rate + 0.1,
+                &format!("{f0} Hz hits at {rate} Hz"),
+            );
+        }
+    }
+    for rate in [1.0f32, 2.0, 4.0, 6.0] {
+        let c = click_train(rate, 0.5, n, SR, 9);
+        close(
+            offline_mono(&c).session.transients.onset_rate_hz,
+            rate,
+            0.12 * rate + 0.1,
+            &format!("clicks {rate} Hz"),
+        );
+    }
+}
+
+#[test]
+fn noise_floor_is_the_onset_free_p10_block_level() {
+    // Steady noise: the floor is its level in every window.
+    let x = white(secs(12.0), 0.05, 5);
+    let a = offline_mono(&x);
+    let want = 20.0 * 0.05f32.log10();
+    close(
+        a.session.loudness.noise_floor_dbfs,
+        want,
+        0.7,
+        "session floor of steady noise",
+    );
+    close(
+        a.short_term.last().unwrap().loudness.noise_floor_dbfs,
+        want,
+        0.7,
+        "short-term floor",
+    );
+
+    // Hits over a known bed: the floor reads the bed (not the hits), while the RMS reads the hits.
+    for bed_db in [-60.0f32, -75.0] {
+        let bed = db_amp(bed_db);
+        let x = hits_over_floor(1.5, 80.0, 0.04, 0.5, bed, secs(20.0), 8);
+        let a = offline_mono(&x);
+        let l = &a.session.loudness;
+        close(
+            l.noise_floor_dbfs,
+            bed_db,
+            2.0,
+            &format!("floor over a {bed_db} dB bed"),
+        );
+        assert!(
+            l.rms_dbfs - l.noise_floor_dbfs > 25.0,
+            "rms {} floor {}",
+            l.rms_dbfs,
+            l.noise_floor_dbfs
+        );
+        let st = a.short_term.last().unwrap();
+        close(
+            st.loudness.noise_floor_dbfs,
+            bed_db,
+            2.5,
+            "short-term floor",
+        );
+    }
+
+    // Bleed only between hits reads as the floor: a gated track (bed -90 dB) vs the same with bleed at -50 dB.
+    let gated = hits_over_floor(1.5, 80.0, 0.04, 0.5, db_amp(-90.0), secs(20.0), 8);
+    let bleedy = hits_over_floor(1.5, 80.0, 0.04, 0.5, db_amp(-50.0), secs(20.0), 8);
+    let (g, b) = (offline_mono(&gated), offline_mono(&bleedy));
+    assert!(
+        b.session.loudness.noise_floor_dbfs - g.session.loudness.noise_floor_dbfs > 30.0,
+        "bleed {} gated {}",
+        b.session.loudness.noise_floor_dbfs,
+        g.session.loudness.noise_floor_dbfs
+    );
+
+    // Digital silence reads the floor value.
+    let z = vec![0.0f32; secs(3.0)];
+    assert!(offline_mono(&z).session.loudness.noise_floor_dbfs <= mix_core::DB_FLOOR + 0.1);
+}
