@@ -724,25 +724,6 @@ pub fn plan_with(
             let s2 = score_of(&d2, w, Some(&st2));
             let benefit = cur.objective - s2.objective;
             let net = benefit - cfg.cost_weight * k.cand.cost;
-            if std::env::var("M036_DEBUG").is_ok_and(|v| k.cand.problem.contains(&v)) {
-                eprintln!(
-                    "DBG {} benefit {benefit:.4} cost {:.3} net {net:.4} dist {:.3}->{:.3}",
-                    k.cand.label, k.cand.cost, cur.distance, s2.distance
-                );
-                for q in &d2.problems {
-                    let old = diag.problems.iter().find(|x| x.id == q.id);
-                    let (a, b) = (old.map_or(0.0, |x| x.score()), q.score());
-                    if (a - b).abs() > 0.02 {
-                        eprintln!(
-                            "   {} {a:.3} -> {b:.3} dev {:?} -> {}",
-                            q.id,
-                            old.map(|x| x.evidence.deviation),
-                            q.evidence.deviation
-                        );
-                    }
-                }
-            }
-
             if net <= cfg.min_score {
                 if benefit <= 0.0 {
                     tried_bad.insert(format!(
@@ -786,7 +767,6 @@ pub fn plan_with(
         diag = d2;
         cur = s2;
     }
-    let _ = (&pred, &diag);
 
     for (r, n) in &remit_drops {
         notes.push(format!("{n} candidate move(s) not proposed: remit {r}"));

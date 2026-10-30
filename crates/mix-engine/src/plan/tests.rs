@@ -562,3 +562,96 @@ fn random_policies_never_yield_forbidden_params() {
         "the random policies allowed something at least sometimes ({proposed})"
     );
 }
+
+/// M036 plan hygiene: one move per param (split parts of one move labelled `(k/n)`, consecutive), titles name the
+/// move's actual change, per-move predictions chain in execution order, boosts inside the safety limits.
+#[test]
+fn plan_hygiene_one_move_per_param_and_consistent_labels() {
+    let kb = KnowledgeBase::embedded();
+    let s = muddy_guitar(kb);
+    let cfg = PlanConfig::from_kb(kb);
+    let p = run(&s, &policy(), &RemitSession::default(), &cfg, kb);
+    let moves: Vec<&PlannedMove> = p.moves().collect();
+    assert!(!moves.is_empty());
+    let mut seen: BTreeMap<ParamId, usize> = BTreeMap::new();
+    let sc = cfg.safety.clone().unwrap();
+    let st = ConsoleState::capture(&s.surface).unwrap();
+    for (i, m) in moves.iter().enumerate() {
+        let part = m.action.label.ends_with(')') && m.action.label.contains('/');
+        for c in &m.action.changes {
+            if let Some(&j) = seen.get(&c.param) {
+                assert!(
+                    part && j + 1 == i,
+                    "{} in moves {j} and {i}: {:?}",
+                    c.param,
+                    moves.iter().map(|m| &m.action.label).collect::<Vec<_>>()
+                );
+            }
+            seen.insert(c.param.clone(), i);
+            // the label names the change
+            let (a, b) = (
+                c.from.as_ref().and_then(Value::as_f64).unwrap_or(0.0),
+                c.to.as_f64().unwrap_or(0.0),
+            );
+            if c.param.leaf() == "fader" {
+                assert!(
+                    m.action.label.contains(&format!("{:+.1} dB", b - a)),
+                    "{} vs {:?}",
+                    m.action.label,
+                    c
+                );
+                // inside the per-move boost limit
+                let spec = st.spec(&c.param).unwrap();
+                assert!(b - a <= sc.move_limit_db(spec, false).unwrap() + 1e-9);
+            }
+        }
+        // the explanation starts with the label
+        assert!(
+            m.explanation.starts_with(&m.action.label),
+            "{}",
+            m.explanation
+        );
+        if i > 0 {
+            let prev = &moves[i - 1].predicted;
+            assert!((prev.objective_after - m.predicted.objective_before).abs() < 1e-9);
+        }
+    }
+    assert!((moves.last().unwrap().predicted.objective_after - p.after.objective).abs() < 1e-9);
+}
+
+#[test]
+fn split_moves_respect_the_per_move_limit() {
+    // vocal 6 dB down: the plan raises it in parts of at most +3 dB
+    let kb = KnowledgeBase::embedded();
+    let s = setup(kb);
+    let p = run(
+        &s,
+        &policy(),
+        &RemitSession::default(),
+        &PlanConfig::from_kb(kb),
+        kb,
+    );
+    let parts: Vec<&PlannedMove> = p
+        .moves()
+        .filter(|m| {
+            m.action
+                .changes
+                .iter()
+                .any(|c| c.param.as_str() == "input.3/fader")
+        })
+        .collect();
+    let total: f64 = parts
+        .iter()
+        .flat_map(|m| &m.action.changes)
+        .filter(|c| c.param.as_str() == "input.3/fader")
+        .map(|c| c.to.as_f64().unwrap() - c.from.as_ref().unwrap().as_f64().unwrap())
+        .sum();
+    assert!(total > 3.0, "vocal +{total:.1}");
+    assert!(parts.len() >= 2, "{parts:#?}");
+    for (k, m) in parts.iter().enumerate() {
+        assert!(m
+            .action
+            .label
+            .ends_with(&format!("({}/{})", k + 1, parts.len())));
+    }
+}

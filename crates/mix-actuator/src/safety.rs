@@ -1017,6 +1017,66 @@ mod tests {
         assert!(!m.status().feedback_latched);
     }
 
+    /// M036: what music does that the M041 detector took for feedback.
+    #[test]
+    fn music_shapes_do_not_trip() {
+        let feed = |name: &str, f: &dyn Fn(usize) -> Vec<f32>| {
+            let m = SafetyMonitor::new(SafetyConfig::without_watchdog());
+            for i in 0..40 {
+                m.feed_spectrum_at(name, i as f64 * 0.1, &f(i), &[]);
+            }
+            m.take_trips()
+        };
+        // prominence rises because the neighbours fall away, the band itself does not grow
+        let falling_neighbours = |i: usize| {
+            (0..31)
+                .map(|b| match b {
+                    20 => -30.0,
+                    18 | 19 | 21 | 22 => -30.0 - i as f32,
+                    _ => -60.0,
+                })
+                .collect()
+        };
+        assert!(feed("neighbours", &falling_neighbours).is_empty());
+        // a note that swells to just under the trip level, holds, then gets 1 dB louder (no longer rising)
+        let swell_then_hold = |i: usize| {
+            let p = 0.8 * (i.min(14) as f32) + if i >= 30 { 1.0 } else { 0.0 };
+            frame(-50.0, 12, -50.0 + p)
+        };
+        assert!(feed("swell", &swell_then_hold).is_empty());
+        // a rising note with a harmonic partner an octave up (3 third-octave bands)
+        let harmonic = |i: usize| {
+            let mut f = frame(-50.0, 12, -50.0 + i as f32);
+            f[15] = -56.0 + i as f32;
+            f
+        };
+        assert!(feed("harmonic", &harmonic).is_empty());
+        // the same rise as a pure tone still trips
+        assert!(!feed("tone", &|i| frame(-50.0, 12, -50.0 + i as f32)).is_empty());
+        // a narrowband rise 40 dB under the loudest band is not audible feedback yet
+        let quiet = |i: usize| {
+            let mut f = frame(-80.0, 12, -80.0 + 0.5 * i as f32);
+            f[25] = -20.0;
+            f
+        };
+        assert!(feed("quiet", &quiet).is_empty());
+    }
+
+    #[test]
+    fn planner_gain_limits_match_the_gate() {
+        let c = SafetyConfig::default();
+        let fader = ParamSpec::float("input.1/fader", ParamClass::Fader, Unit::Db, -144.0, 10.0);
+        // per move +3, per session +6 from the baseline, ceiling +6
+        assert_eq!(c.max_raise_to(&fader, -20.0, -20.0, false), Some(-17.0));
+        assert_eq!(c.max_raise_to(&fader, -15.0, -20.0, false), Some(-14.0));
+        assert_eq!(c.session_raise_to(&fader, 2.0, false), Some(6.0));
+        assert_eq!(c.max_raise_to(&fader, 8.0, 8.0, false), Some(8.0));
+        // coupled: half
+        assert_eq!(c.move_limit_db(&fader, true), Some(1.5));
+        let pan = ParamSpec::float("input.1/pan", ParamClass::Pan, Unit::Pan, -100.0, 100.0);
+        assert_eq!(c.move_limit_db(&pan, false), None);
+    }
+
     #[test]
     fn stall_holds_then_stops_and_recovers() {
         let m = SafetyMonitor::new(SafetyConfig::default());

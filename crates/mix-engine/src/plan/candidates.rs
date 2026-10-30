@@ -141,6 +141,22 @@ fn eq_phase(boost: bool) -> usize {
     }
 }
 
+impl Candidate {
+    /// A candidate with this one's phase, strip, problem, rules and reasoning (changes, label and cost to fill).
+    fn clone_meta(&self) -> Candidate {
+        Candidate {
+            phase: self.phase,
+            strip: self.strip.clone(),
+            label: String::new(),
+            changes: Vec::new(),
+            problem: self.problem.clone(),
+            rules: self.rules.clone(),
+            why: self.why.clone(),
+            cost: 0.0,
+        }
+    }
+}
+
 impl Gen<'_> {
     fn settings(&self, s: &StripId) -> StripSettings {
         self.state.settings(s)
@@ -1204,10 +1220,19 @@ impl Gen<'_> {
                 continue;
             }
             let Some(cur) = o.settings.pan else { continue };
-            let Some(src) = (self.source_of)(s).and_then(|id| self.kb.source(&id).cloned()) else {
-                continue;
+            // kb spread of the source; a pair on adjacent channels of one name is a stereo source (M036: playback
+            // tracks, keys) whatever its type
+            let src = (self.source_of)(s).and_then(|id| self.kb.source(&id).cloned());
+            let wide = match (&src, self.adjacent_pair_side(o)) {
+                (Some(src), _) => src.pan_pct.hi().abs().max(src.pan_pct.lo().abs()),
+                (None, Some(_)) => 70.0,
+                (None, None) => continue,
             };
-            let wide = src.pan_pct.hi().abs().max(src.pan_pct.lo().abs());
+            let wide = if self.adjacent_pair_side(o).is_some() {
+                wide.max(70.0)
+            } else {
+                wide
+            };
             if wide < 20.0 || !seen.insert(s.clone()) {
                 continue;
             }
@@ -1233,28 +1258,106 @@ impl Gen<'_> {
                 for t in [target, cur + (target - cur) * 0.5] {
                     out.extend(self.pan(s, t, p, why, 1.0));
                 }
+                // M036: a stereo pair is spread together (one side alone tips the L/R balance)
+                if let Some(partner) = self.pair_partner(o) {
+                    let pc = partner.settings.pan.unwrap_or(0.0);
+                    for t in [target, cur + (target - cur) * 0.5] {
+                        let (Some(a), Some(b)) = (
+                            self.pan(s, t, p, why, 1.0),
+                            self.pan(&partner.tap.strip, -t, p, why, 1.0),
+                        ) else {
+                            continue;
+                        };
+                        if (pc + t).abs() < 5.0 {
+                            continue;
+                        }
+                        let meta = a.clone_meta();
+                        let mut changes = a.changes;
+                        changes.extend(b.changes);
+                        out.push(Candidate {
+                            label: format!(
+                                "{s} + {} pans {:+.0} / {:+.0}",
+                                partner.tap.strip, t, -t
+                            ),
+                            changes,
+                            cost: a.cost + b.cost * 0.5,
+                            ..meta
+                        });
+                    }
+                }
             } else if cur.abs() > 20.0 {
                 out.extend(self.pan(s, cur * 0.6, p, why, 1.0));
             }
         }
     }
 
+    /// The other strip of a stereo pair (`OH L`/`OH R` names, or adjacent channels of one name).
+    fn pair_partner(&self, o: &super::predict::StripObs) -> Option<&super::predict::StripObs> {
+        let name = o.tap.name.trim().to_uppercase();
+        let i = o.tap.strip.index()?;
+        let kind = o.tap.strip.kind_name();
+        let stem = |n: &str| {
+            n.strip_suffix(" L")
+                .or_else(|| n.strip_suffix(" R"))
+                .map(str::to_string)
+        };
+        self.model
+            .strips
+            .iter()
+            .find(|x| {
+                let Some(j) = x.tap.strip.index() else {
+                    return false;
+                };
+                if x.tap.strip.kind_name() != kind || j == i {
+                    return false;
+                }
+                let xn = x.tap.name.trim().to_uppercase();
+                match (stem(&name), stem(&xn)) {
+                    (Some(a), Some(b)) => a == b && xn != name,
+                    _ => false,
+                }
+            })
+            .or_else(|| self.adjacent_partner(o))
+    }
+
     /// Side of a strip that has a neighbouring channel of the same kind with the same (non-empty) name: -1 for
     /// the lower channel, +1 for the higher one.
     fn adjacent_pair_side(&self, o: &super::predict::StripObs) -> Option<f64> {
-        let name = o.tap.name.trim();
-        if name.is_empty() {
-            return None;
-        }
+        let partner = self.adjacent_partner(o)?;
+        let (i, j) = (o.tap.strip.index()?, partner.tap.strip.index()?);
+        Some(if j > i { -1.0 } else { 1.0 })
+    }
+
+    /// The neighbouring channel (same strip kind) that forms a stereo pair with `o`: the same non-empty name, or
+    /// (both unnamed) the same identified source type (consoles patch stereo sources on adjacent channels).
+    /// Channels are paired odd-even from the lower one, so a run of three same-named channels is not ambiguous.
+    fn adjacent_partner(&self, o: &super::predict::StripObs) -> Option<&super::predict::StripObs> {
         let i = o.tap.strip.index()?;
         let kind = o.tap.strip.kind_name();
-        self.model.strips.iter().find_map(|x| {
-            let j = x.tap.strip.index()?;
-            (x.tap.strip.kind_name() == kind
-                && x.tap.name.trim().eq_ignore_ascii_case(name)
-                && (j == i + 1 || j + 1 == i))
-                .then_some(if j > i { -1.0 } else { 1.0 })
-        })
+        let name = o.tap.name.trim();
+        let src = (self.source_of)(&o.tap.strip);
+        let same = |x: &super::predict::StripObs| {
+            let xn = x.tap.name.trim();
+            x.tap.strip.kind_name() == kind
+                && if name.is_empty() && xn.is_empty() {
+                    src.is_some() && (self.source_of)(&x.tap.strip) == src
+                } else {
+                    xn.eq_ignore_ascii_case(name)
+                }
+        };
+        let at = |j: u32| {
+            self.model
+                .strips
+                .iter()
+                .find(|x| x.tap.strip.index() == Some(j) && same(x))
+        };
+        // pair (n, n+1) where n is the first of a run of same channels, counted in twos
+        let mut first = i;
+        while first > 1 && at(first - 1).is_some() {
+            first -= 1;
+        }
+        let partner = if (i - first) % 2 == 0 { i + 1 } else { i - 1 };
+        at(partner)
     }
 
     fn dynamics(&self, p: &Problem, out: &mut Vec<Candidate>) {
