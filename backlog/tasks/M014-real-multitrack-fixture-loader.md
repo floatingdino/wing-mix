@@ -2,10 +2,10 @@
 id: M014
 title: Real multitrack fixture loader (REAPER RPP + excerpts)
 stage: S1
-status: todo
-owner: -
+status: in_progress
+owner: task-agent-M014
 depends: [M001]
-branch: -
+branch: task/M014
 model: sonnet
 ---
 
