@@ -1923,7 +1923,9 @@ impl Daemon {
         let t_prep = t_req.elapsed().as_secs_f64() * 1e3;
         drop(tol);
         // pause the loop: observe mode measures (distance to the slot's target) and moves nothing
-        if self.comparing.is_none() {
+        let started_now = self.comparing.is_none();
+        let prior_mode = self.mode;
+        if started_now {
             self.resume_mode = match self.mode {
                 Mode::Observe => Mode::Autopilot,
                 m => m,
@@ -1947,6 +1949,11 @@ impl Daemon {
             .map_err(|_| "the actuator did not finish the recall in time".to_string())?;
         let request_ms = t_req.elapsed().as_secs_f64() * 1e3;
         if let Some(r) = &report.refused {
+            if started_now {
+                // nothing was written: no comparison after all
+                self.comparing = None;
+                self.set_mode(prior_mode);
+            }
             return Err(format!("recall refused: {r:?}"));
         }
         if let Some(c) = self.comparing.as_mut() {
