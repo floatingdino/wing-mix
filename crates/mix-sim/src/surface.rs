@@ -13,7 +13,7 @@
 use crate::map::{self, Binding, SimStrip, BUSES, CHANNELS, MAINS};
 use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
-use mix_surface::model::{Block, SendInfo, SendTap, Strip, Topology};
+use mix_surface::model::Topology;
 use mix_surface::surface::{
     Capabilities, MeterCaps, MeterFrame, Origin, SoloMode, SoloState, SoloTarget, StripMeters,
     Surface, SurfaceError, SurfaceEvent, SurfaceInfo, SurfaceResult,
@@ -601,93 +601,12 @@ impl Surface for SimSurface {
     }
 
     fn topology(&self) -> SurfaceResult<Topology> {
+        // The same WING topology builder as the real-console adapter (sends incl. bus->bus, main assigns,
+        // inserts, FX slots, outputs, re-inputs, talkback); strips this surface does not expose (aux, matrices,
+        // DCAs, FX slots, channels beyond the loaded tracks) become routing context for role detection.
         let st = self.st();
-        let get_bool = |path: &str| {
-            st.store
-                .lookup(path)
-                .and_then(|n| st.store.get(n))
-                .is_some_and(|v| v == WValue::Int(1))
-        };
-        let get_f = |path: &str| {
-            st.store
-                .lookup(path)
-                .and_then(|n| st.store.get_f64(n))
-                .unwrap_or(-144.0)
-        };
-        let get_tok = |path: &str| -> String {
-            let mut s = String::new();
-            if let Some(n) = st.store.lookup(path) {
-                let _ = st.store.format_token(n, &mut s);
-            }
-            s
-        };
-        let get_str = |path: &str| -> String {
-            st.store
-                .lookup(path)
-                .and_then(|n| st.store.with_str(n, str::to_string))
-                .unwrap_or_default()
-        };
-        let mut strips = Vec::new();
-        for &s in &st.strips {
-            let w = s.wing();
-            let mut strip = Strip::new(s.id(), s.kind(), get_str(&format!("{w}/name")));
-            strip.tags = get_str(&format!("{w}/tags"))
-                .split(',')
-                .map(str::trim)
-                .filter(|t| !t.is_empty() && !t.starts_with('#'))
-                .map(str::to_string)
-                .collect();
-            let input = matches!(s, SimStrip::Input(_));
-            strip.chain = if input {
-                vec![
-                    Block::In,
-                    Block::Filter,
-                    Block::Gate,
-                    Block::Eq,
-                    Block::Dyn,
-                    Block::Fader,
-                    Block::Pan,
-                ]
-            } else {
-                vec![Block::In, Block::Eq, Block::Dyn, Block::Fader, Block::Pan]
-            };
-            if input {
-                for b in 1..=BUSES {
-                    let mode = get_tok(&format!("{w}/send/{b}/mode"));
-                    let tap = match mode.as_str() {
-                        "PRE" => SendTap::Pre,
-                        "GRP" => SendTap::Group,
-                        _ => SendTap::Post,
-                    };
-                    strip.sends.push(SendInfo {
-                        dest: StripId::new("bus", b as u32),
-                        on: get_bool(&format!("{w}/send/{b}/on")),
-                        level_db: get_f(&format!("{w}/send/{b}/lvl")),
-                        tap,
-                        // ptap default 5 = after the third block of GEDI (dyn); simplification.
-                        tap_after: if tap == SendTap::Pre {
-                            Block::Dyn
-                        } else {
-                            Block::Pan
-                        },
-                    });
-                }
-            }
-            if !matches!(s, SimStrip::Main(_)) {
-                for m in 1..=MAINS {
-                    let pre = get_bool(&format!("{w}/main/{m}/pre"));
-                    strip.sends.push(SendInfo {
-                        dest: StripId::new("main", m as u32),
-                        on: get_bool(&format!("{w}/main/{m}/on")),
-                        level_db: get_f(&format!("{w}/main/{m}/lvl")),
-                        tap: if pre { SendTap::Pre } else { SendTap::Post },
-                        tap_after: if pre { Block::Dyn } else { Block::Pan },
-                    });
-                }
-            }
-            strips.push(strip);
-        }
-        Ok(Topology { strips })
+        let exposed: Vec<StripId> = st.strips.iter().map(|s| s.id()).collect();
+        Ok(mix_wing_map::topology::build(&st.store).split_context(|id| exposed.contains(id)))
     }
 
     fn params(&self, strip: &StripId) -> SurfaceResult<Vec<mix_surface::ParamSpec>> {

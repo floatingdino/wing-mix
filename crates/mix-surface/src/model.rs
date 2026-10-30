@@ -689,12 +689,40 @@ impl Strip {
 /// The console's strips. Order is the surface's natural order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Topology {
+    /// Strips the surface exposes for control (`Surface::params` works for each).
     pub strips: Vec<Strip>,
+    /// Routing context: strips the surface does not expose for control but whose sends, inserts, outputs and
+    /// re-inputs matter for role detection (e.g. the embedded sim's aux inputs, matrices, FX slots and channels
+    /// beyond its loaded tracks). Sends of exposed strips may point here. Empty for surfaces exposing everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<Strip>,
 }
 
 impl Topology {
+    /// Exposed strips only.
+    pub fn new(strips: Vec<Strip>) -> Self {
+        Topology {
+            strips,
+            context: Vec::new(),
+        }
+    }
+
+    /// Exposed strip or routing-context strip.
     pub fn get(&self, id: &StripId) -> Option<&Strip> {
-        self.strips.iter().find(|s| &s.id == id)
+        self.all().find(|s| &s.id == id)
+    }
+
+    /// Exposed strips, then routing-context strips (the full routing graph).
+    pub fn all(&self) -> impl Iterator<Item = &Strip> {
+        self.strips.iter().chain(self.context.iter())
+    }
+
+    /// Split a full topology: strips for which `exposed` is false move to [`Topology::context`].
+    pub fn split_context(self, exposed: impl Fn(&StripId) -> bool) -> Self {
+        let (strips, mut context): (Vec<Strip>, Vec<Strip>) =
+            self.strips.into_iter().partition(|s| exposed(&s.id));
+        context.extend(self.context);
+        Topology { strips, context }
     }
 
     pub fn of_kind(&self, kind: StripKind) -> impl Iterator<Item = &Strip> {
@@ -704,7 +732,7 @@ impl Topology {
     /// Insert points that hold FX slot `fx`: `(host strip, insert block)`.
     pub fn hosts_of(&self, fx: &StripId) -> Vec<(StripId, Block)> {
         let mut out = Vec::new();
-        for s in &self.strips {
+        for s in self.all() {
             for ins in &s.inserts {
                 if ins.slot.as_ref() == Some(fx) {
                     out.push((s.id.clone(), ins.point.clone()));

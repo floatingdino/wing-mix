@@ -6,6 +6,23 @@ public enum DaemonProcess {
         ["--state-dir", paths.stateDir.path(percentEncoded: false)]
     }
 
+    /// Usual tool locations (uv, claude, Homebrew) an app-launched process lacks: launchd gives GUI apps
+    /// `/usr/bin:/bin:/usr/sbin:/sbin` only. The daemon also merges its login shell's PATH (wing-mixd `tools`).
+    public static let extraPathDirs = [".local/bin", ".cargo/bin", "/opt/homebrew/bin", "/usr/local/bin"]
+
+    /// The daemon's environment: `base` with `PATH` extended by `extraPathDirs` (missing entries appended).
+    public static func environment(base: [String: String] = ProcessInfo.processInfo.environment,
+                                   home: String = NSHomeDirectory()) -> [String: String] {
+        var env = base
+        var dirs = (base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
+        for d in extraPathDirs {
+            let full = d.hasPrefix("/") ? d : (home as NSString).appendingPathComponent(d)
+            if !dirs.contains(full) { dirs.append(full) }
+        }
+        env["PATH"] = dirs.joined(separator: ":")
+        return env
+    }
+
     /// Launch `binary` with its state dir, stdout/stderr appended to the log file.
     public static func launch(binary: URL, paths: DaemonPaths) throws -> Process {
         let fm = FileManager.default
@@ -19,6 +36,7 @@ public enum DaemonProcess {
         let p = Process()
         p.executableURL = binary
         p.arguments = arguments(paths: paths)
+        p.environment = environment()
         p.standardOutput = log
         p.standardError = log
         p.standardInput = FileHandle.nullDevice

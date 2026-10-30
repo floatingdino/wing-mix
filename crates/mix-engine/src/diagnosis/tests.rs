@@ -616,14 +616,12 @@ fn strip_taps_from_topology() {
     use mix_surface::{Strip, StripKind, Topology};
     let mut kick = Strip::new(StripId::new("input", 1), StripKind::Input, "BD");
     kick.tags.push("kick".into());
-    let topo = Topology {
-        strips: vec![
-            kick,
-            Strip::new(StripId::new("input", 2), StripKind::Input, "Lead Vox"),
-            Strip::new(StripId::new("fx", 1), StripKind::Fx, "Plate"),
-            Strip::new(StripId::new("input", 3), StripKind::Input, "unmetered"),
-        ],
-    };
+    let topo = Topology::new(vec![
+        kick,
+        Strip::new(StripId::new("input", 2), StripKind::Input, "Lead Vox"),
+        Strip::new(StripId::new("fx", 1), StripKind::Fx, "Plate"),
+        Strip::new(StripId::new("input", 3), StripKind::Input, "unmetered"),
+    ]);
     let mut feats = BTreeMap::new();
     for i in [("input", 1), ("input", 2), ("fx", 1)] {
         feats.insert(

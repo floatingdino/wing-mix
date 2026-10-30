@@ -20,3 +20,17 @@ look-alikes in that mode (`Controls.swift`). Files: `target.png`, `listen.png`, 
 names from the console). `live-stopped.png`: a real STOP. `live-confirmation.png` and `live-safety.png` take the
 real snapshot and add a pending confirmation / a feedback trip with an RTA feed (fixtures: the sim cannot produce
 them on demand). Same command as above; the run takes about 3 minutes (`Screenshots.swift`).
+
+## Remit bulk editing (M065)
+
+`remit-bulk.png`: the embedded sim loaded with wing-simulator's `fixtures/PUBLIC.snap` ("Scene file (.snap)…"), the
+buses whose name contains "IEM" selected, *Set role… monitor* awaiting confirmation (the change list; nothing is
+sent before *Apply*). `remit-bulk-applied.png`: after *Apply*, with the one-step *Undo*. Regenerate (about 10 s):
+
+```sh
+make app
+WINGMIX_STATE_DIR=/tmp/wmx-shot WINGMIX_REMIT_SHOT=/Users/sam/code/wing-simulator/fixtures/PUBLIC.snap \
+  WINGMIX_SHOTS=docs/user apps/WingMix/build/WingMix.app/Contents/MacOS/WingMix
+```
+
+Using your running wing-sim (console selection, USB-out taps, which direction is which): `setup-wing-simulator.md`.

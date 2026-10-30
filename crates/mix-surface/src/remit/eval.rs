@@ -183,7 +183,7 @@ impl RemitContext {
         // feeds_protected: some strip re-inputs this strip's output and is itself protected or sends (actively)
         // into a protected mix.
         let mut feeds_protected: BTreeSet<StripId> = BTreeSet::new();
-        for r in &topo.strips {
+        for r in topo.all() {
             if let Some(src) = &r.reinput_of {
                 let into_protected = protected(role_of(&r.id))
                     || r.sends

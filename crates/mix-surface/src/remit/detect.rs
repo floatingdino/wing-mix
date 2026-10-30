@@ -43,6 +43,9 @@ pub struct BusEvidence {
     pub fx_insert: FxInsert,
     pub feeds_matrix: bool,
     pub re_input_to_monitor: bool,
+    /// For `feeds_main = indirect`: the hops after this bus, ending at the main (labels for the GUI evidence).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub main_route: Vec<String>,
 }
 
 /// Evidence for an input or aux input (remit.md 6.3).
@@ -229,7 +232,14 @@ impl ScoringDetector {
                 fx += 1.5;
                 grp += 1.5;
                 aux -= 2.0;
-                ev.push("reaches a main through other buses".into());
+                if e.main_route.is_empty() {
+                    ev.push("reaches a main through other buses".into());
+                } else {
+                    ev.push(format!(
+                        "reaches a main through other buses: {}",
+                        e.main_route.join(" -> ")
+                    ));
+                }
             }
             MainPath::None => {
                 mon += 0.5;

@@ -259,7 +259,7 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
 
         let ping = try await client.request("ping")
         #expect(ping["name"]?.string == "wing-mixd")
-        let consoles = try await client.call(ConsoleList.self, "list_consoles", ["discover": false])
+        let consoles = try await client.call(ConsoleList.self, "list_consoles", ["discover": false, "local": false])
         #expect(consoles.consoles.first?.kind == "sim")
         await #expect(throws: ControlError.self) { try await client.request("start") }
 
@@ -298,10 +298,123 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
         #expect(await gotEvent.value)
         timeout.cancel()
 
+        // bulk role editing (M065): one batch, one undo
+        let before = try await client.call(RoleList.self, "list_roles")
+        let buses = RoleBulk.inRange(before.strips, kind: "bus", 8...16)
+        let lock = RoleBulk.lock(before.strips, buses)
+        #expect(lock.count == 9)
+        let reply = try await client.request("confirm_roles", ["roles": RoleBulk.batch(lock)])
+        let locked = try await client.call(RoleList.self, "list_roles")
+        #expect(locked.strips.filter { buses.contains($0.strip) }.allSatisfy { $0.confirmed == "unknown" })
+        let undo = try #require(RoleBulk.undoBatch(fromReply: reply))
+        _ = try await client.request("confirm_roles", ["roles": undo])
+        let restored = try await client.call(RoleList.self, "list_roles")
+        #expect(restored == before)
+        #expect(restored.console?.kind == "sim")
+
         // no session yet: STOP and PANIC are refused with a message, not a hang
         await #expect(throws: ControlError.daemon("no session: nothing to stop")) { try await client.request("STOP") }
         _ = try await client.request("quit")
         proc.waitUntilExit()
         #expect(!FileManager.default.fileExists(atPath: paths.socketURL.path(percentEncoded: false)))
+    }
+}
+
+@Suite struct BulkRoleTests {
+    func strip(_ id: String, _ name: String, detected: String, effective: String, conf: Double,
+               confirmed: String? = nil, needs: Bool = false) -> RoleStrip {
+        RoleStrip(strip: id, name: name, detected: detected, effective: effective, confidence: conf, evidence: [],
+                  confirmed: confirmed, needsConfirmation: needs, context: nil)
+    }
+
+    var strips: [RoleStrip] {
+        [strip("bus.1", "VOX VERB", detected: "fx", effective: "unknown", conf: 0.71, needs: true),
+         strip("bus.6", "DRUMS FOH", detected: "foh_group", effective: "unknown", conf: 0.92, needs: true),
+         strip("bus.8", "VOX 1 IEM", detected: "monitor", effective: "monitor", conf: 1.0),
+         strip("bus.9", "Keys iem", detected: "monitor", effective: "monitor", conf: 1.0, confirmed: "monitor"),
+         strip("bus.16", "COMMS", detected: "comms", effective: "comms", conf: 1.0),
+         strip("input.1", "KICK", detected: "foh", effective: "foh", conf: 1.0),
+         strip("bus.12", "", detected: "unknown", effective: "unknown", conf: 0.5, needs: true)]
+    }
+
+    @Test func `selections by kind, range, name, span`() {
+        #expect(RoleBulk.ofKind(strips, "bus").count == 6)
+        #expect(RoleBulk.inRange(strips, kind: "bus", 8...16) == ["bus.8", "bus.9", "bus.16", "bus.12"])
+        #expect(RoleBulk.nameContains(strips, "iem") == ["bus.8", "bus.9"])
+        #expect(RoleBulk.nameContains(strips, "  ").isEmpty)
+        #expect(RoleBulk.needingConfirmation(strips) == ["bus.1", "bus.6", "bus.12"])
+        let order = strips.map(\.strip)
+        #expect(RoleBulk.span(order, from: "bus.16", to: "bus.6") == ["bus.6", "bus.8", "bus.9", "bus.16"])
+        #expect(["bus.10", "main.1", "bus.2", "input.3", "aux.1"].sorted(by: RoleBulk.consoleOrder)
+            == ["input.3", "aux.1", "bus.2", "bus.10", "main.1"])
+    }
+
+    @Test func `bulk actions list only real changes and flag unprotection`() {
+        let all = Set(strips.map(\.strip))
+        let set = RoleBulk.setRole("monitor", strips, RoleBulk.inRange(strips, kind: "bus", 8...16))
+        // bus.9 already confirmed monitor: no-op
+        #expect(Set(set.map(\.strip)) == ["bus.8", "bus.16", "bus.12"])
+        #expect(set.allSatisfy { !$0.unprotects })
+        let lock = RoleBulk.lock(strips, ["bus.1", "bus.8"])
+        #expect(lock.map(\.to) == [Optional("unknown"), Optional("unknown")])
+        let unlock = RoleBulk.unlock(strips, all)
+        #expect(!unlock.contains { $0.strip == "bus.12" }, "unknown detection: nothing to unlock to")
+        #expect(unlock.first { $0.strip == "bus.1" }?.unprotects == true)
+        let reset = RoleBulk.reset(strips, all)
+        #expect(reset.map(\.strip) == ["bus.9"] && reset[0].to == nil && reset[0].after == "monitor")
+        let acc = RoleBulk.acceptSuggestions(strips, minConfidence: 0.85)
+        #expect(acc.map(\.strip) == ["bus.6"] && acc[0].to == "foh_group")
+        #expect(RoleBulk.acceptSuggestions(strips, minConfidence: 0.7).count == 2)
+        #expect(RoleBulk.acceptSuggestions(strips, minConfidence: 0.7, within: ["bus.1"]).map(\.strip) == ["bus.1"])
+    }
+
+    @Test func `batches and undo batches use the confirm_roles shape`() throws {
+        let b = RoleBulk.batch(RoleBulk.lock(strips, ["bus.1"]) + RoleBulk.reset(strips, ["bus.9"]))
+        #expect(b["bus.1"]?.string == "unknown" && b["bus.9"] == .null)
+        let reply = try ControlClient.parseReply(#"{"ok":true,"result":{"key":"k","confirmed":1,"cleared":1,"previous":{"bus.1":null,"bus.9":"monitor"}}}"#)
+        let u = try #require(RoleBulk.undoBatch(fromReply: reply))
+        #expect(u["bus.1"] == .null && u["bus.9"]?.string == "monitor")
+        #expect(RoleBulk.undoBatch(fromReply: .object(["previous": .object([:])])) == nil)
+    }
+
+    @Test func `role lists carry the console, scene and context flag`() throws {
+        let raw = #"{"ok":true,"result":{"key":"sim|PUBLIC","console":{"kind":"sim","name":"wing-sim (in-process)","scene":"PUBLIC"},"strips":[{"strip":"aux.5","name":"B. LINK","detected":"monitor","effective":"monitor","confidence":1,"evidence":[],"confirmed":null,"needs_confirmation":false,"context":true}]}}"#
+        let r = try ControlClient.parseReply(raw, as: RoleList.self)
+        #expect(r.console?.scene == "PUBLIC" && r.strips[0].context == true)
+        let c = try ControlClient.parseReply(
+            #"{"ok":true,"result":{"consoles":[{"kind":"sim"},{"kind":"wing","ip":"127.0.0.1","port":2222,"name":"WINGSIM","model":"wing-sim","local":true,"scene":null}]}}"#,
+            as: ConsoleList.self)
+        #expect(c.consoles.map(\.id) == ["sim", "local"] && c.consoles[1].title.contains("this Mac"))
+    }
+}
+
+@Suite struct UsbPatchTests {
+    @Test func `patch labels and tap warnings`() throws {
+        #expect(UsbPatch.describe(grp: "MAIN", input: 2) == "Main 1 R")
+        #expect(UsbPatch.describe(grp: "MTX", input: 5) == "Matrix 3 L")
+        #expect(UsbPatch.describe(grp: "MON", input: 1) == "Monitor A L (solo)")
+        #expect(UsbPatch.paramIds([45]) == ["output.usb.45/grp", "output.usb.45/in"])
+        let reply = try ControlClient.parseReply(#"{"ok":true,"result":{"output.usb.45/grp":{"type":"enum","value":"MTX"},"output.usb.45/in":{"type":"int","value":5},"output.usb.46/grp":{"type":"enum","value":"MTX"},"output.usb.46/in":{"type":"int","value":6},"output.usb.47/grp":{"type":"enum","value":"MAIN"},"output.usb.47/in":{"type":"int","value":1},"output.usb.48/grp":{"type":"enum","value":"MAIN"},"output.usb.48/in":{"type":"int","value":2}}}"#)
+        let p = UsbPatch.parse(reply, channels: [45, 46, 47, 48])
+        #expect(p[45]?.grp == "MTX" && p[45]?.input == 5)
+        #expect(UsbPatch.warning(tap: "main", channels: [45, 46], patch: p)?.contains("Matrix 3 L") == true)
+        #expect(UsbPatch.warning(tap: "main", channels: [47, 48], patch: p) == nil)
+        #expect(UsbPatch.warning(tap: "solo", channels: [47, 48], patch: p) != nil)
+        #expect(UsbPatch.warning(tap: "input.3", channels: [45], patch: p) == nil)
+        #expect(UsbPatch.warning(tap: "main", channels: [1, 2], patch: p) == nil, "unknown patch: no warning")
+    }
+}
+
+@Suite struct ToolPathTests {
+    @Test func `app-launched daemon gets the usual tool dirs on PATH`() {
+        let env = DaemonProcess.environment(base: ["PATH": "/usr/bin:/bin", "X": "1"], home: "/Users/u")
+        let dirs = env["PATH"]!.split(separator: ":").map(String.init)
+        #expect(dirs.prefix(2) == ["/usr/bin", "/bin"])
+        #expect(dirs.contains("/Users/u/.local/bin") && dirs.contains("/opt/homebrew/bin"))
+        #expect(env["X"] == "1")
+        let again = DaemonProcess.environment(base: env, home: "/Users/u")
+        #expect(again["PATH"] == env["PATH"], "idempotent")
+        let s = try? DaemonStatus.decode(Data(#"{"running":true,"pid":1,"updated_unix":0,"tools":{"uv":{"path":null,"for":"stems"},"claude":{"path":"/x/claude","for":"llm"}}}"#.utf8))
+        #expect(s?.missingTool("uv")?.for == "stems" && s?.missingTool("claude") == nil)
     }
 }

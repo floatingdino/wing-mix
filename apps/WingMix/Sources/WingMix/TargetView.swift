@@ -27,6 +27,7 @@ struct TargetView: View {
                             Button("Load reference") { Task { await model.loadReference() } }
                                 .disabled(model.referenceURL == nil || model.loading != nil)
                         }
+                        if model.useStems { ToolNotice(model: model, tool: "uv", install: "curl -LsSf https://astral.sh/uv/install.sh | sh") }
                         if let l = model.loading {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("\(l.what ?? "Loading"): \(l.stage ?? "")").font(.callout)
@@ -46,6 +47,7 @@ struct TargetView: View {
                                 .disabled(model.descriptionText.trimmingCharacters(in: .whitespaces).isEmpty
                                     || model.loading != nil)
                         }
+                        if model.useLLM { ToolNotice(model: model, tool: "claude", install: "npm install -g @anthropic-ai/claude-code") }
                         Text("Example: \"warmer vocal, less harsh cymbals, tighter low end\". Works without Claude; the toggle only adds a fallback for phrases the built-in vocabulary does not know.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -137,6 +139,24 @@ struct DropModifier: ViewModifier {
             } isTargeted: { targeted = $0 }
         } else {
             content
+        }
+    }
+}
+
+/// "uv not found" style notice: the daemon reports which external tools it can start (`status.tools`).
+struct ToolNotice: View {
+    var model: AppModel
+    var tool: String
+    var install: String
+
+    var body: some View {
+        if let t = model.status?.missingTool(tool) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label("`\(tool)` not found by the daemon: \(t.for ?? "this feature") is unavailable.", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).font(.callout)
+                Text("Install it (\(install)), or put it in ~/.local/bin or /opt/homebrew/bin, then restart Wing Mix.")
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
         }
     }
 }

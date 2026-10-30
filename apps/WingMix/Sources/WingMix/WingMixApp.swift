@@ -7,6 +7,7 @@ import WingMixCore
 /// `--smoke-test`: build the model (reads the status file, locates the daemon binary, starts nothing), print a
 /// line and quit after a second; used by `smoke.sh` / `make app`.
 /// `WINGMIX_DEMO=<dir>` + `WINGMIX_SCREEN=target|listen|remit|live`: demo session for the screenshots.
+/// `WINGMIX_REMIT_SHOT=<scene.snap>` + `WINGMIX_SHOTS=<dir>`: Remit bulk-editing screenshots (Screenshots.swift).
 @main
 struct WingMixApp: App {
     @State private var model = AppModel()
@@ -33,6 +34,10 @@ struct WingMixApp: App {
                         model.screen = sc
                     }
                     await model.start()
+                    if let snap = env["WINGMIX_REMIT_SHOT"], !snap.isEmpty, let shots = env["WINGMIX_SHOTS"], !shots.isEmpty {
+                        await model.captureRemitBulk(snap: snap, to: shots)
+                        return
+                    }
                     if let dir = env["WINGMIX_DEMO"], !dir.isEmpty { await model.runDemo(dir: dir) }
                     if let shots = env["WINGMIX_SHOTS"], !shots.isEmpty { await model.captureScreens(to: shots) }
                 }

@@ -82,6 +82,9 @@ pub struct DaemonStatus {
     pub safety: Value,
     pub subscribers: usize,
     pub last_error: Option<String>,
+    /// External tools: `{"uv":{"path":..|null,"for":..},"claude":{..}}` (null path = not found on PATH).
+    #[serde(default)]
+    pub tools: Value,
 }
 
 /// Settings that survive a daemon restart (`<state-dir>/settings.json`; missing or unreadable = defaults).
@@ -142,6 +145,29 @@ impl RoleStore {
             .unwrap_or_default()
     }
 
+    /// Apply one batch to `key`: `Some(role)` confirms, `None` clears the confirmation. Returns the previous
+    /// confirmation of every strip in the batch (`None` = was not confirmed), i.e. the batch that undoes it.
+    pub fn apply(
+        &mut self,
+        key: &str,
+        changes: &BTreeMap<StripId, Option<Role>>,
+    ) -> BTreeMap<String, Option<String>> {
+        let m = self.consoles.entry(key.to_string()).or_default();
+        let mut previous = BTreeMap::new();
+        for (s, r) in changes {
+            let k = s.as_str().to_string();
+            let old = match r {
+                Some(r) => m.insert(k.clone(), r.as_str().to_string()),
+                None => m.remove(&k),
+            };
+            previous.insert(k, old);
+        }
+        if m.is_empty() {
+            self.consoles.remove(key);
+        }
+        previous
+    }
+
     /// Merge confirmations into `key`.
     pub fn confirm(&mut self, key: &str, roles: &BTreeMap<StripId, Role>) {
         let m = self.consoles.entry(key.to_string()).or_default();
@@ -193,9 +219,32 @@ mod tests {
             &BTreeMap::from([(StripId::new("bus", 5), Role::Monitor)]),
         );
         r.save(&dir).unwrap();
-        let r2 = RoleStore::load(&dir);
+        let mut r2 = RoleStore::load(&dir);
         assert_eq!(r2.roles(&k)[&StripId::new("bus", 5)], Role::Monitor);
         assert!(r2.roles("other|default").is_empty());
+        // a batch: confirm bus 6, clear bus 5; its `previous` undoes it exactly
+        let before = r2.clone();
+        let prev = r2.apply(
+            &k,
+            &BTreeMap::from([
+                (StripId::new("bus", 6), Some(Role::Fx)),
+                (StripId::new("bus", 5), None),
+            ]),
+        );
+        assert_eq!(r2.roles(&k).len(), 1);
+        assert_eq!(prev["bus.5"].as_deref(), Some("monitor"));
+        assert_eq!(prev["bus.6"], None);
+        let undo: BTreeMap<StripId, Option<Role>> = prev
+            .iter()
+            .map(|(s, r)| {
+                (
+                    StripId::parse(s).unwrap(),
+                    r.as_ref().map(|r| r.parse().unwrap()),
+                )
+            })
+            .collect();
+        r2.apply(&k, &undo);
+        assert_eq!(r2, before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

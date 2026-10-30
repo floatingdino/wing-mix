@@ -68,6 +68,34 @@ extension AppModel {
         frozenSnapshot = nil
     }
 
+    /// `WINGMIX_REMIT_SHOT=<scene.snap>` + `WINGMIX_SHOTS=<dir>` (M065): the embedded sim loaded with a scene file,
+    /// the Remit screen with a bulk change awaiting confirmation (`remit-bulk.png`) and after applying it, with the
+    /// one-step Undo (`remit-bulk-applied.png`). Quits afterwards.
+    func captureRemitBulk(snap: String, to dir: String) async {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        selectedConsole = "sim"
+        simScene = "file"
+        simScenePath = snap
+        simMultitrack = ""
+        await connectConsole()
+        screen = .remit
+        remitKindFilter = "bus"
+        await refreshRoles()
+        let strips = roles?.strips ?? []
+        bulkNameMatch = "IEM"
+        selectedStrips = RoleBulk.nameContains(strips, bulkNameMatch)
+        bulkRole = "monitor"
+        proposeBulk("Set \(selectedStrips.count) to monitor", RoleBulk.setRole("monitor", strips, selectedStrips))
+        try? await Task.sleep(for: .seconds(1))
+        render(.remit, to: dir + "/remit-bulk.png")
+        await applyBulk()
+        try? await Task.sleep(for: .seconds(1))
+        render(.remit, to: dir + "/remit-bulk-applied.png")
+        await undoBulk()
+        await disconnectConsole()
+        NSApp.terminate(nil)
+    }
+
     private func render(_ s: Screen, to path: String) {
         let r = ImageRenderer(content: ShotView(model: self, screen: s)
             .frame(width: 1120)

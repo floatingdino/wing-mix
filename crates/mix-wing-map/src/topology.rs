@@ -236,7 +236,7 @@ pub fn build(store: &ParamStore) -> Topology {
             strips.push(st);
         }
     }
-    Topology { strips }
+    Topology::new(strips)
 }
 
 fn inserts(r: &Reader, p: &str, which: &[(u8, &str)]) -> Vec<InsertInfo> {

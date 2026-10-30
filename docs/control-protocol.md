@@ -51,14 +51,14 @@ nothing else happens.
 | `ping` | | `{"name":"wing-mixd","version","pid"}` |
 | `status` | | the status document |
 | `list_devices` | | `{"devices":[{"name","default","max_channels","min_sample_rate","max_sample_rate","default_sample_rate"}], "sim":{"taps":[..]}?, "error"?}` |
-| `list_consoles` | `discover` (bool, default true: UDP broadcast `WING?` to port 2222), `wait_ms` (800), `probe` (`ip[:port]`, unicast) | `{"consoles":[{"kind":"sim"},{"kind":"wing","ip","name","model","serial","firmware"}]}` |
+| `list_consoles` | `discover` (bool, default true: UDP broadcast `WING?` to port 2222), `wait_ms` (800), `probe` (`ip[:port]`, unicast), `local` (bool, default true: a wing-sim on this Mac, M065) | `{"consoles":[{"kind":"sim"},{"kind":"wing","ip","name","model","serial","firmware"}]}`. With `local`, a live wing-sim (its `status.json` in `$WINGSIM_STATE_DIR` / `~/Library/Application Support/WingSimulator`: `running`, updated < 15 s ago) is listed as `{"kind":"wing","ip":"127.0.0.1","port":2222,"name","model":"wing-sim","local":true,"scene"}`; connect it like a WING (`connect_console` `wing` + `ip` + `port`). Only the status file is read. |
 | `connect_console` | `console`: `sim`, `wing` (+`ip`), `x32` (+`ip`, port default 10023; M061) or an IP (= wing); `port` (2222); `scene` (role key, default `default`); `sim`: see below | `{"kind","name","key","scene","inputs"}`. Replaces any previous console (ends its session; a sim input is dropped with it). The remit policy is the console's own default (`data/remit/<surface>-default.toml`) or `--policy`; a policy whose `surface` does not match the console is refused (the connect fails). `wing-mixd --console sim\|wing:<ip>[:port]\|x32:<ip>[:port]` connects at start. |
 | `disconnect_console` | | |
 | `select_input` | `source`: `device` / `file` / `sim` / `stream`; `device` (name or unique substring; default input), `path` (WAV, `file`), `addr` + `channels` (`stream`), `sample_rate`, `taps` | `{"kind","description","sample_rate","taps"}` |
 | `load_reference` | `path` (audio file, or a TargetProfile `.json`), `section` (index), `stems` (bool), `wait` (bool) | `{"loading":true}` at once, or with `wait` the loaded target `{"kind":"reference","label","info"}` |
 | `load_description` | `text`, `base` (`current` or a profile `.json`), `genre`, `llm` (bool), `model`, `wait` | as above, `info` lists the applied terms, conflicts, unrecognised phrases |
-| `list_roles` | | `{"key","strips":[{"strip","name","detected","effective","confidence","evidence","confirmed","needs_confirmation"}]}` |
-| `confirm_roles` | `roles` (`{"bus.5":"monitor"}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none), `scene` | `{"key","confirmed","applies":"now"}`. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
+| `list_roles` | | `{"key","console":{"kind","name","scene"},"strips":[{"strip","name","detected","effective","confidence","evidence","confirmed","needs_confirmation","context"}]}`. `console` says which console and scene the roles reflect (M065); `context: true` marks routing-only strips the console does not expose for control (the embedded sim's aux inputs, matrices, channels beyond its tracks), which detection still uses. |
+| `confirm_roles` | `roles` (`{"bus.5":"monitor","bus.6":null}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none; `null` clears the confirmation = back to detection), `scene` | `{"key","confirmed","cleared","previous","applies":"now"}`. One request is one **batch** (M065): validated as a whole (a bad id/role changes nothing), applied together. `previous` maps every strip of the batch to its former confirmation (`null` = none): sending it back as `roles` undoes the batch exactly. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
 | `set_mode` | `mode`: `observe` / `suggest` / `autopilot` | |
 | `set_live_context` | `context`: `live` (default; persisted in `settings.json` and restored at the next daemon start) / `broadcast_video` / `match_record` | `{"live_context","applied","target"}` (M037/M054). `mix_describe::apply_context` is applied to the loaded target (reference or description) on every load and on every change, always from the raw profile (switching is an exact revert); a running controller is rebuilt and re-plans. `applied` is `true` once a target is loaded (`false` before: the setting is stored and applied on the next load); `target` is the context summary below (null without a target). Announced as a `live_context_changed {live_context, applied}` daemon event on change. Effects are recorded in the target's `applied_deltas` as `context:<name>` (so problems list it in `terms`). |
 | `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `target_objective`, `inspect`, `feedback_guard` | `{"running":true,"mode"}`; needs a console, an input and a target |
@@ -85,7 +85,8 @@ actuator thread immediately), so they never wait behind a plan being computed; t
   "multitrack":"/path/16ch.wav",   // channel n -> USB in n -> input n; or "synthetic" (default: mix-sim's 16-track song)
   "names":["KICK","SNARE"],        // strip names (synthetic: the track names); used for source hints
   "seed":7,"seconds":8,            // synthetic song
-  "scene":"degraded",              // factory (default) | reference | degraded (mix-sim scenes) | /path/x.snap
+  "scene":"degraded",              // factory (default) | reference | degraded (mix-sim scenes) | /path/x.snap (read only;
+                                   //   the role-confirmation scene defaults to the file name, e.g. `sim|MyShow`)
   "speed":1                        // 1 = real time, N = N x, 0 = as fast as the analysis consumes
 }}
 ```
@@ -168,7 +169,9 @@ The current spectrum is the short-term (3 s) main analysis, refreshed every 0.5 
 
 `status.json` and `status`: `running`, `pid`, `version`, `updated_unix`, `uptime_s`, `state_dir`,
 `console {kind,name,key,scene}`, `input {kind,description,sample_rate,taps,dropped_frames,clock_s,stream_errors}`,
-`target {kind,label}`, `loading {what,stage,progress}`, `mode`, `live_context`, `live_context_applied`, `session {running,stopped,holding,objective,distance,
+`target {kind,label}`, `loading {what,stage,progress}`, `tools {uv,claude: {path|null, for}}` (M065: where the
+daemon found each external tool; at start it merges the login shell's PATH and `~/.local/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin`, nvm node bins into its own, so an app-launched daemon finds them), `mode`, `live_context`, `live_context_applied`, `session {running,stopped,holding,objective,distance,
 batches,pending,touched}`, `safety {status,trips,rta_feed}`, `subscribers`, `last_error`. Absent parts are `null`.
 
 ## Threads
