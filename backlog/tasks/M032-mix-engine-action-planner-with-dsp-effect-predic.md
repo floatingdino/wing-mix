@@ -2,7 +2,7 @@
 id: M032
 title: mix-engine: action planner with DSP effect prediction
 stage: S3
-status: review
+status: done
 owner: agent-M032
 depends: [M031, M004, M012]
 branch: task/M032
@@ -85,3 +85,4 @@ Coordinator note (from M015): knowledge values are generic; the WING adapter/pla
     `inspect = "solo"|"context"` to replace `SOLO_PHASES`; (6) M033 should re-measure between moves (plan is open
     loop; fader steps are capped at 6 dB, EQ at kb max_step 3 dB); (7) send/FX-slot candidates beyond the FX return
     fader once FX returns are tapped.
+- 2026-10-30 coordinator: merged, make check passes. done. Accepted mix-engine dev opt-level 2. Diagnosis noise (170 problems on matched reference) → M034; gate/de-esser candidates + comp timing → M035.
