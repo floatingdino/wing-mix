@@ -181,6 +181,8 @@ pub struct Rig {
     taps: Vec<TapPoint>,
     next_feed: f64,
     pub wall: Duration,
+    /// Confirm every pending conditional move as it comes up (an operator who accepts the suggestions).
+    pub auto_confirm: bool,
 }
 
 /// The default WING remit policy.
@@ -216,12 +218,11 @@ impl Rig {
     ) -> Self {
         let kb = KnowledgeBase::embedded();
         let sim = Arc::new(sim);
-        // No live analysis watchdog (the harness feeds the mains itself) and no feedback guard: on the synthetic
-        // song (8 s loop, chords/phrases cut at the loop seam) it trips on rising band prominence at 200 Hz-1 kHz
-        // (prominence 13-17 dB, rise 15-21 dB over 4 s) within 20-40 s of autopilot. Mains loudness/true-peak holds
-        // and the gate-level limits (boost per move/session, fader ceiling, envelopes) stay on.
-        let mut scfg = SafetyConfig::without_watchdog();
-        scfg.feedback.enabled = false;
+        // No live analysis watchdog (the harness feeds the mains itself). The feedback guard is on (M036: it no
+        // longer trips on the synthetic song's or the real sections' music; `Rig::feedback_trips` counts trips).
+        // Mains loudness/true-peak holds and the gate-level limits (boost per move/session, fader ceiling,
+        // envelopes) are on as in production.
+        let scfg = SafetyConfig::without_watchdog();
         let monitor = SafetyMonitor::new(scfg);
         let inner = PolicyGate::new(policy.clone(), &*sim).unwrap();
         let gate = SafetyGate::new(Box::new(inner), sim.clone(), monitor.clone());
@@ -249,6 +250,7 @@ impl Rig {
             taps,
             next_feed: 0.0,
             wall: Duration::ZERO,
+            auto_confirm: false,
         }
     }
 
@@ -271,6 +273,12 @@ impl Rig {
             self.actuator.tick(Duration::from_secs_f64(self.t));
         }
         self.ctl.tick(self.t, &mut self.actuator, &mut self.meter);
+        if self.auto_confirm {
+            let keys: Vec<String> = self.ctl.pending().iter().map(|p| p.key.clone()).collect();
+            for k in keys {
+                self.ctl.confirm(&k, &mut self.actuator);
+            }
+        }
         while let Ok(e) = self.events.try_recv() {
             self.log.push((self.t, e));
         }
@@ -336,6 +344,29 @@ impl Rig {
                 r.note
             );
         }
+        if let Some(top) = self.log.iter().rev().find_map(|(_, e)| match e {
+            ControlEvent::Measured { top_problems, .. } => Some(top_problems.clone()),
+            _ => None,
+        }) {
+            eprintln!("  last top problems: {top:?}");
+        }
+        if std::env::var("M036_ACT").is_ok() {
+            for (t, e) in &self.act_log {
+                if matches!(
+                    e,
+                    ActuatorEvent::Refused { .. }
+                        | ActuatorEvent::Aborted { .. }
+                        | ActuatorEvent::Yielded { .. }
+                ) {
+                    eprintln!("  act @{t:6.1} {e:?}");
+                }
+            }
+        }
+        eprintln!(
+            "  feedback trips {}, safety refusals {}",
+            self.feedback_trips(),
+            self.safety_refusals()
+        );
         for (t, e) in &self.log {
             if matches!(
                 e,
@@ -351,6 +382,44 @@ impl Rig {
                 eprintln!("  @{t:6.1} {e:?}");
             }
         }
+    }
+
+    /// Feedback-guard trips seen by the actuator (false trips on music: must be 0).
+    pub fn feedback_trips(&self) -> usize {
+        self.act_log
+            .iter()
+            .filter(|(_, e)| {
+                matches!(
+                    e,
+                    ActuatorEvent::Safety {
+                        trip: mix_actuator::Trip::Feedback { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// Moves (incl. an inspection's adjustment) the safety gate refused or aborted (planned outside its limits).
+    pub fn safety_refusals(&self) -> usize {
+        use mix_actuator::{AbortReason, Refusal};
+        use mix_surface::remit::Reason;
+        self.act_log
+            .iter()
+            .filter(|(_, e)| match e {
+                // a discrete change (model switch) waits for the strip to be inaudible on the live meters: a
+                // runtime condition like the holds, not a limit a plan can respect
+                ActuatorEvent::Refused {
+                    reason: Refusal::Remit { reason, detail, .. },
+                    ..
+                } => *reason == Reason::Safety && !detail.contains("discrete change"),
+                ActuatorEvent::Aborted {
+                    reason: AbortReason::Remit { reason, detail, .. },
+                    ..
+                } => *reason == Reason::Safety && !detail.contains("increase refused"),
+                _ => false,
+            })
+            .count()
     }
 
     pub fn kept(&self) -> usize {

@@ -113,7 +113,9 @@ impl ControlConfig {
             mode: Mode::Suggest,
             settle_s: it.settle_s.lo(),
             window_s: 20.0,
-            target_objective: 0.5,
+            // M036: 0.5 -> 0.6: the objective now also counts compression opportunities, strip placement and
+            // masking (mix-sim's matched reference measures 0.41-0.46 against its own profile, was 0.34)
+            target_objective: 0.6,
             resume_factor: 1.5,
             keep: KeepRule {
                 keep_fraction: it.keep_if_distance_reduced_by,

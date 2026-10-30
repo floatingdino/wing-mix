@@ -25,6 +25,7 @@ fn mv(param: &str, from: f64, to: f64, gain: f64) -> PlannedMove {
         phase: "balance".into(),
         problem: "p".into(),
         rules: Vec::new(),
+        why: String::new(),
         explanation: String::new(),
         predicted: PredictedEffect {
             objective_before: 1.0,

@@ -188,6 +188,8 @@ pub struct StripDelta {
     pub deess_crest_db: f64,
     /// Main contribution per unit of active-frame power after the change (see `StripObs::main_k`).
     pub main_k: f64,
+    /// L/R power balance change of the strip's tap from a pan change (dB, positive = towards left; M036).
+    pub balance_db: f64,
 }
 
 impl StripDelta {
@@ -204,6 +206,7 @@ impl StripDelta {
             dyn_active: 0.0,
             deess_crest_db: 0.0,
             main_k: 1.0,
+            balance_db: 0.0,
         }
     }
 }
@@ -635,6 +638,25 @@ impl<'a> MixModel<'a> {
                 dd.dyn_attack_db = st.attack_ratio_db - old_st.attack_ratio_db;
                 dd.dyn_all_db = st.rms_all_db - old_st.rms_all_db;
                 dd.dyn_active = st.active - old_st.active;
+                // M036: with an RMS-detector compressor the proxy over-reads the peaks that pass the attack (its
+                // events start sharper than sung phrases; dyn_sim vocal rows +0.4..+1.6 dB) and the static curve
+                // under-reads them; their mean halves the error there
+                let rms_comp =
+                    |s: &StripSettings| s.dynamics.is_some_and(|d| d.on && !d.peak_detector);
+                // sustained sources only (sample crest under 15 dB: voices, bass, keys): on percussive strips the
+                // static peak reading is far worse than the proxy's (dyn_sim kick rows)
+                let sustained = o.tap.features.loudness.crest_db < 15.0;
+                if sustained && (rms_comp(old) || rms_comp(new)) {
+                    let stt = &o.stats;
+                    let pk = stt.peak_db - 3.0;
+                    let a = |s: &StripSettings, sh: f64, gsh: f64| {
+                        20.0 * (dyn_amp_peak(t, s, pk + sh) * gate_amp(t, s, pk + gsh))
+                            .max(1e-9)
+                            .log10()
+                    };
+                    let stat_pk = a(new, shift, gate_shift) - a(old, 0.0, 0.0);
+                    dd.dyn_peak_db = 0.5 * (dd.dyn_peak_db + stat_pk);
+                }
             } else if has_dyn(old) || has_dyn(new) {
                 let amp = |s: &StripSettings, l: f64, sh: f64, gsh: f64| {
                     dyn_amp(t, s, l + sh) * gate_amp(t, s, l + gsh)
@@ -672,8 +694,12 @@ impl<'a> MixModel<'a> {
         let dyn_mean = dd.dyn_mean_db;
         let k_new = (o.main_k * p(dd.dyn_all_db - dd.dyn_mean_db)).clamp(0.0, 1.0);
 
-        let (m_old, s_old, _, _) = self.pan_factors(o.kind, old);
-        let (m_new, s_new, _, _) = self.pan_factors(o.kind, new);
+        let (m_old, s_old, gl0, gr0) = self.pan_factors(o.kind, old);
+        let (m_new, s_new, gl1, gr1) = self.pan_factors(o.kind, new);
+        if (gl0 - gl1).abs() > 1e-12 || (gr0 - gr1).abs() > 1e-12 {
+            let bal = |l: f64, r: f64| 20.0 * (l.max(1e-6) / r.max(1e-6)).log10();
+            dd.balance_db = bal(gl1, gr1) - bal(gl0, gr0);
+        }
         let mut mid = [0.0; N_ERB];
         let mut side = [0.0; N_ERB];
         let mut mid_db = [0.0; N_ERB];
@@ -877,6 +903,7 @@ impl<'a> MixModel<'a> {
         f.spectrum.tilt_db_per_oct += self.slope(&dm) as f32;
         if let Some(st) = f.stereo.as_mut() {
             stereo_update(st, &o.mid, &o.side, mid, side, &self.broad, &self.low);
+            st.balance_db += d.balance_db as f32;
         }
         t
     }
@@ -949,7 +976,13 @@ impl<'a> MixModel<'a> {
             }
             if sh.delta.dyn_range_db != 0.0 {
                 let w = sh.band_new.iter().sum::<f64>() / new_b.iter().sum::<f64>().max(1e-300);
-                d_lra += w.min(1.0) * sh.delta.dyn_range_db;
+                // M036: a strip's range change reaches the mix range in proportion to how much of that range the
+                // mix shows (a 3 LU vocal under a 0.9 LU mix moves it by ~0.3 of its own change, not all of it)
+                let scale = match (f.loudness.lra_lu, sf.loudness.lra_lu) {
+                    (Some(m), Some(s)) if s > 0.5 => (m as f64 / s as f64).clamp(0.0, 1.0),
+                    _ => 1.0,
+                };
+                d_lra += w.min(1.0) * scale * sh.delta.dyn_range_db;
             }
         }
         let d_tp = if pk_old > 0.0 {
@@ -1047,6 +1080,13 @@ impl<'a> MixModel<'a> {
     }
 
     /// The observation of `strip`, if tapped.
+    /// Predicted K-weighted level change (LU) of `strip` at `settings`, relative to the measured settings
+    /// (dynamics through the proxy where fitted). `None` for a strip without a tap.
+    pub fn strip_level_db(&self, strip: &StripId, settings: &StripSettings) -> Option<f64> {
+        let o = self.obs(strip)?;
+        Some(self.cached_delta(o, settings.clone()).0.level_db)
+    }
+
     pub fn obs(&self, strip: &StripId) -> Option<&StripObs> {
         self.strips.iter().find(|o| &o.tap.strip == strip)
     }

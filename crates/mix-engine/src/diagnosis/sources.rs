@@ -177,10 +177,116 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
     }
 
     levels(cx, &srcs, &groups);
+    placement(cx, &srcs);
+    if cx.cfg.comp_opportunities {
+        compression(cx, &srcs);
+    }
     let stem_dev = stem_tonal(cx, &srcs, &groups);
     let mask_bag = masking_pairs(cx, &srcs, &groups, &stem_dev);
     let sib_bag = sibilance(cx, &srcs, &groups);
     source_problems(cx, &srcs, &groups, &stem_dev, &mask_bag, &sib_bag, None);
+}
+
+/// Side of a stereo-pair strip from its name (`OH L`, `KEYS R`, `L`): -1 left, +1 right.
+pub(crate) fn pair_side(name: &str) -> Option<f64> {
+    let n = name.trim().to_uppercase();
+    if n.ends_with(" L") || n == "L" || n.ends_with("-L") || n.ends_with("_L") {
+        Some(-1.0)
+    } else if n.ends_with(" R") || n == "R" || n.ends_with("-R") || n.ends_with("_R") {
+        Some(1.0)
+    } else {
+        None
+    }
+}
+
+/// Pan position (−100..100) of a mono source implied by its post-pan tap: side/mid power `width_db` under a
+/// constant-power pan law (`|L − R| / (L + R) = tan(π/4 − θ)`), sign from the L/R balance (positive = left).
+pub(crate) fn implied_pan(width_db: f32, balance_db: f32) -> f64 {
+    let r = 10f64.powf(width_db as f64 / 20.0).min(1.0);
+    let p = (r.atan() / std::f64::consts::FRAC_PI_4 * 100.0).clamp(0.0, 100.0);
+    if balance_db > 0.0 {
+        -p
+    } else {
+        p
+    }
+}
+
+/// Pan the knowledge base expects for a stereo-pair strip of `src` on `side` (`None`: not a wide source).
+pub(crate) fn expected_pair_pan(src: &mix_knowledge::Source, side: f64) -> Option<f64> {
+    let wide = src.pan_pct.hi().abs().max(src.pan_pct.lo().abs());
+    (wide >= 20.0).then(|| side * wide.min(70.0))
+}
+
+/// M036 placement: a strip named as one side of a stereo pair (`OH L`, `KEYS R`) of a source sources.toml spreads
+/// (`pan_pct`) must sit on its side. Its post-pan tap shows where it is ([`implied_pan`]); more than half the
+/// expected position away (e.g. both overheads centred) is a `Width` problem on the strip.
+fn placement(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) {
+    for s in srcs {
+        let Some(src) = s.tap.source.as_deref().and_then(|x| cx.kb.source(x)) else {
+            continue;
+        };
+        let (Some(side), Some(st)) = (pair_side(s.name()), s.tap.features.stereo.as_ref()) else {
+            continue;
+        };
+        let Some(expected) = expected_pair_pan(src, side) else {
+            continue;
+        };
+        let measured = implied_pan(st.width_db, st.balance_db);
+        let e = Evidence::new(
+            "pan_pct",
+            "pct",
+            measured as f32,
+            expected as f32,
+            (expected.abs() * 0.5) as f32,
+        );
+        let explanation = format!(
+            "{} ({}) sits at pan {measured:+.0} (from its stereo image); sources.toml spreads the pair to about {expected:+.0}",
+            s.name(),
+            src.id
+        );
+        cx.push(
+            Draft::new(ProblemKind::Width, Scope::of(s.subject()), e)
+                .confidence(0.6 * quality_factor(&s.tap.features))
+                .blocks(&["Pan"])
+                .explain(explanation),
+        );
+    }
+}
+
+/// M036 compression opportunities (`DiagnosisConfig::comp_opportunities`): a strip whose source has a
+/// high-confidence dynamics.toml compressor preset (lead vocal, kick, snare, bass) is expected to run at the
+/// preset's gain reduction. Features cannot show whether a compressor works on the strip (on mix-sim's seed 7 the
+/// uncompressed vocal's crest and LRA sit within 0.6 dB / 0.4 LU of the compressed one), so the problem carries no
+/// measurement: the planner counts it while the strip's compressor is off (console state), like M035's gates.
+fn compression(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) {
+    for s in srcs {
+        let Some(id) = s.tap.source.as_deref() else {
+            continue;
+        };
+        let Some(pr) = cx.kb.presets_by_source(id).and_then(|p| p.comp) else {
+            continue;
+        };
+        if pr.confidence != Confidence::High || pr.kind != "compressor" {
+            continue;
+        }
+        let gr = pr.target_gr_db.map_or(3.0, |r| r.lo()) as f32;
+        let mut e = Evidence::new("gr_db", "db", 0.0, gr, gr * 0.5);
+        e.measured = None;
+        let explanation = format!(
+            "{} ({id}): dynamics.toml {} expects {:.0}-{:.0} dB of compression on this source",
+            s.name(),
+            pr.id,
+            pr.target_gr_db.map_or(gr as f64, |r| r.lo()),
+            pr.target_gr_db.map_or(gr as f64, |r| r.hi())
+        );
+        cx.push(
+            Draft::new(ProblemKind::TooDynamic, Scope::of(s.subject()), e)
+                .confidence(0.8 * quality_factor(&s.tap.features))
+                .rules((vec!["dyn_too_dynamic".into()], vec!["Dyn".into()]))
+                .blocks(&["Dyn"])
+                .explain(explanation),
+        );
+    }
 }
 
 /// `t` shifted by an intent delta.

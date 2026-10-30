@@ -154,6 +154,34 @@ pub const FLOOR_RESOLUTION: f64 = 0.02;
 /// resolves) or there are almost none. Bleed above the analyser's relative gate (integrated − 20 LU) counts as
 /// active and is not seen here.
 pub fn floor_estimate(f: &Features) -> Option<f64> {
+    // M038/M036: the analyser's own floor (p10 of onset-free ~43 ms blocks) is the better reading of the level
+    // between events. It replaces the active/inactive split's estimate when that resolves a floor, and stands on
+    // its own for a sparse strip (active share below `SPARSE_ACTIVE`) whose floor sits well below its level: bleed
+    // above the loudness gate, which the split cannot see. A dense source's p10 is its own decay/sustain (kick
+    // tails, held notes), not a floor a gate removes, and is not used.
+    let split = floor_estimate_split(f);
+    let nf = f.loudness.noise_floor_dbfs as f64;
+    if nf > mix_core::DB_FLOOR as f64 + 1.0 {
+        let rms = f.loudness.rms_dbfs as f64;
+        let active = 1.0 - f.quality.gated_fraction as f64;
+        if split.is_some() {
+            return Some(nf.min(rms));
+        }
+        if active < SPARSE_ACTIVE && rms - nf >= FLOOR_MIN_GAP_DB {
+            return Some(nf);
+        }
+    }
+    split
+}
+
+/// Active share below which a strip is sparse (its between-event level is bleed or noise).
+pub const SPARSE_ACTIVE: f64 = 0.5;
+
+/// Smallest distance (dB) of the analyser's noise floor below the window RMS for it to count as a floor.
+pub const FLOOR_MIN_GAP_DB: f64 = 6.0;
+
+/// [`floor_estimate`] from the active/inactive power split (features without `noise_floor_dbfs`, pre-M038).
+pub fn floor_estimate_split(f: &Features) -> Option<f64> {
     let l = window_loudness(f) as f64;
     let mut act = 0.0;
     for b in 0..N_ERB {

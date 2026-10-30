@@ -21,7 +21,7 @@ use mix_core::value::Value;
 use mix_engine::control::{ControlConfig, ControlEvent, HoldReason, Mode, Outcome, PlanReason};
 use mix_engine::plan::{
     state::{CutSettings, DynSettings, EqSettings, GateSettings},
-    TransferModel, WingTransfer,
+    PlanConfig, TransferModel, WingTransfer,
 };
 use mix_knowledge::KnowledgeBase;
 use mix_sim::scenes::Scene;
@@ -126,15 +126,109 @@ fn assert_no_hunting(r: &Rig) {
 // -------------------------------------------------------------------------------------------------------------
 // Convergence
 
+/// mix-sim's seed-7 ground truth (`mix_sim::scenes::ground_truth`) after a closed-loop run: (fault, addressed,
+/// what the console shows). A fault counts as addressed when the loop moved its param (or an equivalent one) at
+/// least ~1/3 of the way back: levels by >= 2-2.5 dB in the right direction, the keys' 250 Hz boost by a >= 2.5 dB
+/// cut/reduction around 250 Hz (or a 3 dB fader cut), switches back on, the overheads panned >= 20 % to their sides.
+fn ground_truth_status(r: &Rig) -> Vec<(&'static str, bool, String)> {
+    let f = |p: &str| value(r, p).as_f64().unwrap_or(f64::NAN);
+    let b = |p: &str| value(r, p) == Value::Bool(true);
+    let keys = |ch: u32| -> (bool, String) {
+        let mut cut = 8.0 - f(&format!("input.{ch}/eq/band.1.gain"));
+        for band in ["band.2", "band.3", "band.4", "low", "high"] {
+            let fr = f(&format!("input.{ch}/eq/{band}.freq"));
+            let g = f(&format!("input.{ch}/eq/{band}.gain"));
+            if (125.0..=500.0).contains(&fr) && g < 0.0 {
+                cut += -g;
+            }
+        }
+        let fader = -12.0 - f(&format!("input.{ch}/fader"));
+        (
+            cut >= 2.5 || fader >= 3.0,
+            format!("250 Hz cut {cut:.1} dB, fader {:+.1}", -fader),
+        )
+    };
+    let (k8, d8) = keys(8);
+    let (k9, d9) = keys(9);
+    vec![
+        (
+            "vocal buried (-8 dB)",
+            f("input.13/fader") >= -10.0 + 2.5,
+            format!("vox fader {:+.1}", f("input.13/fader")),
+        ),
+        (
+            "vocal not compressed",
+            b("input.13/dyn/on"),
+            format!("vox comp on {}", b("input.13/dyn/on")),
+        ),
+        (
+            "bass too loud (+6 dB)",
+            f("input.7/fader") <= 1.0 - 2.5,
+            format!("bass fader {:+.1}", f("input.7/fader")),
+        ),
+        (
+            "keys +8 dB at 250 Hz",
+            k8 && k9,
+            format!("KEYS L {d8}; KEYS R {d9}"),
+        ),
+        (
+            "guitar HPF off",
+            b("input.10/filter/lowcut.on"),
+            format!("gtr low cut {}", b("input.10/filter/lowcut.on")),
+        ),
+        (
+            "hats too loud (+8 dB)",
+            f("input.3/fader") <= -6.0 - 2.5,
+            format!("hat fader {:+.1}", f("input.3/fader")),
+        ),
+        (
+            "snare too quiet (-6 dB)",
+            f("input.2/fader") >= -12.0 + 2.0,
+            format!("snare fader {:+.1}", f("input.2/fader")),
+        ),
+        (
+            "overheads panned centre",
+            f("input.5/pan") <= -20.0 && f("input.6/pan") >= 20.0,
+            format!(
+                "OH pans {:+.0} / {:+.0}",
+                f("input.5/pan"),
+                f("input.6/pan")
+            ),
+        ),
+    ]
+}
+
+/// Seed-7 faults the closed loop does not undo yet (M036 log): the keys' +8 dB at 250 Hz moves the Other stem's
+/// low-mid by ~3 dB inside the reference's ~20 dB window spread, and the snare's -6 dB shows only as Drums-stem tonal
+/// deficits that the power-summed kit already reads on the matched mix (-3..-6 dB).
+const NOT_YET_ADDRESSED: [&str; 2] = ["keys +8 dB at 250 Hz", "snare too quiet (-6 dB)"];
+
 /// Full run: converge on the degraded fixture, then keep running on the (stationary) input: no further moves, no
 /// hunting.
 fn converge(seed_label: &str, max_s: f64) -> Rig {
     let fx = fixture();
     let mut r = rig(&fx.pair.degraded, config(Mode::Autopilot));
+    // the operator accepts the conditional suggestions (compressor switch-ons are `revive:` confirmations)
+    r.auto_confirm = true;
     let done = r.run_until(max_s, holding);
     let batches = r.ctl.records().len();
     r.run(4.0 * SECONDS);
     r.print_report(seed_label);
+    if std::env::var("M036_VERBOSE").is_ok() {
+        // the end state, rendered offline and diagnosed as the planner sees it
+        let kb = KnowledgeBase::embedded();
+        let m = common::Measured::of(&common::render(&r.sim));
+        let taps = m.strip_taps(kb);
+        let cfg = PlanConfig::from_kb(kb);
+        let d = mix_engine::diagnosis::diagnose(
+            &mix_engine::diagnosis::DiagnosisInput::new(m.main_features(), &fx.target)
+                .with_strips(&taps),
+            kb,
+            &cfg.diagnosis,
+        )
+        .unwrap();
+        common::print_diagnosis("end state", &d);
+    }
     assert!(done, "never settled in {max_s} s");
     assert_eq!(r.ctl.records().len(), batches, "moved again while holding");
     r
@@ -169,6 +263,21 @@ fn autopilot_converges_on_degraded_fixture() {
         r.ctl.records().len()
     );
     assert_no_hunting(&r);
+    // M036: within the safety limits, no false feedback trips, the ground-truth faults addressed
+    let status = ground_truth_status(&r);
+    for (fault, ok, detail) in &status {
+        eprintln!(
+            "  ground truth {fault:<26} {} ({detail})",
+            if *ok { "addressed" } else { "MISSED" }
+        );
+    }
+    assert_eq!(r.safety_refusals(), 0, "safety refusals");
+    assert_eq!(r.feedback_trips(), 0, "feedback guard tripped on music");
+    let missed: Vec<_> = status
+        .iter()
+        .filter(|s| !s.1 && !NOT_YET_ADDRESSED.contains(&s.0))
+        .collect();
+    assert!(missed.is_empty(), "missed ground truth: {missed:?}");
     // the ground truth is undone in the right direction
     let f = |p: &str| value(&r, p).as_f64().unwrap();
     assert!(
@@ -536,10 +645,24 @@ fn conditional_moves_wait_for_confirmation() {
     // bass too loud and vocal buried: fader work only
     let scene = partly_degraded(&["input.7/fader", "input.13/fader"]);
     let mut r = rig_with(&scene, c, policy);
-    let asked = r.run_until(30.0, |r| !r.ctl.pending().is_empty() && !r.ctl.is_busy());
+    let asked = r.run_until(30.0, |r| {
+        r.ctl
+            .pending()
+            .iter()
+            .any(|p| p.key == "test-confirm-faders")
+            && !r.ctl.is_busy()
+    });
     r.print_report("pending confirmations");
     assert!(asked, "nothing pending");
-    let key = r.ctl.pending()[0].key.clone();
+    // (M036: compressor switch-ons wait too, under their `revive:` key)
+    let key = r
+        .ctl
+        .pending()
+        .iter()
+        .find(|p| p.key == "test-confirm-faders")
+        .expect("fader confirmation pending")
+        .key
+        .clone();
     assert!(
         r.count(|e| matches!(e, ControlEvent::ConfirmationNeeded { key: k, .. } if *k == key)) == 1
     );

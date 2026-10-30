@@ -49,14 +49,42 @@ bands, and trips when all hold over the window:
 - prominence rose >= 9 dB over the window (span >= 1.5 s);
 - the rise is **gradual**: no frame-to-frame step steeper than 15 dB/s (+1 dB), and >= 80% of steps do not fall.
 
+M036 (music vs feedback; M033 saw the guard trip on mix-sim's synthetic song at 200 Hz-1 kHz within 20-40 s), all
+must also hold:
+
+- the band is within `relative_floor_db` (30 dB) of the frame's loudest band;
+- the band's **own level** rose by at least `level_rise_share` (0.6) of the prominence rise, with >= 80 % of its
+  steps not falling (music gains prominence when the neighbouring bands fall away; feedback grows);
+- it is **still rising**: +`recent_rise_db` (1.5 dB) or more over the last `recent_s` (1 s) (a swelled note
+  plateaus; feedback keeps building);
+- **no harmonic partner** (`reject_harmonic`): no other band at 1/3, 1/2, 2, 3 or 4 times its frequency
+  (third-octave offsets -5, -3, +3, +5, +6) is itself narrowband (>= the suspect prominence) within 25 dB of its
+  level. A note has partials; incipient feedback is a sine.
+
 A note onset is a step (rejected), a mix swelling overall has no prominence, a held tone has no rise. A slow
 single-note swell of a pure tone can look like feedback: that error is on the safe side (STOP + revert, `resume` to
 continue). At half the thresholds the state is **suspect**: coupled boosts are held, nothing else changes.
+Validation (`crates/mix-engine/tests/feedback_music.rs`): 0 trips on the synthetic song (reference and degraded,
+40 s each) and on all 35 played sections of the three matched songs as recorded at FOH (785 s; the M041 detector
+tripped 5 times there and on the synthetic song); the loop harness runs with the guard on; every M041 trip test
+(`sim_feedback`, `guards`, unit tests) passes unchanged.
 
 On a trip the actuator: emits `ActuatorEvent::Safety{trip, reverted}`, STOPs (queue dropped, running move ends in
 place), and if the last completed or running move finished within `revert_window_s` (20 s) ramps it back at
 `restore_speed` (undo; params the engineer moved since are left alone). The latch (and the spectrum history) clear on
 `resume`. A hold of every boost stays in force until then.
+
+## Planning within the limits (M036)
+
+The planner (`mix_engine::plan`, `PlanConfig::safety`, default `SafetyConfig::default()`) plans every gain increase
+within these limits instead of proposing moves the gate refuses: a param's total planned value stays under
+`SafetyConfig::session_raise_to` (session baseline + per-session limit, fader ceiling; the controller tracks the
+baseline as the value before its first change), a move whose boost exceeds `move_limit_db` is split into
+consecutive moves labelled `(k/n)`, remit envelopes are clamped from the session baseline exactly as the gate
+measures them (max boost/cut on every dB param, octaves on Hz/Q/ms/s/ratio params), and no move has more changes
+than the actuator's `max_batch`. When a source is too quiet and its faders are at the limit, the planner offers
+cutting the loudest other strips instead. What the plan cannot know stays a runtime refusal: holds (feedback,
+mains ceiling, stall) and discrete changes on an audible strip (model switches wait for live meters).
 
 ## Connection loss
 

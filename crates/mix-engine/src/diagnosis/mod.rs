@@ -190,6 +190,10 @@ pub struct DiagnosisConfig {
     /// opportunities rather than deviations from the target (a reference with an ungated sparse tom has them too),
     /// so plain diagnosis leaves them out; the planner and the closed loop turn them on.
     pub gate_opportunities: bool,
+    /// Report compression opportunities (M036): strips whose source has a high-confidence dynamics.toml
+    /// compressor preset, as `TooDynamic` problems without a measurement (feature `gr_db`); the planner counts
+    /// them while the strip's compressor is off. Off in plain diagnosis (a console fact, not a mix deviation).
+    pub comp_opportunities: bool,
 }
 
 impl Default for DiagnosisConfig {
@@ -204,6 +208,7 @@ impl Default for DiagnosisConfig {
             intent_tolerance: 0.5,
             stem_sum_tolerance_lu: 1.0,
             gate_opportunities: false,
+            comp_opportunities: false,
         }
     }
 }

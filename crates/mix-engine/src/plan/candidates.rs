@@ -30,6 +30,13 @@ use super::state::{BandKind, BandSlot, ConsoleState, DynSlot, StripSettings, DEE
 use crate::diagnosis::stem_masking::stem_of;
 use crate::diagnosis::{Problem, ProblemKind, Subject};
 
+/// Smallest share of a tonal problem's band a strip must carry for its fader to be offered instead of EQ.
+const MIN_FADER_SHARE: f64 = 0.3;
+
+/// Smallest predicted mean gain reduction (dB) of a compressor switched on (M036: one that would not act does
+/// not answer a compression opportunity).
+const MIN_COMP_GR_DB: f64 = 0.5;
+
 /// Workflow phases (workflow.toml `[[phase]]` ids, in order).
 pub const PHASES: [&str; 9] = [
     "gain_staging",
@@ -91,6 +98,8 @@ pub struct Gen<'a> {
     pub source_of: &'a dyn Fn(&StripId) -> Option<String>,
     /// Stems the target has.
     pub stems: &'a [StemKind],
+    /// Highest value a gain param may be raised to in this plan (safety limits, M036); `None` = unlimited.
+    pub raise_to: &'a dyn Fn(&ParamId) -> Option<f64>,
 }
 
 fn pid(s: &StripId, rest: &str) -> ParamId {
@@ -106,6 +115,18 @@ fn centre_band(lo: f32, hi: f32) -> Vec<usize> {
     (0..N_ERB).filter(|&b| c[b] >= lo && c[b] < hi).collect()
 }
 
+/// Insert a makeup change before the `on` switch (the makeup param was already at the wanted value's
+/// neighbour and `change` skipped it).
+fn push_makeup(g: &Gen<'_>, s: &StripId, changes: &mut Vec<ParamChange>, makeup: f64) {
+    if let Some(c) = g.change(pid(s, "dyn/makeup"), fv(makeup)) {
+        let at = changes
+            .iter()
+            .position(|c| c.param.leaf() == "on")
+            .unwrap_or(changes.len());
+        changes.insert(at, c);
+    }
+}
+
 /// Q in the middle of an eq.toml q class.
 fn q_of(kb: &KnowledgeBase, class: &str) -> f64 {
     kb.eq.q_class.get(class).map_or(1.0, |q| q.q.geo_mid())
@@ -117,6 +138,22 @@ fn eq_phase(boost: bool) -> usize {
         5
     } else {
         3
+    }
+}
+
+impl Candidate {
+    /// A candidate with this one's phase, strip, problem, rules and reasoning (changes, label and cost to fill).
+    fn clone_meta(&self) -> Candidate {
+        Candidate {
+            phase: self.phase,
+            strip: self.strip.clone(),
+            label: String::new(),
+            changes: Vec::new(),
+            problem: self.problem.clone(),
+            rules: self.rules.clone(),
+            why: self.why.clone(),
+            cost: 0.0,
+        }
     }
 }
 
@@ -145,6 +182,15 @@ impl Gen<'_> {
         })
     }
 
+    /// Makeup (dB) that keeps strip `s` at its current predicted loudness after `changes`.
+    fn makeup_for(&self, s: &StripId, changes: &[ParamChange]) -> Option<f64> {
+        let cur = self.model.strip_level_db(s, &self.settings(s))?;
+        let mut st = self.state.clone();
+        st.apply(changes);
+        let new = self.model.strip_level_db(s, &st.settings(s))?;
+        Some(cur - new)
+    }
+
     fn kind(&self, s: &StripId) -> StripKind {
         self.state
             .strip(s)
@@ -170,7 +216,12 @@ impl Gen<'_> {
         if cur <= -100.0 || st.mute {
             return None;
         }
-        let d = delta.clamp(-self.cfg.max_fader_step_db, self.cfg.max_fader_step_db);
+        let mut d = delta.clamp(-self.cfg.max_fader_step_db, self.cfg.max_fader_step_db);
+        if d > 0.0 {
+            if let Some(cap) = (self.raise_to)(&pid(s, "fader")) {
+                d = d.min(cap - cur);
+            }
+        }
         if d.abs() < 0.25 {
             return None;
         }
@@ -469,11 +520,6 @@ impl Gen<'_> {
                     auto: false,
                 };
                 let gr = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&probe, l) / 20.0));
-                let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
-                    -gr
-                } else {
-                    0.0
-                };
                 let mut changes = Vec::new();
                 let mut push = |id: &str, v: Value| {
                     if let Some(c) = self.change(pid(s, id), v) {
@@ -482,7 +528,10 @@ impl Gen<'_> {
                 };
                 push("dyn/threshold", fv(thr));
                 push("dyn/ratio", fv(ratio));
-                push("dyn/knee", fv(knee));
+                // the knee only when the batch has room (the actuator takes 8 changes; the detector comes first)
+                if pr.detector.is_none() {
+                    push("dyn/knee", fv(knee));
+                }
                 push("dyn/attack", fv(pr.attack_ms.mid()));
                 push("dyn/release", fv(pr.release_ms.mid()));
                 // the preset's times only apply with WING AUTO off
@@ -490,10 +539,31 @@ impl Gen<'_> {
                 if let Some(det) = &pr.detector {
                     push("dyn/detector", Value::Enum(det.to_uppercase()));
                 }
-                push("dyn/makeup", fv(makeup));
+                push("dyn/makeup", fv(0.0));
                 push("dyn/on", Value::Bool(true));
                 if !changes.iter().any(|c| c.param.leaf() == "on") {
                     continue;
+                }
+                // loudness-match makeup (dynamics.toml rule makeup_after_change) from the effect model's
+                // prediction of the strip (M036: the proxy's gain reduction; the static curve under-reads it),
+                // static curve as the fallback
+                // the level the compressor takes off (predicted); a compressor that would not act is no move
+                let gr_pred = self.makeup_for(s, &changes).unwrap_or(-gr);
+                if gr_pred < MIN_COMP_GR_DB {
+                    continue;
+                }
+                let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
+                    gr_pred.clamp(0.0, 12.0)
+                } else {
+                    0.0
+                };
+                if let Some(c) = changes.iter_mut().find(|c| c.param.leaf() == "makeup") {
+                    c.to = self
+                        .state
+                        .coerce(&c.param, fv(makeup))
+                        .unwrap_or(fv(makeup));
+                } else if makeup.abs() > 0.05 {
+                    push_makeup(self, s, &mut changes, makeup);
                 }
                 let n = changes.len();
                 out.push(Candidate {
@@ -878,6 +948,70 @@ impl Gen<'_> {
 
     fn level(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
         let members = self.members(p);
+        // M036: a source too quiet whose faders are at their safety limit is raised by cutting everything else
+        if dev < -0.5 {
+            let room = members
+                .iter()
+                .filter_map(|s| {
+                    let cur = self.settings(s).fader_db?;
+                    let cap = (self.raise_to)(&pid(s, "fader"))?;
+                    Some(cap - cur)
+                })
+                .fold(f64::INFINITY, f64::min);
+            let short = -dev - room.max(0.0);
+            if room.is_finite() && short > 0.5 {
+                let d = -short.min(self.cfg.max_fader_step_db);
+                let mut changes = Vec::new();
+                // the loudest others (one actuator batch: at most 8 changes)
+                let others: Vec<StripId> = self
+                    .model
+                    .strips
+                    .iter()
+                    .filter(|o| {
+                        !o.tap.fx_return
+                            && !members.contains(&o.tap.strip)
+                            && self.kind(&o.tap.strip) != StripKind::Main
+                    })
+                    .map(|o| o.tap.strip.clone())
+                    .collect();
+                let all: Vec<usize> = (0..N_ERB).collect();
+                let loud: Vec<StripId> = self
+                    .ranked(&others, &all)
+                    .into_iter()
+                    .take(8)
+                    .map(|x| x.0)
+                    .collect();
+                for o in &self.model.strips {
+                    let s = &o.tap.strip;
+                    if !loud.contains(s) {
+                        continue;
+                    }
+                    let st = self.settings(s);
+                    let Some(cur) = st.fader_db.filter(|&c| c > -100.0 && !st.mute) else {
+                        continue;
+                    };
+                    changes.extend(self.change(pid(s, "fader"), fv(cur + d)));
+                }
+                if !changes.is_empty() {
+                    out.push(Candidate {
+                        phase: 6,
+                        strip: changes[0].param.strip().unwrap_or_else(|| members[0].clone()),
+                        label: format!(
+                            "loudest others than {} faders {d:+.1} dB",
+                            p.scope.subject.label()
+                        ),
+                        changes,
+                        problem: p.id.clone(),
+                        rules: p.rules.clone(),
+                        why: format!(
+                            "{}: too quiet ({dev:+.1} LU) with its fader(s) at the safety boost limit: cut the rest instead",
+                            p.scope.subject.label()
+                        ),
+                        cost: 1.5 * (d.abs() / 3.0 + 0.1),
+                    });
+                }
+            }
+        }
         let why = format!(
             "{}: move the level towards target ({:+.1} LU off)",
             p.scope.subject.label(),
@@ -1004,14 +1138,17 @@ impl Gen<'_> {
             if dev > 0.0 && band.hi_hz <= 300.0 {
                 out.extend(self.lowcut(s, p, &why));
             }
-            // balance alternative: the strip's fader (changes more than the band)
-            out.extend(self.fader(
-                s,
-                need.clamp(-3.0, 3.0),
-                p,
-                &format!("{why} (level instead of EQ)"),
-                1.5,
-            ));
+            // balance alternative: the strip's fader (changes more than the band), only for a strip that carries a
+            // real share of the band (M036: a 17 % contributor's fader moves the rest of its spectrum far more)
+            if *share >= MIN_FADER_SHARE {
+                out.extend(self.fader(
+                    s,
+                    need.clamp(-3.0, 3.0),
+                    p,
+                    &format!("{why} (level instead of EQ)"),
+                    1.5,
+                ));
+            }
         }
     }
 
@@ -1062,30 +1199,53 @@ impl Gen<'_> {
     }
 
     fn width(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
-        let narrower = dev < 0.0;
-        let why = if narrower {
+        // a strip placement problem (diagnosis `pan_pct`, M036) always asks for the pair to be spread
+        let placement = p.evidence.feature == "pan_pct";
+        let narrower = dev < 0.0 || placement;
+        let why = if placement {
+            "stereo pair panned in: place it where sources.toml spreads the pair"
+        } else if narrower {
             "mix narrower than target: spread sources that sources.toml places wide"
         } else {
             "mix wider than target: pull wide sources in"
         };
         let mut seen = BTreeSet::new();
+        let only = match &p.scope.subject {
+            Subject::Strip { strip, .. } => Some(strip.clone()),
+            _ => None,
+        };
         for o in &self.model.strips {
             let s = &o.tap.strip;
-            let Some(cur) = o.settings.pan else { continue };
-            let Some(src) = (self.source_of)(s).and_then(|id| self.kb.source(&id).cloned()) else {
+            if only.as_ref().is_some_and(|x| x != s) {
                 continue;
+            }
+            let Some(cur) = o.settings.pan else { continue };
+            // kb spread of the source; a pair on adjacent channels of one name is a stereo source (M036: playback
+            // tracks, keys) whatever its type
+            let src = (self.source_of)(s).and_then(|id| self.kb.source(&id).cloned());
+            let wide = match (&src, self.adjacent_pair_side(o)) {
+                (Some(src), _) => src.pan_pct.hi().abs().max(src.pan_pct.lo().abs()),
+                (None, Some(_)) => 70.0,
+                (None, None) => continue,
             };
-            let wide = src.pan_pct.hi().abs().max(src.pan_pct.lo().abs());
+            let wide = if self.adjacent_pair_side(o).is_some() {
+                wide.max(70.0)
+            } else {
+                wide
+            };
             if wide < 20.0 || !seen.insert(s.clone()) {
                 continue;
             }
             if narrower {
-                // side from the name (L/R) or the current position; pairs use the kb spread
+                // side from the name (L/R), an adjacent channel of the same name (a stereo pair on two channels:
+                // the lower one left; M036), or the current position; pairs use the kb spread
                 let name = o.tap.name.to_uppercase();
                 let sign = if name.ends_with(" L") || name.ends_with("L") && name.len() <= 2 {
                     -1.0
                 } else if name.ends_with(" R") {
                     1.0
+                } else if let Some(side) = self.adjacent_pair_side(o) {
+                    side
                 } else if cur.abs() > 1.0 {
                     cur.signum()
                 } else {
@@ -1098,10 +1258,106 @@ impl Gen<'_> {
                 for t in [target, cur + (target - cur) * 0.5] {
                     out.extend(self.pan(s, t, p, why, 1.0));
                 }
+                // M036: a stereo pair is spread together (one side alone tips the L/R balance)
+                if let Some(partner) = self.pair_partner(o) {
+                    let pc = partner.settings.pan.unwrap_or(0.0);
+                    for t in [target, cur + (target - cur) * 0.5] {
+                        let (Some(a), Some(b)) = (
+                            self.pan(s, t, p, why, 1.0),
+                            self.pan(&partner.tap.strip, -t, p, why, 1.0),
+                        ) else {
+                            continue;
+                        };
+                        if (pc + t).abs() < 5.0 {
+                            continue;
+                        }
+                        let meta = a.clone_meta();
+                        let mut changes = a.changes;
+                        changes.extend(b.changes);
+                        out.push(Candidate {
+                            label: format!(
+                                "{s} + {} pans {:+.0} / {:+.0}",
+                                partner.tap.strip, t, -t
+                            ),
+                            changes,
+                            cost: a.cost + b.cost * 0.5,
+                            ..meta
+                        });
+                    }
+                }
             } else if cur.abs() > 20.0 {
                 out.extend(self.pan(s, cur * 0.6, p, why, 1.0));
             }
         }
+    }
+
+    /// The other strip of a stereo pair (`OH L`/`OH R` names, or adjacent channels of one name).
+    fn pair_partner(&self, o: &super::predict::StripObs) -> Option<&super::predict::StripObs> {
+        let name = o.tap.name.trim().to_uppercase();
+        let i = o.tap.strip.index()?;
+        let kind = o.tap.strip.kind_name();
+        let stem = |n: &str| {
+            n.strip_suffix(" L")
+                .or_else(|| n.strip_suffix(" R"))
+                .map(str::to_string)
+        };
+        self.model
+            .strips
+            .iter()
+            .find(|x| {
+                let Some(j) = x.tap.strip.index() else {
+                    return false;
+                };
+                if x.tap.strip.kind_name() != kind || j == i {
+                    return false;
+                }
+                let xn = x.tap.name.trim().to_uppercase();
+                match (stem(&name), stem(&xn)) {
+                    (Some(a), Some(b)) => a == b && xn != name,
+                    _ => false,
+                }
+            })
+            .or_else(|| self.adjacent_partner(o))
+    }
+
+    /// Side of a strip that has a neighbouring channel of the same kind with the same (non-empty) name: -1 for
+    /// the lower channel, +1 for the higher one.
+    fn adjacent_pair_side(&self, o: &super::predict::StripObs) -> Option<f64> {
+        let partner = self.adjacent_partner(o)?;
+        let (i, j) = (o.tap.strip.index()?, partner.tap.strip.index()?);
+        Some(if j > i { -1.0 } else { 1.0 })
+    }
+
+    /// The neighbouring channel (same strip kind) that forms a stereo pair with `o`: the same non-empty name, or
+    /// (both unnamed) the same identified source type (consoles patch stereo sources on adjacent channels).
+    /// Channels are paired odd-even from the lower one, so a run of three same-named channels is not ambiguous.
+    fn adjacent_partner(&self, o: &super::predict::StripObs) -> Option<&super::predict::StripObs> {
+        let i = o.tap.strip.index()?;
+        let kind = o.tap.strip.kind_name();
+        let name = o.tap.name.trim();
+        let src = (self.source_of)(&o.tap.strip);
+        let same = |x: &super::predict::StripObs| {
+            let xn = x.tap.name.trim();
+            x.tap.strip.kind_name() == kind
+                && if name.is_empty() && xn.is_empty() {
+                    src.is_some() && (self.source_of)(&x.tap.strip) == src
+                } else {
+                    xn.eq_ignore_ascii_case(name)
+                }
+        };
+        let at = |j: u32| {
+            self.model
+                .strips
+                .iter()
+                .find(|x| x.tap.strip.index() == Some(j) && same(x))
+        };
+        // pair (n, n+1) where n is the first of a run of same channels, counted in twos
+        let mut first = i;
+        while first > 1 && at(first - 1).is_some() {
+            first -= 1;
+        }
+        let partner = if (i - first) % 2 == 0 { i + 1 } else { i - 1 };
+        at(partner)
     }
 
     fn dynamics(&self, p: &Problem, out: &mut Vec<Candidate>) {
