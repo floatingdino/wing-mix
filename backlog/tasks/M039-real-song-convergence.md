@@ -2,10 +2,10 @@
 id: M039
 title: Real-song convergence: width, tonal shape, subtle-fault detection
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M039
 depends: [M036, M061]
-branch: -
+branch: task/M039
 model: opus
 ---
 

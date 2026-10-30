@@ -148,7 +148,13 @@ user copy and never edits the shipped default. Top-level keys:
   - `kinds`, `roles`, `classes`, `params` (ParamId globs), `tags_any`, `tags_none`;
   - `dest_kinds`, `dest_roles`: only send params can match these;
   - `fx_free`: a free slot has no hosts;
-  - `fx_host_kinds`, `fx_host_roles`: the slot needs at least one host, and *all* hosts must match.
+  - `fx_host_kinds`, `fx_host_roles`: the slot needs at least one host, and *all* hosts must match;
+  - `stereo_pair` (M039): `true` matches a strip in a detected or user-confirmed stereo pair (`RemitStrip.pair`;
+    detection by name in `mix_surface::remit::pairs`: `OH L`/`OH R`, or two adjacent channels of the same name,
+    lower = left), and for a pan write only when the requested value lies on the strip's own side (centre
+    included; a pan write without a value does not match); `false` matches strips that are not paired. The
+    default policy's `input-pair-spread` (priority 1) gives pair pans `max_delta_pct = 100` (full L/R on their own
+    side) while mono sources and moves across the centre keep `input-level-pan`'s +-50.
 - **Effects:**
   - `class` (required);
   - `priority` (integer, default 0);
@@ -403,7 +409,7 @@ outside the mix, or cannot be undone by the assistant's own journal.
 
 | target | allowed | conditional | forbidden |
 |---|---|---|---|
-| input/aux, role foh | trim/balance (+-6 dB); filter/EQ/dyn/key filter (boost <= 6, cut <= 12 dB, <= 2 oct); inserts; fader/pan/width (+-10 dB); sends to FOH buses; main send level | preamp gain (`AI` tag unlocks); polarity, input delay; models; key source/tap; mute; processing order; main assignment | send tap/mode, pan link, tap point, tap width, automix |
+| input/aux, role foh | trim/balance (+-6 dB); filter/EQ/dyn/key filter (boost <= 6, cut <= 12 dB, <= 2 oct); inserts; fader/pan/width (+-10 dB, pan +-50; stereo-pair sides to full L/R on their own side, M039); sends to FOH buses; main send level | preamp gain (`AI` tag unlocks); polarity, input delay; models; key source/tap; mute; processing order; main assignment | send tap/mode, pan link, tap point, tap width, automix |
 | bus, role foh_group/fx | trim, tone, inserts (+-6 dB); fader/pan/width; send levels to FOH buses and main | polarity, models, key routing, mono, mute; send assignment | to matrices (locked) |
 | main, role main | none | processing, pan/width, fader (+-3 dB, `AI` tag unlocks); models, insert slot | mute (hard) |
 | dca | none | fader (+-6 dB) | mute |

@@ -112,7 +112,8 @@ floor_db = -90.0
 # ---------------------------------------------------------------------------------------------------------------
 # Rules. Selectors (all optional, AND-ed; lists are OR-ed): kinds, roles, classes, params (ParamId globs),
 # dest_kinds, dest_roles (send params), fx_free, fx_host_kinds, fx_host_roles (fx slots: ALL hosts must match),
-# tags_any, tags_none. Effects: class (required), priority (default 0), unlock_tags, envelope, discrete, note.
+# tags_any, tags_none, stereo_pair (member of a detected/confirmed stereo pair; for pan writes the value must lie on
+# the strip's own side, M039). Effects: class (required), priority (default 0), unlock_tags, envelope, discrete, note.
 # Envelope keys are relative to the session baseline value (M041 enforces): max_delta_db, max_boost_db,
 # max_cut_db, max_delta_oct, max_delta_pct.
 
@@ -183,6 +184,17 @@ roles = ["foh"]
 classes = ["fader", "pan", "width"]
 class = "allowed"
 envelope = { max_delta_db = 10.0, max_delta_pct = 50.0 }
+
+[[rule]]
+id = "input-pair-spread"
+kinds = ["input", "aux"]
+roles = ["foh"]
+classes = ["pan"]
+stereo_pair = true
+class = "allowed"
+priority = 1
+envelope = { max_delta_pct = 100.0 }
+note = "M039: one side of a detected/confirmed stereo pair (OH L/R, KEYS L/R, TX/TX) may spread to full L/R on its own side; crossing the centre and every mono source keep input-level-pan's +-50. The planner moves both sides together (symmetric spread)."
 
 [[rule]]
 id = "input-mute"

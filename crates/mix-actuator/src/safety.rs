@@ -870,7 +870,8 @@ impl SafetyGate {
                 {
                     (to / base).log2()
                 }
-                Unit::Percent => to - base,
+                // M039: pan positions are envelope-limited too (`max_delta_pct`; stereo pairs get a wider one)
+                Unit::Percent | Unit::Pan => to - base,
                 _ => return None,
             };
             // A move that brings the param back toward its baseline never breaks an envelope.
@@ -879,7 +880,7 @@ impl SafetyGate {
             }
             let (unit, lim_abs, lim_up, lim_down) = match spec.unit {
                 Unit::Db => ("dB", env.max_delta_db, env.max_boost_db, env.max_cut_db),
-                Unit::Percent => ("%", env.max_delta_pct, None, None),
+                Unit::Percent | Unit::Pan => ("%", env.max_delta_pct, None, None),
                 _ => ("oct", env.max_delta_oct, None, None),
             };
             let eps = 1e-9;

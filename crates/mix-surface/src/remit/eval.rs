@@ -10,6 +10,7 @@
 //! 8. revive cap.
 
 use super::glob::glob_match;
+use super::pairs::{detect_topology_pairs, StereoPair};
 use super::policy::{Envelope, Policy, Rule, Verdict};
 use crate::model::{Block, ParamClass, Role, StripKind, Topology};
 use crate::surface::Capabilities;
@@ -108,6 +109,8 @@ pub struct RemitStrip {
     pub hosts: Vec<(StripId, Block)>,
     /// The strip's output reaches a protected mix by re-input after all of its processing.
     pub feeds_protected: bool,
+    /// Member of a detected or user-confirmed stereo pair (M039; rules select it with `stereo_pair`).
+    pub pair: Option<StereoPair>,
 }
 
 impl RemitStrip {
@@ -121,6 +124,7 @@ impl RemitStrip {
             sends: Vec::new(),
             hosts: Vec::new(),
             feeds_protected: false,
+            pair: None,
         }
     }
 
@@ -190,6 +194,7 @@ impl RemitContext {
                 }
             }
         }
+        let pairs = detect_topology_pairs(topo);
         let mut ctx = RemitContext {
             strips: BTreeMap::new(),
             solo_destructive,
@@ -218,9 +223,46 @@ impl RemitContext {
                     Vec::new()
                 },
                 feeds_protected: feeds_protected.contains(&s.id),
+                pair: pairs.get(&s.id).cloned(),
             });
         }
         ctx
+    }
+
+    /// Record a user-confirmed stereo pair (`left` carries the left side). Replaces any detected pairing of
+    /// either strip (and unpairs their former partners). Unknown strips are ignored.
+    pub fn confirm_pair(&mut self, left: &StripId, right: &StripId) {
+        if left == right || self.get(left).is_none() || self.get(right).is_none() {
+            return;
+        }
+        for id in [left, right] {
+            if let Some(old) = self.strips.get_mut(id).and_then(|s| s.pair.take()) {
+                if let Some(o) = self.strips.get_mut(&old.partner) {
+                    o.pair = None;
+                }
+            }
+        }
+        use super::pairs::PairSide;
+        for (a, b, side) in [
+            (left, right, PairSide::Left),
+            (right, left, PairSide::Right),
+        ] {
+            if let Some(s) = self.strips.get_mut(a) {
+                s.pair = Some(StereoPair {
+                    partner: b.clone(),
+                    side,
+                });
+            }
+        }
+    }
+
+    /// Remove a strip from its stereo pair (user says it is a mono source); its partner becomes mono too.
+    pub fn unpair(&mut self, id: &StripId) {
+        if let Some(old) = self.strips.get_mut(id).and_then(|s| s.pair.take()) {
+            if let Some(o) = self.strips.get_mut(&old.partner) {
+                o.pair = None;
+            }
+        }
     }
 }
 
@@ -456,7 +498,7 @@ pub fn evaluate(
     let matching: Vec<&Rule> = policy
         .rules
         .iter()
-        .filter(|r| rule_matches(r, strip, dest, &hosts, param, class))
+        .filter(|r| rule_matches(r, strip, dest, &hosts, req))
         .collect();
     let Some(top) = matching.iter().map(|r| r.priority).max() else {
         return Decision::deny(
@@ -542,9 +584,9 @@ fn rule_matches(
     strip: &RemitStrip,
     dest: Option<&RemitStrip>,
     hosts: &[&RemitStrip],
-    param: &ParamId,
-    class: ParamClass,
+    req: &WriteRequest,
 ) -> bool {
+    let (param, class) = (&req.param, req.class);
     fn ok<T: PartialEq>(sel: &Option<Vec<T>>, v: &T) -> bool {
         sel.as_ref().is_none_or(|l| l.contains(v))
     }
@@ -565,6 +607,24 @@ fn rule_matches(
             || (!hosts.is_empty() && hosts.iter().all(|h| ok(&r.fx_host_kinds, &h.kind))))
         && (r.fx_host_roles.is_none()
             || (!hosts.is_empty() && hosts.iter().all(|h| ok(&r.fx_host_roles, &h.role))))
+        && r.stereo_pair
+            .is_none_or(|want| stereo_pair_matches(strip, req) == want)
+}
+
+/// `stereo_pair = true` selector (M039): the strip is a member of a stereo pair and, for a pan write, the requested
+/// value lies on the strip's own side (centre included). A pan write without a value cannot be checked and does
+/// not match (fail safe: the mono envelope applies).
+fn stereo_pair_matches(strip: &RemitStrip, req: &WriteRequest) -> bool {
+    let Some(pair) = &strip.pair else {
+        return false;
+    };
+    if req.class != ParamClass::Pan {
+        return true;
+    }
+    req.to
+        .as_ref()
+        .and_then(Value::as_f64)
+        .is_some_and(|v| pair.on_own_side(v))
 }
 
 /// Protected destination for coupling: a locked role, or an unconfirmed one (fail safe), or not in the context.
