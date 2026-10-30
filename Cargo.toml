@@ -38,6 +38,9 @@ cpal = "0.15"
 hound = "3"
 realfft = "3.5"
 ebur128 = "0.1.11"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "pcm", "flac", "mp3", "isomp4", "aac", "alac"] }
+rubato = "5"
+blake3 = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # [patch."https://github.com/floatingdino/wing-simulator"]

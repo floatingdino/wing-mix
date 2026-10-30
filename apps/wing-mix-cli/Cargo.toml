@@ -8,3 +8,8 @@ publish.workspace = true
 [dependencies]
 mix-capture = { path = "../../crates/mix-capture" }
 mix-fixtures = { path = "../../crates/mix-fixtures" }
+mix-reference = { path = "../../crates/mix-reference" }
+mix-core = { path = "../../crates/mix-core" }
+
+[dev-dependencies]
+hound = { workspace = true }
