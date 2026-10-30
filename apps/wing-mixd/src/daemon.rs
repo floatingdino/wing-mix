@@ -1230,6 +1230,7 @@ impl Daemon {
         cfg.inspect = o.inspect.unwrap_or(true) && has_solo;
         cfg.strips.sweep = o.sweep.unwrap_or(true);
         cfg.strips.priors = o.priors.unwrap_or(true);
+        cfg.strips.meters = o.meters.unwrap_or(true);
         let names: BTreeMap<StripId, String> = console
             .surface
             .topology()

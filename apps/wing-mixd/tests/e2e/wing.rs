@@ -82,7 +82,8 @@ pub struct Opts {
     pub target: TargetMode,
     /// The scoring target (the same profile the daemon derives, with the live context applied).
     pub score_target: TargetProfile,
-    pub max_batches: u32,
+    /// `None`: the controller's change budget.
+    pub max_batches: Option<u32>,
     pub max_wait: Duration,
     /// Run the STOP / engineer-yield / safety / PANIC drills.
     pub drills: bool,
@@ -91,6 +92,10 @@ pub struct Opts {
     /// M062: route one user signal per strip to USB (per-strip taps); `false`: only main + monitor A (solo), the
     /// one-stereo-stream setup where the daemon measures strips through solo sweeps.
     pub strip_taps: bool,
+    /// M067: the session may solo (inspections + sweeps); `false` = a console without solo (main only).
+    pub solo: bool,
+    /// M067: refine strip estimates with the console meters (`None` = daemon default, on).
+    pub meters: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -129,6 +134,8 @@ pub struct RunResult {
     pub batches: usize,
     pub kept: usize,
     pub hold: String,
+    /// M067: the session's change budget at the end (`session.change_budget`).
+    pub budget: String,
     pub suggested: usize,
     pub suggest_writes: usize,
     pub inspections: usize,
@@ -374,7 +381,8 @@ pub fn run(
     d.req(json!({"cmd": "set_mode", "mode": "suggest"}));
     d.req(
         json!({"cmd": "start", "window_s": dur, "time_scale": dur / 20.0,
-                 "max_batches": o.max_batches, "inspect": true}),
+                 "max_batches": o.max_batches, "inspect": o.solo, "sweep": o.solo,
+                 "meters": o.meters}),
     );
     let (_, sug) = d.expect_event(
         0,
@@ -586,6 +594,7 @@ pub fn run(
         r.curve = (ob(a), ob(b));
         r.daemon_distance = (ds(a), ds(b));
     }
+    r.budget = budget_line(&snap);
     let moves = snap["moves"].as_array().cloned().unwrap_or_default();
     r.batches = moves.len();
     r.kept = moves.iter().filter(|m| m["outcome"] == "kept").count();
@@ -775,4 +784,19 @@ pub fn run(
     r.wall_s = t_wall.elapsed().as_secs_f64();
     drop(d);
     Some(r)
+}
+
+/// M067: `session.change_budget` of a snapshot, one line.
+pub fn budget_line(snap: &Value) -> String {
+    let b = &snap["session"]["change_budget"];
+    let f = |k: &str| b[k].as_f64().unwrap_or(f64::NAN);
+    format!(
+        "net {:.1}/{:.0} dB, {} batches, travel {:.1} dB, rate window now {:.1}/{:.0} dB",
+        f("net_db"),
+        f("max_net_db"),
+        b["batches"],
+        f("travel_db"),
+        f("rate_db"),
+        f("max_db_per_min")
+    )
 }

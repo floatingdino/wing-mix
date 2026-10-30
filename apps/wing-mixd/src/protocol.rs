@@ -290,6 +290,9 @@ pub struct StartOptions {
     pub time_scale: Option<f64>,
     #[serde(default)]
     pub max_batches: Option<u32>,
+    /// M067: refine estimated strips with the console's meters (default true).
+    #[serde(default)]
+    pub meters: Option<bool>,
     /// M067 change budget: weighted net deviation from the session baseline (dB; default 60).
     #[serde(default)]
     pub max_net_db: Option<f64>,

@@ -199,6 +199,7 @@ fn report(title: &str, runs: &[RunResult]) {
                 r.snap_residual.iter().take(8).collect::<Vec<_>>()
             );
         }
+        let _ = writeln!(s, "- change budget: {}", r.budget);
         let _ = writeln!(
             s,
             "- safety: trips {:?}, safety refusals {}; main loudness {:.1} -> {:.1} LUFS; daemon distance {:.3} -> {:.3}",
@@ -455,7 +456,7 @@ fn e2e_sim_synthetic() {
             path: Default::default(),
             section: None,
         },
-        24,
+        None,
         &dir,
     );
     check(&r);
@@ -467,7 +468,7 @@ fn e2e_sim_synthetic() {
             text: DESCRIPTION.into(),
             genre: None,
         },
-        12,
+        None,
         &dir,
     );
     check(&r);
@@ -527,15 +528,15 @@ fn e2e_wing_real() {
     let modes = std::env::var("E2E_MODES").unwrap_or_else(|_| "reference,description".into());
     // M062: `multi` = a user signal per strip on USB (per-strip taps), `solo` = main + monitor A (solo) only
     let tap_sets = std::env::var("E2E_TAPS").unwrap_or_else(|_| "multi".into());
-    let max_batches: u32 = std::env::var("E2E_BATCHES")
+    // M067: no batch cap by default: the controller's change budget (net deviation + pacing) applies
+    let max_batches: Option<u32> = std::env::var("E2E_BATCHES")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+        .and_then(|s| s.parse().ok());
     let max_wait = Duration::from_secs(
         std::env::var("E2E_MAX_WAIT_S")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(900),
+            .unwrap_or(1800),
     );
     let mut runs = Vec::new();
     for id in songs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -559,10 +560,14 @@ fn e2e_wing_real() {
             .map(str::trim)
             .flat_map(|m| tap_sets.split(',').map(move |t| (m, t.trim())))
         {
-            let strip_taps = match taps {
-                "multi" => true,
-                "solo" => false,
-                other => panic!("unknown E2E_TAPS {other} (multi, solo)"),
+            // M067: `main` = main only, no solo (a console without solo; strips from meter-refined priors),
+            // `priors` = the same without the meters
+            let (strip_taps, solo, meters) = match taps {
+                "multi" => (true, true, None),
+                "solo" => (false, true, None),
+                "main" => (false, false, None),
+                "priors" => (false, false, Some(false)),
+                other => panic!("unknown E2E_TAPS {other} (multi, solo, main, priors)"),
             };
             let (target, score_target, drills) = match mode {
                 "reference" => {
@@ -594,10 +599,11 @@ fn e2e_wing_real() {
                 &taps[..1]
             ));
             let o = wing::Opts {
-                name: if strip_taps {
-                    format!("{id} {mode}")
-                } else {
-                    format!("{id} {mode} [main+solo only]")
+                name: match taps {
+                    "multi" => format!("{id} {mode}"),
+                    "solo" => format!("{id} {mode} [main+solo only]"),
+                    "main" => format!("{id} {mode} [main only, no solo, meters]"),
+                    _ => format!("{id} {mode} [main only, no solo, priors only]"),
                 },
                 target,
                 score_target,
@@ -606,6 +612,8 @@ fn e2e_wing_real() {
                 drills,
                 public_scene: true,
                 strip_taps,
+                solo,
+                meters,
             };
             let r = wing::run(&ex, foh, &o, &dir).expect("wing-sim");
             report(
