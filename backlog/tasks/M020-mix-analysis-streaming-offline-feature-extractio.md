@@ -2,7 +2,7 @@
 id: M020
 title: mix-analysis: streaming + offline feature extraction
 stage: S2
-status: review
+status: done
 owner: agent-M020
 depends: [M001, M003]
 branch: task/M020
@@ -54,3 +54,4 @@ Implement Features per docs/research/analysis.md: STFT band energies (1/3-oct + 
   - Masking takes linear ERB powers; spreading in ERB-rate units as specified.
   Proposed follow-ups: tune onset α/δ and masking thresholds on real material/mix-sim fixtures; decimated low-band
   STFT if sub-bass bands prove jittery live; cheaper short-term loudness (running sum) if snapshot cost matters.
+- 2026-10-30 coordinator: merged (Cargo.toml union, lock regenerated), make check passes. Deviations accepted. done.
