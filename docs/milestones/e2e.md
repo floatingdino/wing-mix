@@ -197,3 +197,31 @@ console before starting (it is the ground truth for step 9).
 
 If any step fails: STOP/PANIC, save `<state-dir>/events.jsonl` and `status.json`, and file it against M052's
 follow-ups.
+
+## M062: main + solo only (one stereo stream), 2026-10-31
+
+`E2E_TAPS=solo tools/e2e/run.sh wing` (task/M062): the same runs with only USB 1/2 = main 1 and 3/4 = monitor A
+(solo bus) captured, no user signals. Before M062 the planner returned `exhausted` every window in this setup. Now
+suggest plans from estimated strips (knowledge-base level + prototype spectrum scaled into the main: fader moves,
+main EQ, description level intents through the faders) without writing or soloing, and autopilot measures the
+strips through rate-limited solo sweeps between batches (`strip_measured` events, `snapshot.session.strips`).
+Compared with M052's multichannel table above (same songs, sections, budget of 12 batches):
+
+| run | multichannel (M052) | main + solo only (M062) | sweeps | solo restores (exact) |
+|---|---|---|---|---|
+| I Know That I Know §9, record | 2.616 -> 1.346 (-49 %) | 2.615 -> 1.640 (-37 %) | 30 | 37 (37) |
+| I Know That I Know §9, description | 1.330 -> 1.099 (-17 %) | 1.334 -> 1.042 (-22 %) | 28 | 35 (35) |
+| Holy Forever §7, record | 2.510 -> 1.009 (-60 %) | 2.510 -> 1.471 (-41 %) | 49 | 62 (62) |
+| Holy Forever §7, description | 1.331 -> 0.964 (-28 %) | 1.331 -> 0.991 (-26 %) | 40 | 50 (50) |
+| Show Me Your Face §4, record | 2.251 -> 1.948 (-13 %) | 2.256 -> 2.021 (-10 %) | 31 | 42 (42) |
+| Show Me Your Face §4, description | 2.268 -> 2.163 (-5 %) | 2.267 -> 2.150 (-5 %) | 40 | 45 (45) |
+
+Every run non-empty in suggest (1-5 moves, 0 writes, no solo), every audit green (0 forbidden writes, solo restored
+exactly by the actuator's read-back and as the observer saw it settle before the next solo, end state = start, STOP,
+engineer yield, feedback/ceiling trips, PANIC 0 residual). Description runs match the multichannel ones; record runs
+reach ~70-80 % of the multichannel reduction: the first windows plan on estimates only (mostly the main EQ), the
+strips arrive one sweep at a time (~3 s dwell + 2 s gap, 8/min: 17 eligible strips in ~2.5 min) and each new
+measurement re-plans, and the 12-batch / 120 dB budget ends every run before convergence. The daemon objective
+rises during a run (2.5 -> 3.0) because every newly measured strip adds its strip/stem terms; the main-bus distance
+is the comparable measure. Not re-measured here: the multichannel runs on this branch (M039 changed the planner
+after M052's table).
