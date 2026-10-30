@@ -229,3 +229,49 @@ measurement re-plans, and the 12-batch / 120 dB budget ends every run before con
 rises during a run (2.5 -> 3.0) because every newly measured strip adds its strip/stem terms; the main-bus distance
 is the comparable measure. Not re-measured here: the multichannel runs on this branch (M039 changed the planner
 after M052's table).
+
+## M067: change budget + meter-refined strip estimates, 2026-10-31
+
+`tools/e2e/run.sh wing` with `E2E_TAPS=multi,solo` (and `main,priors` for consoles without solo), 3 songs in parallel
+processes. **Before** = main `cd5c5c4` (12-batch cap, 120 dB travel budget) with one harness fix (below), **after** =
+task/M067 (no batch cap: the controller's change budget, i.e. net deviation <= 60 dB weighted + 24 dB/min pacing).
+
+Harness fix (in both columns): the operator now also confirms the confirmation requests made during the suggest
+phase. They were emitted before the autopilot event cursor and never confirmed, so the plan's conditional moves
+(main EQ, compressors, pair pans) stayed pending and on main the *multichannel* runs held `no_progress` after 0-3
+batches (unfixed main: I Know -42 %, Holy Forever -41 %, Show Me Your Face 0 %; Holy Forever description changed
+nothing and failed its audit).
+
+Reference targets (main-bus distance to the record, start -> end; batches (kept); hold):
+
+| song | multichannel before | main + solo before | multichannel after | main + solo after | solo / multi after |
+|---|---|---|---|---|---|
+| I Know That I Know §9 | 2.615 -> 1.292 (-51 %) 12 (10) budget | 2.616 -> 1.602 (-39 %) 12 (6) budget | 2.615 -> 1.065 (-59 %) 18 (10) no_progress | 2.616 -> 1.394 (-47 %) 22 (12) no_progress | 80 % |
+| Holy Forever §7 | 2.510 -> 0.991 (-61 %) 12 (4) budget | 2.510 -> 1.359 (-46 %) 12 (6) budget | 2.510 -> 0.964 (-62 %) 18 (8) no_progress | 2.510 -> 1.171 (-53 %) 25 (13) no_progress | 85 % |
+| Show Me Your Face §4 | 2.257 -> 1.906 (-16 %) 11 (3) budget | 2.249 -> 2.319 (+3 %) 12 (4) budget | 2.251 -> 1.686 (-25 %) 14 (5) no_progress | 2.256 -> 1.499 (-34 %) 29 (8) no_progress | 136 % |
+
+Main + solo reaches 92 % of the multichannel reduction summed over the three songs (before: 69 %); every run ends on
+`no_progress`, none on the budget (net deviation used 11-26 of 60 weighted dB, total travel 15-38 dB). FOH: 0.859 /
+1.031 / 1.403; Holy Forever multichannel beats FOH.
+
+Description targets: Holy Forever -30 % / -29 % before (multi / solo) -> -32 % / -30 %; I Know -18 % / -21 % ->
+-15 % / -18 %; Show Me Your Face -15 % / -6 % -> -38 % / -23 % (the solo run hit the 1800 s harness timeout still
+improving). Before, 5 of 6 description runs ended on the budget.
+
+Consoles without solo (`E2E_TAPS=main` vs `priors`, reference, main only, no solo/sweeps): the WING meters refine 14
+of 17 strips (2 found silent and dropped), but on these drill-laden 3-4 minute runs the result is noise-dominated:
+-3 / -4 / -2 % with meters vs -1 / -7 / -10 % with priors only. In mix-sim (seed 7, no drills, `control_solo
+no_solo_meters_improve_over_priors_alone`) meters help clearly: 1.119 -> 0.814 vs 1.119 -> 1.056 with priors only.
+
+Audits: all green except two findings in the Show Me Your Face process (the per-song test stops at its first failed
+run, so its description runs were not asserted):
+1. **PANIC does not restore main-bus EQ** (new exposure: before the harness fix, `main-processing` was never
+   confirmed, so the main EQ was never moved): after PANIC the wing-sim snapshot differs in 8 / 3 `main/1/eq/*`
+   paths on the two description runs; the actuator's `reverted` event for the PANIC lists only the faders, no
+   conflicts. Undo of the same main EQ moves works. mix-actuator `panic_with_id` / mix-wing; follow-up.
+2. **Engineer yield race** (Show Me Your Face reference, main + solo): the engineer's write landed during a
+   0.8 s fader ramp; no `yielded`/`engineer_moved` was seen and the tool later reverted that batch inside the
+   cool-down. Same class as the known flaky `mix-wing wing_sim_engineer_move_pauses_the_actuator_ramp`.
+
+FakeX32 (`mix-x32 --test session`, main only, no solo, no meters): unchanged before/after: one fader move,
+distance 2.106 -> 0.182, converged (net 3 dB).
