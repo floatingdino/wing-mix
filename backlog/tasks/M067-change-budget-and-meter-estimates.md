@@ -2,10 +2,10 @@
 id: M067
 title: Change budget pacing + meter-based strip estimates
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M067
 depends: [M062]
-branch: -
+branch: task/M067
 model: opus
 ---
 
@@ -28,3 +28,11 @@ Report before/after: e2e main+solo vs multichannel (re-measure both on current m
 
 ## Log
 - 2026-10-31 coordinator: created from M062 follow-ups.
+- 2026-10-31 agent-M067: claimed (.worktrees/M067). Plan: (1) control/budget.rs: net deviation from the session
+  baseline (our own changes only, weighted: makeup 0, equal-delta group/pair members share one count) with a
+  per-minute pacing window instead of total travel; reverts restore net and are not charged; hold Budget only when
+  no executable move fits the net limit; status in the daemon snapshot. (2) control/meters.rs: console meter
+  frames accumulated over each measurement window (post-fader out power mean, activity, GR) refine the priors of
+  strips without a tap (level, silence, activity), flagged as meter-refined; diagnosis runs level/balance checks on
+  them with reduced confidence, spectral checks stay skipped. Baseline e2e (multi + solo) re-measured on main
+  cd5c5c4 in .worktrees/M067-base.
