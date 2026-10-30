@@ -23,6 +23,7 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M014 | Real multitrack fixture loader (REAPER RPP + excerpts) | M001 | sonnet |
 | M015 | mix-knowledge: typed loader + consistency checker | M001, M005 | sonnet |
 | M016 | Reference mixes: profiles + song alignment | M014, M022 | opus |
+| M017 | Real fixture: non-input tracks (FOH + video mix taps) | M012, M014 | sonnet |
 
 ## S2 — Analysis & targets
 

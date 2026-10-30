@@ -29,6 +29,13 @@ Levels below are summed mean-square of the raw tracks, dBFS (total / vocals ch 3
 | vocal-forward | 3420-3450 s | -15 / -19 / -28 | full band with the strongest vocal-to-total ratio |
 | no-vocals | 4080-4110 s | -16 / -55 / -51 | instrumental bed, vocal channels are bleed only |
 
+## Non-input tracks (confirmed by the user, 2026-10-30)
+- `43`: empty (silent) — ignore.
+- `52` / `53`: **FOH L/R** — the engineer's actual live main mix as recorded. Not console inputs: use as the
+  "human mix" baseline/evaluation tap (and for aligning reference songs to the set).
+- `55` / `56`: **video mix L/R** — a second, separate mix (broadcast/stream). Not console inputs; secondary baseline.
+Do not patch these into console input channels.
+
 ## Reference mixes (`mixes/`)
 Commercial recordings supplied by the user as reference mixes (local only, copyrighted — never commit, upload, or
 quote audio). All AAC in .m4a, 44.1 kHz stereo:
