@@ -47,6 +47,19 @@ struct Ramp {
     abort: Option<AbortReason>,
     conflicts: Vec<Conflict>,
     skipped: Vec<Refusal>,
+    /// Tracks of finished earlier phases (journaled with the move).
+    done: Vec<Track>,
+    /// Params of the block(s) a model switch in this batch governs: written only after the switch and the
+    /// surface's `ParamsRemapped`, against the re-resolved specs.
+    phase2: Option<Box<Phase2>>,
+}
+
+struct Phase2 {
+    changes: Vec<ParamChange>,
+    /// Model params of the batch (a remap of their block releases the second phase).
+    models: Vec<(ParamId, ParamClass)>,
+    remapped: bool,
+    waiting_since: Option<f64>,
 }
 
 struct Inspect {
@@ -70,7 +83,7 @@ struct Deferred {
 }
 
 enum Active {
-    Ramp(Ramp),
+    Ramp(Box<Ramp>),
     Inspect(Box<Inspect>),
 }
 
@@ -465,6 +478,20 @@ impl Actuator {
     fn on_remap(&mut self, strip: &StripId, block: &str) {
         let prefix = format!("{strip}/{block}/");
         if let Some(r) = self.current_ramp_mut() {
+            if let Some(p) = r.phase2.as_mut() {
+                let switched = r
+                    .tracks
+                    .iter()
+                    .chain(r.done.iter())
+                    .any(|t| t.wrote && p.models.iter().any(|(m, _)| *m == t.spec.id));
+                let hit = p.models.iter().any(|(m, c)| {
+                    m.head() == strip.as_str()
+                        && (*c == ParamClass::FxModel || m.block() == Some(block))
+                });
+                if switched && hit {
+                    p.remapped = true;
+                }
+            }
             let hit = r.tracks.iter().any(|t| {
                 t.is_active() && t.spec.model_dependent && t.spec.id.as_str().starts_with(&prefix)
             });
@@ -604,7 +631,7 @@ impl Actuator {
 
     fn start_ramp(&mut self, r: Ramp) {
         self.emit_started(&r);
-        self.active = Some(Active::Ramp(r));
+        self.active = Some(Active::Ramp(Box::new(r)));
     }
 
     fn emit_started(&mut self, r: &Ramp) {
@@ -651,11 +678,14 @@ impl Actuator {
                 });
             }
         }
-        // Never ramp across a model change: a model param and params of the block it governs can't share a batch.
+        // Never ramp across a model change: params of the block a model switch governs are written only after the
+        // switch and the surface's `ParamsRemapped` (second phase of the same move); undo/PANIC cannot split.
         let specs: Vec<_> = changes
             .iter()
             .filter_map(|c| self.surface.param_spec(&c.param).ok())
             .collect();
+        let mut later: BTreeSet<usize> = BTreeSet::new();
+        let mut models = Vec::new();
         for m in specs.iter().filter(|s| is_model_class(s.class)) {
             let mid = &m.id;
             let same_scope = |p: &ParamId| {
@@ -663,20 +693,53 @@ impl Actuator {
                     && p.head() == mid.head()
                     && (m.class == ParamClass::FxModel || p.block() == mid.block())
             };
-            if let Some(o) = changes.iter().find(|c| same_scope(&c.param)) {
-                return Err(Refusal::MixedModelChange {
-                    param: o.param.clone(),
-                });
+            for (i, c) in changes.iter().enumerate() {
+                if same_scope(&c.param) {
+                    if lenient {
+                        return Err(Refusal::MixedModelChange {
+                            param: c.param.clone(),
+                        });
+                    }
+                    later.insert(i);
+                }
             }
+            models.push((m.id.clone(), m.class));
+        }
+        let mut phase2 = None;
+        let mut first: Vec<&ParamChange> = changes.iter().collect();
+        if !later.is_empty() {
+            let (l, f): (Vec<_>, Vec<_>) = changes
+                .iter()
+                .enumerate()
+                .partition(|(i, _)| later.contains(i));
+            first = f.into_iter().map(|(_, c)| c).collect();
+            phase2 = Some(Box::new(Phase2 {
+                changes: l.into_iter().map(|(_, c)| c.clone()).collect(),
+                models,
+                remapped: false,
+                waiting_since: None,
+            }));
         }
         let mut tracks = Vec::new();
         let mut skipped = Vec::new();
-        for c in changes {
+        for c in first {
             match self.plan_track(c, restoring) {
                 Ok(Some(t)) => tracks.push(t),
                 Ok(None) => {}
                 Err(r) if lenient => skipped.push(r),
                 Err(r) => return Err(r),
+            }
+        }
+        // A model "switch" that is already in place never remaps: no split, no wait.
+        if let Some(p) = phase2.take() {
+            if tracks.iter().any(|t| is_model_class(t.spec.class)) {
+                phase2 = Some(p);
+            } else {
+                for c in &p.changes {
+                    if let Some(t) = self.plan_track(c, restoring)? {
+                        tracks.push(t);
+                    }
+                }
             }
         }
         let mut duration = tracks
@@ -706,6 +769,8 @@ impl Actuator {
             abort: None,
             conflicts: Vec::new(),
             skipped,
+            done: Vec::new(),
+            phase2,
         })
     }
 
@@ -869,7 +934,7 @@ impl Actuator {
             Active::Ramp(mut r) => match self.step_ramp(&mut r) {
                 Step::Running => Some(Active::Ramp(r)),
                 out => {
-                    self.finish_ramp(r, out);
+                    self.finish_ramp(*r, out);
                     self.idle_until = self.now + self.cfg.settle_s;
                     None
                 }
@@ -899,6 +964,11 @@ impl Actuator {
             return Step::Aborted(reason);
         }
         let t = self.now;
+        if r.phase2.is_some() && r.tracks.iter().all(|tr| !tr.is_active()) {
+            if let Some(out) = self.start_phase2(r) {
+                return out;
+            }
+        }
         // Pause the whole connected batch while the engineer works on one of its params (PANIC does not pause: it
         // simply leaves the yielded param alone).
         if r.kind != RampKind::Panic && r.tracks.iter().any(|tr| self.cooling(&tr.spec.id)) {
@@ -927,7 +997,7 @@ impl Actuator {
             .filter_map(|(i, tr)| tr.desired(p, t, r.speed).map(|w| (i, w)))
             .collect();
         if pending.is_empty() {
-            return if r.tracks.iter().all(|tr| !tr.is_active()) {
+            return if r.phase2.is_none() && r.tracks.iter().all(|tr| !tr.is_active()) {
                 Step::Done
             } else {
                 Step::Running
@@ -998,18 +1068,82 @@ impl Actuator {
             id: r.id,
             fraction: p,
         });
-        if r.tracks.iter().all(|tr| !tr.is_active()) {
+        if r.phase2.is_none() && r.tracks.iter().all(|tr| !tr.is_active()) {
             Step::Done
         } else {
             Step::Running
         }
     }
 
+    /// Model switch written: wait for the surface's `ParamsRemapped` (or `remap_wait_s`), then plan the params of
+    /// the switched block against the re-resolved specs. `Some(step)` ends/holds the ramp, `None` continues.
+    fn start_phase2(&mut self, r: &mut Ramp) -> Option<Step> {
+        let now = self.now;
+        let p = r.phase2.as_mut().expect("phase 2 pending");
+        let since = *p.waiting_since.get_or_insert(now);
+        if !p.remapped && now - since < self.cfg.remap_wait_s {
+            r.last_t = now;
+            return Some(Step::Running);
+        }
+        let p = r.phase2.take().expect("phase 2 pending");
+        let mut tracks = Vec::new();
+        for c in &p.changes {
+            match self.plan_track(c, false) {
+                Ok(t) => tracks.extend(t),
+                Err(Refusal::Remit {
+                    param,
+                    verdict,
+                    reason,
+                    detail,
+                    ..
+                }) => {
+                    return Some(Step::Aborted(AbortReason::Remit {
+                        param,
+                        verdict,
+                        reason,
+                        detail,
+                    }))
+                }
+                Err(Refusal::Surface { param, error }) => {
+                    return Some(Step::Aborted(AbortReason::Surface { param, error }))
+                }
+                Err(other) => {
+                    return Some(Step::Aborted(AbortReason::Surface {
+                        param: c.param.clone(),
+                        error: format!("{other:?}"),
+                    }))
+                }
+            }
+        }
+        for t in &tracks {
+            self.baseline
+                .entry(t.spec.id.clone())
+                .or_insert_with(|| t.from.clone());
+        }
+        let mut duration = tracks
+            .iter()
+            .map(|t| t.min_duration(r.speed))
+            .fold(0.0, f64::max);
+        if tracks.iter().any(|t| t.ramp.is_some()) {
+            duration = duration.max(self.cfg.min_move_s / r.speed.max(1e-9));
+        }
+        let mut old = std::mem::replace(&mut r.tracks, tracks);
+        r.done.append(&mut old);
+        r.duration = duration;
+        r.elapsed = 0.0;
+        r.last_t = now;
+        if r.tracks.is_empty() {
+            return Some(Step::Done);
+        }
+        None
+    }
+
     /// Journal what a ramp wrote and publish its outcome.
     fn finish_ramp(&mut self, r: Ramp, out: Step) {
         let changes: Vec<Change> = r
-            .tracks
+            .done
             .iter()
+            .chain(r.tracks.iter())
             .filter(|t| t.wrote)
             .map(|t| Change {
                 param: t.spec.id.clone(),
@@ -1226,7 +1360,7 @@ impl Actuator {
 
     fn cancel_all(&mut self, reason: AbortReason) {
         match self.active.take() {
-            Some(Active::Ramp(r)) => self.finish_ramp(r, Step::Aborted(reason.clone())),
+            Some(Active::Ramp(r)) => self.finish_ramp(*r, Step::Aborted(reason.clone())),
             Some(Active::Inspect(i)) => self.abort_inspect(*i, reason.clone()),
             None => {}
         }

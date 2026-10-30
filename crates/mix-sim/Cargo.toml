@@ -16,6 +16,7 @@ wing-sim.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+mix-analysis = { path = "../mix-analysis" }
 
 [[bench]]
 name = "render"

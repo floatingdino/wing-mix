@@ -101,6 +101,10 @@ pub struct ActuatorConfig {
     pub external_cooldown_s: f64,
     /// Pause between two jobs (s): lets analysis settle before the next move.
     pub settle_s: f64,
+    /// Longest wait (s) for the surface's `ParamsRemapped` after a model switch before the block's other params of
+    /// the same move are written (they are never written in the same ramp as the switch).
+    #[serde(default = "default_remap_wait_s")]
+    pub remap_wait_s: f64,
     /// Most write records kept in memory (`Actuator::write_log`); the oldest are dropped first and counted
     /// (`write_log_dropped`). 0 = unbounded. M050 persists the full audit trail via the event stream.
     #[serde(default = "default_write_log_cap")]
@@ -108,6 +112,10 @@ pub struct ActuatorConfig {
     /// Most completed moves kept for undo (oldest dropped first). 0 = unbounded.
     #[serde(default = "default_history_cap")]
     pub history_cap: usize,
+}
+
+fn default_remap_wait_s() -> f64 {
+    1.0
 }
 
 fn default_write_log_cap() -> usize {
@@ -132,6 +140,7 @@ impl Default for ActuatorConfig {
             fader_floor_db: -80.0,
             external_cooldown_s: 5.0,
             settle_s: 0.0,
+            remap_wait_s: default_remap_wait_s(),
             write_log_cap: default_write_log_cap(),
             history_cap: default_history_cap(),
         }
