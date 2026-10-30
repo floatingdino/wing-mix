@@ -748,6 +748,13 @@ pub fn run(
         log.len(),
         if solo_end == solo0 { "= start" } else { "DIFFERS" }
     );
+    if !bad.is_empty() {
+        r.solo_detail += &format!(
+            "; {} restores the observer saw differently: {:?}",
+            bad.len(),
+            bad.iter().take(3).collect::<Vec<_>>()
+        );
+    }
     r.refusals = evs
         .iter()
         .filter(|e| ev_type(&e.v) == "refused" && e.v.to_string().contains("safety"))

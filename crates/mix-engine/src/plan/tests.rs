@@ -797,3 +797,51 @@ fn boost_into_excess_is_counted_and_taken_back() {
     flat.apply(&[ParamChange::new("input.4/eq/band.1.gain", 3.0)]);
     assert!(score_with(&d, cfg.target_weight, Some(&flat)).objective < with.objective - 0.01);
 }
+
+/// M062: no strip taps at all (estimated strips only) and a "vocal-forward" description: the planner raises the
+/// vocal fader (the intent is followed through the faders) and never touches an estimated strip's processing.
+#[test]
+fn estimated_strips_get_fader_moves_for_a_level_intent() {
+    let kb = KnowledgeBase::embedded();
+    let mut s = on_target(kb);
+    s.target.stems = None;
+    s.target
+        .applied_deltas
+        .push(mix_core::profile::DescriptorDelta {
+            term: "vocal-forward".into(),
+            target_path: "intent.lead_vocal.level_dev_lu".into(),
+            delta: 3.0,
+        });
+    let state = ConsoleState::capture(&s.surface).unwrap();
+    let eligible: Vec<crate::control::strips::Eligible> = s
+        .taps
+        .iter()
+        .map(|t| crate::control::strips::Eligible {
+            strip: t.strip.clone(),
+            name: t.name.clone(),
+            source: t.source.clone(),
+            fader_db: state.settings(&t.strip).fader_db.unwrap_or(0.0),
+        })
+        .collect();
+    s.taps = crate::control::strips::priors(&s.main, &[], &eligible, kb, 0.1);
+    assert!(s.taps.iter().all(|t| t.estimated));
+    let p = run(
+        &s,
+        &policy(),
+        &RemitSession::default(),
+        &PlanConfig::from_kb(kb),
+        kb,
+    );
+    let vox_up: f64 = p
+        .changes()
+        .iter()
+        .filter(|c| c.param.as_str() == "input.3/fader")
+        .map(|c| c.to.as_f64().unwrap() - c.from.as_ref().unwrap().as_f64().unwrap())
+        .sum();
+    assert!(vox_up >= 2.0, "vocal fader +{vox_up:.1} dB: {p:#?}");
+    for c in p.changes() {
+        if c.param.strip().is_some_and(|s| s.kind_name() == "input") {
+            assert!(c.param.as_str().ends_with("/fader"), "{}", c.param);
+        }
+    }
+}

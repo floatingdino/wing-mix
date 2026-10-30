@@ -69,7 +69,8 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
         } else {
             cx.cfg.intent_tolerance
         };
-        let done = cx.input.intent_progress.get(&path).copied().unwrap_or(0.0);
+        let tracked = cx.input.intent_progress.get(&path).copied();
+        let done = tracked.unwrap_or(0.0);
         let deviation = done - delta;
         let unit = cx
             .kb
@@ -80,7 +81,8 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
             .to_string();
         let e = Evidence {
             feature: feature.to_string(),
-            measured: None,
+            // M062: progress followed through the console (source level intents via the faders) is a measurement
+            measured: tracked.filter(|_| base == "level_dev_lu" && scope != "mix"),
             target: delta,
             tolerance: tol,
             unit,

@@ -754,8 +754,23 @@ impl<'k> Controller<'k> {
         // M035: gate problems are answered by the console's gate state
         let state = ConsoleState::capture(&*self.surface).ok();
         let m = self.augment(&raw, state.as_ref());
+        let progress = state
+            .as_ref()
+            .map(|st| {
+                crate::plan::fader_intent_progress(
+                    &self.target,
+                    &m.strips,
+                    st,
+                    None,
+                    &self.session_baseline,
+                    self.kb,
+                )
+            })
+            .unwrap_or_default();
         let d = diagnose(
-            &DiagnosisInput::new(&m.main, &self.target).with_strips(&m.strips),
+            &DiagnosisInput::new(&m.main, &self.target)
+                .with_strips(&m.strips)
+                .with_intent_progress(&progress),
             self.kb,
             &self.cfg.plan.diagnosis,
         )
