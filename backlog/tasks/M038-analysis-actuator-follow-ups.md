@@ -2,7 +2,7 @@
 id: M038
 title: Analysis + actuator follow-ups: noise floor stat, onset double-count, model-switch ordering
 stage: S4
-status: in_progress
+status: review
 owner: agent-M038
 depends: [M035]
 branch: task/M038
@@ -63,7 +63,7 @@ zero-alloc tests green; criterion bench unchanged within 10%.
   - Files: crates/mix-actuator/src/{actuator,config}.rs, tests/moves.rs; crates/mix-analysis/src/{analyser,onset}.rs,
     tests/analytic.rs; crates/mix-core/src/features.rs; crates/mix-sim/{Cargo.toml,tests/onset.rs}; crates/mix-wing/tests/
     {common/mod.rs,inproc.rs,wing_sim.rs}; crates/mix-engine/tests/dyn_sim.rs; docs/research/analysis.md.
-  - Test: `make check` passes; `make check-full` see below.
+  - Test: `make check` and `make check-full` pass (also re-measured the worship genre onset rates in mix-describe/src/base.rs: 2.1 -> 1.88 Hz, bands [3.3,1.3,2.8] -> [2.1,1.2,1.8]; tests/worship.rs green).
   - Proposed follow-ups: (1) mix-engine: use `noise_floor_dbfs` in `proxy::floor_estimate`/the source-problem bag
     (replace the inactive-frame estimate) and re-fit the proxy event-rate multipliers (x1/0.7/0.5/0.35) now that the
     onset rate is accurate; (2) add `noise_floor_dbfs` to TargetProfile stats (reference-side floor); (3) per-band
