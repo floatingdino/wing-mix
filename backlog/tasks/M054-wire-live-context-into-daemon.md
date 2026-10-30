@@ -2,7 +2,7 @@
 id: M054
 title: Wire live-context targets into wing-mixd
 stage: S5
-status: review
+status: done
 owner: agent-M054
 depends: [M037, M053]
 branch: task/M054
@@ -32,3 +32,4 @@ PLR/width targets and the problem list.
   - Test: `cargo test -p wing-mixd --test daemon_sim live_context` (switch live -> match_record changes PLR/width
     targets and the problem list, and back is exact); `make check` passes.
   - Follow-up: persist live_context in the state dir.
+- 2026-10-31 coordinator: merged, make check passes. done. Persisting live_context → folded into M052 review list.
