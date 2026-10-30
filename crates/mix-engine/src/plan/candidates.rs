@@ -30,6 +30,10 @@ use super::state::{BandKind, BandSlot, ConsoleState, DynSlot, StripSettings, DEE
 use crate::diagnosis::stem_masking::stem_of;
 use crate::diagnosis::{Problem, ProblemKind, Subject};
 
+/// Main-bus voicing EQ (M039) only for a band no single source family carries this share of (else fix it at the
+/// source: eq.toml `prefer_fix_at_source`).
+const MAX_VOICING_SHARE: f64 = 0.6;
+
 /// Smallest share of a tonal problem's band a strip must carry for its fader to be offered instead of EQ.
 const MIN_FADER_SHARE: f64 = 0.3;
 
@@ -63,6 +67,9 @@ pub struct Candidate {
     /// Why this move (knowledge-base reasoning, without the predicted numbers).
     pub why: String,
     pub cost: f64,
+    /// Session confirmations the move needs on top of the remit's verdicts (M039: `pair:<l>+<r>` for a stereo pair
+    /// the planner identified but the remit did not; the planner checks the move as if confirmed and flags it).
+    pub assume: Vec<String>,
 }
 
 /// Tunables of the candidate generator.
@@ -100,6 +107,9 @@ pub struct Gen<'a> {
     pub stems: &'a [StemKind],
     /// Highest value a gain param may be raised to in this plan (safety limits, M036); `None` = unlimited.
     pub raise_to: &'a dyn Fn(&ParamId) -> Option<f64>,
+    /// The remit already treats `(a, b)` as a stereo pair (detected by name or confirmed this session; M039). A pair
+    /// the planner identifies otherwise is spread past the mono pan envelope only with a `pair:` confirmation.
+    pub remit_pair: &'a dyn Fn(&StripId, &StripId) -> bool,
 }
 
 fn pid(s: &StripId, rest: &str) -> ParamId {
@@ -145,6 +155,7 @@ impl Candidate {
     /// A candidate with this one's phase, strip, problem, rules and reasoning (changes, label and cost to fill).
     fn clone_meta(&self) -> Candidate {
         Candidate {
+            assume: Vec::new(),
             phase: self.phase,
             strip: self.strip.clone(),
             label: String::new(),
@@ -228,6 +239,7 @@ impl Gen<'_> {
         let c = self.change(pid(s, "fader"), fv(cur + d))?;
         let to = c.to.as_f64().unwrap_or(cur);
         Some(Candidate {
+            assume: Vec::new(),
             phase: if self.kind(s) == StripKind::Main {
                 8
             } else {
@@ -256,6 +268,7 @@ impl Gen<'_> {
         let c = self.change(pid(s, "pan"), fv(to))?;
         let to = c.to.as_f64().unwrap_or(cur);
         Some(Candidate {
+            assume: Vec::new(),
             phase: 6,
             strip: s.clone(),
             label: format!("{s} pan {cur:+.0} -> {to:+.0}"),
@@ -398,6 +411,7 @@ impl Gen<'_> {
             "cut"
         };
         Some(Candidate {
+            assume: Vec::new(),
             phase: eq_phase(boost),
             strip: s.clone(),
             label: format!(
@@ -497,6 +511,7 @@ impl Gen<'_> {
         }
         let cost = 0.5 + 0.1 * changes.len() as f64;
         Some(Candidate {
+            assume: Vec::new(),
             phase: 1,
             strip: s.clone(),
             label: format!("{s} low cut on at {target:.0} Hz"),
@@ -624,6 +639,7 @@ impl Gen<'_> {
                 }
                 let n = changes.len();
                 out.push(Candidate {
+                    assume: Vec::new(),
                     phase: 4,
                     strip: s.clone(),
                     label: format!("{s} compressor on ({}: thr {thr:.0} dB, {ratio:.1}:1, makeup {makeup:+.1} dB)", pr.id),
@@ -671,6 +687,7 @@ impl Gen<'_> {
                 }
                 let n = changes.len();
                 out.push(Candidate {
+                    assume: Vec::new(),
                     phase: 4,
                     strip: s.clone(),
                     label: format!(
@@ -799,6 +816,7 @@ impl Gen<'_> {
             }
             let n = changes.len();
             out.push(Candidate {
+                assume: Vec::new(),
                 phase: 2,
                 strip: s.clone(),
                 label: format!(
@@ -895,6 +913,7 @@ impl Gen<'_> {
                 }
                 let n = changes.len();
                 out.push(Candidate {
+                    assume: Vec::new(),
                     phase: 4,
                     strip: s.clone(),
                     label: format!(
@@ -1000,7 +1019,69 @@ impl Gen<'_> {
             }
             _ => {}
         }
+        self.link_pairs(&mut out);
         out
+    }
+
+    /// M039: a stereo pair is processed alike. For every EQ/filter candidate on one side of a pair whose two sides
+    /// currently carry the same settings in the params it touches, add the same change on both sides (keys L/R with
+    /// the same boost: cutting one side only leaves the image lopsided and half the fault in place).
+    fn link_pairs(&self, out: &mut Vec<Candidate>) {
+        let mut linked = Vec::new();
+        for c in out.iter() {
+            if c.changes.is_empty() || !matches!(c.phase, 1 | 3 | 5) {
+                continue;
+            }
+            let Some(o) = self.model.strips.iter().find(|o| o.tap.strip == c.strip) else {
+                continue;
+            };
+            let Some(partner) = self.pair_partner(o) else {
+                continue;
+            };
+            let ps = &partner.tap.strip;
+            let mut changes = Vec::new();
+            let mut ok = true;
+            for ch in &c.changes {
+                let rest = ch.param.as_str().split_once('/').map(|x| x.1).unwrap_or("");
+                let block = rest.split('/').next().unwrap_or("");
+                if ch.param.strip().as_ref() != Some(&c.strip) || !matches!(block, "eq" | "filter")
+                {
+                    ok = false;
+                    break;
+                }
+                let id = pid(ps, rest);
+                let same = match (self.state.get(&id), &ch.from) {
+                    (Some(a), Some(b)) => a.approx_eq(
+                        b,
+                        self.state
+                            .spec(&id)
+                            .map_or(1e-6, |sp| sp.tolerance().max(1e-3)),
+                    ),
+                    (Some(_), None) => true,
+                    _ => false,
+                };
+                if !same {
+                    ok = false;
+                    break;
+                }
+                if let Some(pc) = self.change(id, ch.to.clone()) {
+                    changes.push(pc);
+                }
+            }
+            if !ok || changes.is_empty() {
+                continue;
+            }
+            let mut all = c.changes.clone();
+            all.extend(changes);
+            linked.push(Candidate {
+                label: format!("{} + {ps}: {}", c.strip, c.label),
+                changes: all,
+                cost: c.cost * 1.3,
+                why: format!("{} (stereo pair {} / {ps}: both sides)", c.why, c.strip),
+                ..c.clone()
+            });
+        }
+        out.extend(linked);
     }
 
     fn level(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
@@ -1051,6 +1132,7 @@ impl Gen<'_> {
                 }
                 if !changes.is_empty() {
                     out.push(Candidate {
+                        assume: Vec::new(),
                         phase: 6,
                         strip: changes[0].param.strip().unwrap_or_else(|| members[0].clone()),
                         label: format!(
@@ -1089,6 +1171,7 @@ impl Gen<'_> {
                 if !changes.is_empty() {
                     let strip = members[0].clone();
                     out.push(Candidate {
+                        assume: Vec::new(),
                         phase: 6,
                         strip,
                         label: format!(
@@ -1136,6 +1219,14 @@ impl Gen<'_> {
         let centre = ((band.lo_hz * band.hi_hz) as f64).sqrt();
         let lim = &self.kb.eq.limits;
         let target_d = -dev.signum() * excess.max(1.0);
+        // M039: a mix-level tonal deviation shared by many sources (room/PA voicing, a whole band's tone) is the
+        // main bus EQ's job (eq.toml bus_master: broad, small moves); the remit makes main processing conditional
+        if matches!(p.scope.subject, Subject::Mix) {
+            self.main_eq(p, band, dev, excess, out);
+        }
+        if dev > 0.0 {
+            self.reduce_boosts(p, band, &members, out);
+        }
         for (s, share) in ranked.iter().take(self.cfg.contributors) {
             let why = format!(
                 "{} {} {:+.1} dB vs target; {s} carries {:.0} % of that band",
@@ -1205,6 +1296,122 @@ impl Gen<'_> {
                     &format!("{why} (level instead of EQ)"),
                     1.5,
                 ));
+            }
+        }
+    }
+
+    /// M039: a band above target with a contributor whose EQ boosts it beyond the typical tonal boost (the planner's
+    /// boost-into-excess term): take the boost back, in steps (eq.toml cut before boost).
+    fn reduce_boosts(
+        &self,
+        p: &Problem,
+        band: &crate::diagnosis::BandRef,
+        members: &[StripId],
+        out: &mut Vec<Candidate>,
+    ) {
+        let (lo, hi) = (
+            band.lo_hz as f64 / std::f64::consts::SQRT_2,
+            band.hi_hz as f64 * std::f64::consts::SQRT_2,
+        );
+        let rules = vec![
+            "mix_band_excess".to_string(),
+            "cut_before_boost".to_string(),
+        ];
+        for s in members {
+            let Some(eq) = self.settings(s).eq.filter(|e| e.on) else {
+                continue;
+            };
+            for (_, b) in &eq.bands {
+                if b.kind != BandKind::Peq
+                    || b.gain_db <= super::PREFERRED_BOOST_DB
+                    || b.freq_hz < lo
+                    || b.freq_hz > hi
+                {
+                    continue;
+                }
+                let why = format!(
+                    "{} {} above target and {s} boosts it by {:+.1} dB at {:.0} Hz: take the boost back",
+                    p.scope.subject.label(),
+                    band.name,
+                    b.gain_db,
+                    b.freq_hz
+                );
+                for d in [-(b.gain_db - super::PREFERRED_BOOST_DB), -b.gain_db] {
+                    out.extend(self.eq(s, b.freq_hz, d, b.q, None, p, &rules, &why, 0.8));
+                }
+            }
+        }
+    }
+
+    /// Main-bus EQ for a mix tonal problem (M039): a broad peak at the band's centre (or the band's peak), shelves
+    /// for the sub/bass and brilliance/air ends; gains of the deviation and half of it (eq() caps the step).
+    fn main_eq(
+        &self,
+        p: &Problem,
+        band: &crate::diagnosis::BandRef,
+        dev: f64,
+        excess: f64,
+        out: &mut Vec<Candidate>,
+    ) {
+        let Some((main, _)) = &self.model.main_strip else {
+            return;
+        };
+        if self.settings(main).eq.is_none() {
+            return;
+        }
+        // eq.toml policy `prefer_fix_at_source`: a band one source dominates is that source's problem (mix-sim seed 7:
+        // hats +8 dB own the mix's air band; a main high shelf would hide them)
+        let idx = centre_band(band.lo_hz, band.hi_hz);
+        let all: Vec<StripId> = self
+            .model
+            .strips
+            .iter()
+            .filter(|o| !o.tap.fx_return)
+            .map(|o| o.tap.strip.clone())
+            .collect();
+        // shares per source family (a kit's hats and overheads together own its air band)
+        let mut fam: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+        for (s, share) in self.ranked(&all, &idx) {
+            let key = (self.source_of)(&s)
+                .and_then(|id| self.kb.source(&id).map(|x| x.family.as_str().to_string()))
+                .unwrap_or_else(|| s.as_str().to_string());
+            *fam.entry(key).or_default() += share;
+        }
+        let top = fam.values().cloned().fold(0.0, f64::max);
+        if self.kb.eq.policy.prefer_fix_at_source && top >= MAX_VOICING_SHARE {
+            return;
+        }
+        let rules = vec![
+            if dev > 0.0 {
+                "mix_band_excess".to_string()
+            } else {
+                "mix_band_deficit".to_string()
+            },
+            "bus_master_eq".to_string(),
+        ];
+        let why = format!(
+            "mix {} {:+.1} dB vs target across the sources: broad main-bus EQ (bus_master phase)",
+            band.name, dev
+        );
+        let centre = ((band.lo_hz * band.hi_hz) as f64).sqrt();
+        let (shelf, freq) = if band.hi_hz <= 130.0 {
+            (Some(BandSlot::Low), band.hi_hz as f64)
+        } else if band.lo_hz >= 4900.0 {
+            (Some(BandSlot::High), band.lo_hz as f64)
+        } else {
+            (None, centre)
+        };
+        let q = q_of(self.kb, "broad");
+        let full = -dev.signum() * excess.max(1.0).max(dev.abs() * 0.5);
+        for g in [full, full * 0.5] {
+            for f in [Some(freq), (shelf.is_none()).then_some(band.peak_hz as f64)]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(mut c) = self.eq(main, f, g, q, shelf, p, &rules, &why, 1.2) {
+                    c.phase = 8;
+                    out.push(c);
+                }
             }
         }
     }
@@ -1308,17 +1515,40 @@ impl Gen<'_> {
                 } else {
                     continue;
                 };
+                let partner = self.pair_partner(o);
+                // M039: a stereo pair may spread to full L/R (remit `input-pair-spread`); a mono source stops at
+                // 70 (the remit clamps it to its +-50 envelope)
+                let reach = if partner.is_some() { 100.0 } else { 70.0 };
                 let target = sign * wide.min(70.0);
-                if (target - cur).abs() < 5.0 || cur.abs() >= wide.min(70.0) {
+                let full = sign * wide.min(reach);
+                if cur.abs() >= wide.min(reach) - 1.0 {
                     continue;
                 }
-                for t in [target, cur + (target - cur) * 0.5] {
+                let mut targets = vec![target, cur + (target - cur) * 0.5];
+                if (full - target).abs() > 1.0 {
+                    targets.push(full);
+                }
+                targets.retain(|t| (t - cur).abs() >= 5.0);
+                for &t in &targets {
                     out.extend(self.pan(s, t, p, why, 1.0));
                 }
                 // M036: a stereo pair is spread together (one side alone tips the L/R balance)
-                if let Some(partner) = self.pair_partner(o) {
+                if let Some(partner) = partner {
                     let pc = partner.settings.pan.unwrap_or(0.0);
-                    for t in [target, cur + (target - cur) * 0.5] {
+                    let assume = if (self.remit_pair)(s, &partner.tap.strip) {
+                        Vec::new()
+                    } else if sign < 0.0 {
+                        vec![mix_surface::remit::RemitSession::pair_key(
+                            s,
+                            &partner.tap.strip,
+                        )]
+                    } else {
+                        vec![mix_surface::remit::RemitSession::pair_key(
+                            &partner.tap.strip,
+                            s,
+                        )]
+                    };
+                    for &t in &targets {
                         let (Some(a), Some(b)) = (
                             self.pan(s, t, p, why, 1.0),
                             self.pan(&partner.tap.strip, -t, p, why, 1.0),
@@ -1338,6 +1568,11 @@ impl Gen<'_> {
                             ),
                             changes,
                             cost: a.cost + b.cost * 0.5,
+                            assume: if t.abs() > 50.0 {
+                                assume.clone()
+                            } else {
+                                Vec::new()
+                            },
                             ..meta
                         });
                     }

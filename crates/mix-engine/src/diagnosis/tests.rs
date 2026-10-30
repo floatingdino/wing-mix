@@ -637,3 +637,65 @@ fn strip_taps_from_topology() {
     assert_eq!(taps[1].source.as_deref(), Some("lead_vocal"));
     assert!(taps[2].fx_return && !taps[0].fx_return);
 }
+
+/// M039 kit balance: a drum strip's level against the rest of the kit, relative to the kb's typical balance.
+#[test]
+fn kit_balance_finds_a_quiet_snare_and_ignores_toms() {
+    use mix_core::ids::StripId;
+    let p = synth::profile_with_stems();
+    let base = synth::strips_matching(&p, long(), kb());
+    let mut q = p.clone();
+    q.stems = None;
+    let main = synth::features_matching(&q, long());
+    let main_l = window_loudness(&main);
+    // kick, snare, hats, two overheads and a tom at their kb typical levels (mid of level_rel_mix_lu)
+    let kit = [
+        ("kick", 0.0),
+        ("snare_top", -6.0),
+        ("hihat", 0.0),
+        ("overheads", 0.0),
+        ("overheads", 0.0),
+        ("tom_rack", -14.0),
+    ];
+    let taps = |kit: &[(&str, f32)]| -> Vec<StripTap> {
+        kit.iter()
+            .enumerate()
+            .map(|(i, (src, off))| {
+                let mut t = base[0].clone();
+                t.strip = StripId::new("input", i as u32 + 10);
+                t.source = Some(src.to_string());
+                let mid = kb().source(src).unwrap().level_rel_mix_lu.mid() as f32;
+                let d = main_l + mid + off - window_loudness(&t.features);
+                t.features.loudness.short_term_lufs += d;
+                if let Some(x) = t.features.loudness.integrated_lufs.as_mut() {
+                    *x += d;
+                }
+                t
+            })
+            .collect()
+    };
+    let d = run(&main, &q, &taps(&kit));
+    let snare = d
+        .problems
+        .iter()
+        .find(|p| p.id == "level:input.11:balance_dev_lu")
+        .unwrap_or_else(|| panic!("{}", dump(&d)));
+    assert!((snare.evidence.deviation + 6.0).abs() < 0.3, "{}", dump(&d));
+    assert!(snare.severity > 0.3);
+    // the tom (bleed between fills) is not judged, and the rest of the kit is in balance
+    assert!(
+        !ids(&d)
+            .iter()
+            .any(|i| i.contains("balance_dev_lu") && !i.contains("input.11")),
+        "{}",
+        dump(&d)
+    );
+    let mut fixed = kit;
+    fixed[1].1 = 0.0;
+    let d = run(&main, &q, &taps(&fixed));
+    assert!(
+        !ids(&d).iter().any(|i| i.contains("balance_dev_lu")),
+        "{}",
+        dump(&d)
+    );
+}

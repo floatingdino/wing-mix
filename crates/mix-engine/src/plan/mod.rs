@@ -363,6 +363,56 @@ fn dynamics_opportunity(p: &Problem, state: Option<&ConsoleState>) -> bool {
 /// otherwise equal moves without outweighing the target deviations.
 const MASKING_SHARE: f64 = 0.2;
 
+/// eq.toml `[limits] preferred_boost_db` upper end: the typical tonal boost (checked against the kb in tests).
+pub const PREFERRED_BOOST_DB: f64 = 3.0;
+
+/// Weight (relative to `target_weight`) of one strip's boost into an excess band, per [`PREFERRED_BOOST_DB`] of
+/// boost beyond the typical one, capped at one unit per strip and band.
+const BOOST_INTO_EXCESS_SHARE: f64 = 0.5;
+
+/// M039 per-strip contribution: EQ boosts larger than the typical tonal boost on a strip that contributes to a stem or
+/// mix band which is above its target (eq.toml: cut before boost; a boost feeding an excess is the excess's cause).
+/// A +8 dB keys boost at 250 Hz moves mix-sim's Other stem by ~3 dB inside the reference's 20 dB window spread
+/// (seed 7): invisible as a deviation, obvious as a contribution. Counted while the console shows the boost.
+fn boost_into_excess(d: &Diagnosis, state: &ConsoleState) -> f64 {
+    let mut seen: BTreeSet<(StripId, state::BandSlot)> = BTreeSet::new();
+    let mut load = 0.0;
+    for p in &d.problems {
+        if !matches!(p.kind, ProblemKind::Tonal | ProblemKind::Harshness)
+            || p.evidence.deviation <= 0.0
+            || p.evidence.excess <= 0.0
+        {
+            continue;
+        }
+        let Some(band) = &p.scope.band else { continue };
+        let strips: Vec<&StripId> = match &p.scope.subject {
+            Subject::Stem { strips, .. } => strips.iter().collect(),
+            Subject::Strip { strip, .. } => vec![strip],
+            _ => p.contributors.iter().map(|c| &c.strip).collect(),
+        };
+        let (lo, hi) = (
+            band.lo_hz as f64 / std::f64::consts::SQRT_2,
+            band.hi_hz as f64 * std::f64::consts::SQRT_2,
+        );
+        for s in strips {
+            let Some(eq) = state.settings(s).eq.filter(|e| e.on) else {
+                continue;
+            };
+            let scale = eq.mix_pct / 100.0;
+            for (slot, b) in &eq.bands {
+                let g = b.gain_db * scale;
+                if g <= PREFERRED_BOOST_DB || b.freq_hz < lo || b.freq_hz > hi {
+                    continue;
+                }
+                if seen.insert((s.clone(), *slot)) {
+                    load += ((g - PREFERRED_BOOST_DB) / PREFERRED_BOOST_DB).min(1.0);
+                }
+            }
+        }
+    }
+    load
+}
+
 fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
     let load: f32 = d
         .problems
@@ -370,6 +420,8 @@ fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
         .filter(|p| target_referenced(p) || dynamics_opportunity(p, state))
         .map(|p| p.score())
         .sum();
+    let boosts = state.map_or(0.0, |st| boost_into_excess(d, st));
+    let load = load + (BOOST_INTO_EXCESS_SHARE * boosts) as f32;
     let masking: f64 = d
         .problems
         .iter()
@@ -484,6 +536,22 @@ fn check_remit(
     let allow_conditional = cfg.allow_conditional;
     let mut clamped = false;
     let mut confirm = Vec::new();
+    // M039: confirmations the candidate assumes (a stereo pair the planner identified): checked as if confirmed
+    // and flagged, like any conditional move (without conditional moves the remit's own view applies)
+    let assumed: RemitSession;
+    let session = if allow_conditional && !c.assume.is_empty() {
+        let mut s = remit.session.clone();
+        for k in &c.assume {
+            if !s.is_confirmed(k) {
+                s.confirm(k.clone());
+                confirm.push(k.clone());
+            }
+        }
+        assumed = s;
+        &assumed
+    } else {
+        remit.session
+    };
     let mut kept = Vec::new();
     // a model switch re-maps the slot: later changes are checked against the console after the switch
     let mut scratch: Option<ConsoleState> = None;
@@ -497,7 +565,7 @@ fn check_remit(
         let mut req = WriteRequest::new(ch.param.clone(), spec.class);
         req.from = from.clone();
         req.to = Some(ch.to.clone());
-        let d = evaluate(remit.policy, remit.ctx, remit.session, &req);
+        let d = evaluate(remit.policy, remit.ctx, session, &req);
         match d.class {
             Verdict::Forbidden => return Err(format!("{}: forbidden ({})", ch.param, d.detail)),
             Verdict::Conditional if !allow_conditional => {
@@ -555,7 +623,7 @@ fn check_remit(
         if to != ch.to {
             let mut req2 = req.clone();
             req2.to = Some(to.clone());
-            if evaluate(remit.policy, remit.ctx, remit.session, &req2).class == Verdict::Forbidden {
+            if evaluate(remit.policy, remit.ctx, session, &req2).class == Verdict::Forbidden {
                 return Err(format!("{}: forbidden after envelope clamp", ch.param));
             }
         }
@@ -670,6 +738,14 @@ pub fn plan_with(
                     .max(s0),
             )
         };
+        let remit_pair = |a: &StripId, b: &StripId| {
+            input
+                .remit
+                .session
+                .confirmed_pair(a)
+                .or_else(|| input.remit.ctx.get(a).and_then(|x| x.pair.clone()))
+                .is_some_and(|p| &p.partner == b)
+        };
         let gen = candidates::Gen {
             kb,
             state: &state,
@@ -679,6 +755,7 @@ pub fn plan_with(
             source_of: &src_fn,
             stems: &stems,
             raise_to: &raise_fn,
+            remit_pair: &remit_pair,
         };
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut cands: Vec<Checked> = Vec::new();
@@ -1149,6 +1226,11 @@ fn annotate(
 }
 
 /// Group by phase (a move never runs before an earlier-selected move on the same param), insert inspect steps.
+/// A main-bus EQ move answering a mix tonal problem (candidates `main_eq`, rule `bus_master_eq`).
+fn is_voicing(m: &PlannedMove) -> bool {
+    m.rules.iter().any(|r| r == "bus_master_eq")
+}
+
 fn order(
     chosen: &[(usize, PlannedMove)],
     kb: &KnowledgeBase,
@@ -1170,7 +1252,18 @@ fn order(
         }
         eff.push((p, i, m));
     }
-    eff.sort_by_key(|x| (x.0, x.1));
+    // M039: main-bus voicing EQ (a mix-wide tonal deviation: room/PA voicing, `bus_master_eq`) runs first when it
+    // is the plan's biggest single gain: live engineers voice the system before balancing, and the loop re-plans
+    // after drifts and reverts, so a last-phase move with the largest benefit was rarely reached
+    let best_other = eff
+        .iter()
+        .filter(|x| !is_voicing(x.2))
+        .map(|x| x.2.benefit)
+        .fold(0.0f64, f64::max);
+    eff.sort_by_key(|x| {
+        let promoted = is_voicing(x.2) && x.2.benefit >= best_other;
+        (if promoted { 0 } else { x.0 + 1 }, x.1)
+    });
     let eff = split_moves(merge_moves(eff, input.state, cfg.max_changes), input, cfg);
     let orders: BTreeMap<String, u32> = kb
         .phases()

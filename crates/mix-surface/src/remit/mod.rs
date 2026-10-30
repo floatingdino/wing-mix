@@ -4,6 +4,7 @@
 //! - [`eval`]: the eight-step evaluator for param writes, plus inspection (solo/listen/RTA) decisions.
 //! - [`detect`]: role detection (pluggable [`detect::RoleDetector`]; default scorer with policy vocabulary).
 //! - [`evidence`]: generic evidence extraction from a [`crate::model::Topology`].
+//! - [`pairs`]: stereo-pair detection (names) for `stereo_pair` rules (M039).
 //!
 //! Typical use:
 //! ```text
@@ -20,6 +21,7 @@ pub mod detect;
 pub mod eval;
 pub mod evidence;
 pub mod glob;
+pub mod pairs;
 pub mod policy;
 
 pub use detect::{Detection, Evidence, RoleDetector, ScoringDetector};
@@ -28,4 +30,5 @@ pub use eval::{
     RemitSession, RemitStrip, WriteRequest,
 };
 pub use evidence::{detect_topology, effective_roles};
+pub use pairs::{detect_pairs, detect_topology_pairs, PairSide, StereoPair};
 pub use policy::{Envelope, Policy, PolicyError, Rule, Verdict};

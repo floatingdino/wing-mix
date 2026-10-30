@@ -5,8 +5,8 @@ use mix_surface::remit::detect::{
     confidence_band, BusEvidence, Evidence, InputEvidence, MainEvidence,
 };
 use mix_surface::remit::{
-    evaluate, evaluate_inspection, InspectionKind, Policy, RemitContext, RemitSend, RemitSession,
-    RemitStrip, RoleDetector, Rule, ScoringDetector, WriteRequest,
+    detect_pairs, evaluate, evaluate_inspection, InspectionKind, Policy, RemitContext, RemitSend,
+    RemitSession, RemitStrip, RoleDetector, Rule, ScoringDetector, WriteRequest,
 };
 use mix_surface::{ParamId, StripId, Value};
 use serde::Deserialize;
@@ -46,6 +46,8 @@ struct TStrip {
     id: String,
     kind: StripKind,
     role: Option<Role>,
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
@@ -90,6 +92,7 @@ struct TExpect {
     reason: String,
     rule: Option<String>,
     coupled: Option<bool>,
+    max_delta_pct: Option<f64>,
 }
 
 fn to_value(v: &toml::Value) -> Value {
@@ -134,6 +137,15 @@ fn build_ctx(t: &EvalTable) -> RemitContext {
             .collect();
         ctx.insert(r);
     }
+    // stereo pairs from the strip names (M039)
+    let ids: Vec<(StripId, StripKind, &str)> = t
+        .strip
+        .iter()
+        .map(|s| (StripId::parse(&s.id).unwrap(), s.kind, s.name.as_str()))
+        .collect();
+    for (id, pair) in detect_pairs(ids.iter().map(|(i, k, n)| (i, *k, *n))) {
+        ctx.strips.get_mut(&id).unwrap().pair = Some(pair);
+    }
     ctx
 }
 
@@ -175,6 +187,82 @@ fn remit_eval_table_detects_policy_mutation() {
             .any(|f| f.starts_with("eq-before-iem-tap-is-coupled-but-allowed")),
         "{failures:?}"
     );
+}
+
+/// M039: the stereo-pair cases catch a pair rule that forgets its selector (every pan would get +-100) or loses its
+/// priority (pairs would stay at +-50).
+#[test]
+fn remit_eval_table_detects_pair_rule_mutation() {
+    let text = std::fs::read_to_string(data("wing-default.toml")).unwrap();
+    for (from, to, case) in [
+        ("stereo_pair = true\n", "", "mono-source-keeps-50"),
+        (
+            "stereo_pair = true\nclass = \"allowed\"\npriority = 1",
+            "stereo_pair = true\nclass = \"allowed\"",
+            "pair-left-spreads-to-full-left",
+        ),
+    ] {
+        let mutated = text.replacen(from, to, 1);
+        assert_ne!(text, mutated, "{from:?}");
+        let failures = run_eval(&eval_table(), &Policy::from_toml_str(&mutated).unwrap());
+        assert!(
+            failures.iter().any(|f| f.starts_with(case)),
+            "{case}: {failures:?}"
+        );
+    }
+}
+
+/// A user-confirmed pair replaces the detected one; unpairing returns both strips to the mono envelope.
+#[test]
+fn confirmed_pairs_override_detection() {
+    let table = eval_table();
+    let policy = default_policy();
+    let mut ctx = build_ctx(&table);
+    let session = RemitSession::default();
+    let id = |s: &str| StripId::parse(s).unwrap();
+    let pan = |ctx: &RemitContext, strip: &str, to: f64| {
+        let req = WriteRequest::new(ParamId::new(format!("{strip}/pan")), ParamClass::Pan)
+            .change(0.0, to);
+        evaluate(&policy, ctx, &session, &req).rule.unwrap()
+    };
+    assert_eq!(pan(&ctx, "input.11", -100.0), "input-pair-spread");
+    assert_eq!(pan(&ctx, "input.1", -100.0), "input-level-pan");
+    // the user says KICK (input.1) and KEYS R (input.12) are a pair: KEYS L becomes mono
+    ctx.confirm_pair(&id("input.1"), &id("input.12"));
+    assert_eq!(pan(&ctx, "input.1", -100.0), "input-pair-spread");
+    assert_eq!(pan(&ctx, "input.12", 100.0), "input-pair-spread");
+    assert_eq!(pan(&ctx, "input.11", -100.0), "input-level-pan");
+    // a pair confirmed in the session (planner proposal accepted by the user): unnamed channels 1 + 9
+    let mut confirmed = RemitSession::default();
+    confirmed.confirm(RemitSession::pair_key(&id("input.9"), &id("input.30")));
+    let pan_s = |session: &RemitSession, strip: &str, to: f64| {
+        let req = WriteRequest::new(ParamId::new(format!("{strip}/pan")), ParamClass::Pan)
+            .change(0.0, to);
+        evaluate(&policy, &ctx, session, &req)
+    };
+    assert_eq!(
+        pan_s(&confirmed, "input.9", -100.0).rule.unwrap(),
+        "input-pair-spread"
+    );
+    assert_eq!(
+        pan_s(&confirmed, "input.9", 100.0).rule.unwrap(),
+        "input-level-pan"
+    );
+    // input.30 has a post-pan wedge send: still capped by coupling
+    let d = pan_s(&confirmed, "input.30", 100.0);
+    assert_eq!(
+        (d.rule.unwrap(), d.class.as_str()),
+        ("input-pair-spread".to_string(), "conditional")
+    );
+    // a monitor strip stays locked whatever the session says
+    confirmed.confirm(RemitSession::pair_key(&id("input.32"), &id("input.9")));
+    assert_eq!(
+        pan_s(&confirmed, "input.32", -100.0).class.as_str(),
+        "forbidden"
+    );
+    ctx.unpair(&id("input.12"));
+    assert_eq!(pan(&ctx, "input.1", -100.0), "input-level-pan");
+    assert_eq!(pan(&ctx, "input.12", 100.0), "input-level-pan");
 }
 
 fn run_eval(table: &EvalTable, base: &Policy) -> Vec<String> {
@@ -225,6 +313,12 @@ fn run_eval(table: &EvalTable, base: &Policy) -> Vec<String> {
         if let Some(r) = &c.expect.rule {
             if d.rule.as_deref() != Some(r.as_str()) {
                 bad.push(format!("rule {:?} != {r}", d.rule));
+            }
+        }
+        if let Some(m) = c.expect.max_delta_pct {
+            let got = d.envelope.and_then(|e| e.max_delta_pct);
+            if got.is_none_or(|g| (g - m).abs() > 1e-9) {
+                bad.push(format!("max_delta_pct {got:?} != {m}"));
             }
         }
         if let Some(cp) = c.expect.coupled {
