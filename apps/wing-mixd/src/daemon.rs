@@ -771,6 +771,11 @@ impl Daemon {
                 let layout = TapLayout::from_selection(&s.taps.unwrap_or_else(default_taps))?;
                 Source::file(Path::new(path), layout)?
             }
+            InputKind::Stream => {
+                let addr = s.addr.as_deref().ok_or("stream input needs `addr`")?;
+                let layout = TapLayout::from_selection(&s.taps.unwrap_or_else(default_taps))?;
+                Source::stream(addr, s.channels, s.sample_rate.unwrap_or(48_000), layout)?
+            }
         };
         let meters = Meters::new(&source.layout, source.sample_rate)?;
         let surface = self.console.as_ref().map(|c| c.surface.clone());

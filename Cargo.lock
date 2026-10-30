@@ -1895,6 +1895,7 @@ dependencies = [
  "mix-core",
  "mix-describe",
  "mix-engine",
+ "mix-fixtures",
  "mix-knowledge",
  "mix-llm",
  "mix-reference",

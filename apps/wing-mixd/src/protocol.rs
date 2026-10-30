@@ -197,6 +197,9 @@ pub enum InputKind {
     File,
     /// The embedded sim console's own taps.
     Sim,
+    /// Raw interleaved little-endian f32 frames read from a TCP stream (`addr`, `channels`, `sample_rate`): a
+    /// network audio bridge, e.g. a headless wing-sim's USB outputs in the end-to-end harness (M052).
+    Stream,
 }
 
 /// One console tap carried by input channels.
@@ -225,6 +228,12 @@ pub struct SelectInput {
     /// Taps (default: `main` on channels 1-2; sim: main, solo and every input).
     #[serde(default)]
     pub taps: Option<Vec<TapSel>>,
+    /// `stream`: `host:port` the daemon connects to.
+    #[serde(default)]
+    pub addr: Option<String>,
+    /// `stream`: channels per frame on the wire (default: the highest tap channel).
+    #[serde(default)]
+    pub channels: Option<usize>,
 }
 
 /// `load_reference`.

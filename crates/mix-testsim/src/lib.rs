@@ -344,6 +344,16 @@ impl ShmDriver {
     }
 }
 
+impl ShmDriver {
+    /// Take (drain) everything captured since the last call, one `Vec` per requested lane in request order. For
+    /// long runs that stream the console's outputs elsewhere (the M052 end-to-end harness) without the capture
+    /// growing; [`ShmDriver::captured`] afterwards only sees what came after.
+    pub fn take_captured(&self) -> Vec<Vec<f32>> {
+        let mut c = self.capture.lock().unwrap();
+        c.iter_mut().map(std::mem::take).collect()
+    }
+}
+
 impl Drop for ShmDriver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -429,6 +439,11 @@ impl SimConsole {
 
     pub fn captured(&self, usb: usize) -> Vec<f32> {
         self.driver.captured(usb)
+    }
+
+    /// See [`ShmDriver::take_captured`].
+    pub fn take_captured(&self) -> Vec<Vec<f32>> {
+        self.driver.take_captured()
     }
 
     /// To hear USB input `n` in strip `ch`, write `input.<ch>/source/grp = USB` and `input.<ch>/source/in = n`
