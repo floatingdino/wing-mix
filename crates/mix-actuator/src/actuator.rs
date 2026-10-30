@@ -51,7 +51,7 @@ struct Ramp {
     done: Vec<Track>,
     /// Params of the block(s) a model switch in this batch governs: written only after the switch and the
     /// surface's `ParamsRemapped`, against the re-resolved specs.
-    phase2: Option<Phase2>,
+    phase2: Option<Box<Phase2>>,
 }
 
 struct Phase2 {
@@ -83,7 +83,7 @@ struct Deferred {
 }
 
 enum Active {
-    Ramp(Ramp),
+    Ramp(Box<Ramp>),
     Inspect(Box<Inspect>),
 }
 
@@ -631,7 +631,7 @@ impl Actuator {
 
     fn start_ramp(&mut self, r: Ramp) {
         self.emit_started(&r);
-        self.active = Some(Active::Ramp(r));
+        self.active = Some(Active::Ramp(Box::new(r)));
     }
 
     fn emit_started(&mut self, r: &Ramp) {
@@ -713,12 +713,12 @@ impl Actuator {
                 .enumerate()
                 .partition(|(i, _)| later.contains(i));
             first = f.into_iter().map(|(_, c)| c).collect();
-            phase2 = Some(Phase2 {
+            phase2 = Some(Box::new(Phase2 {
                 changes: l.into_iter().map(|(_, c)| c.clone()).collect(),
                 models,
                 remapped: false,
                 waiting_since: None,
-            });
+            }));
         }
         let mut tracks = Vec::new();
         let mut skipped = Vec::new();
@@ -934,7 +934,7 @@ impl Actuator {
             Active::Ramp(mut r) => match self.step_ramp(&mut r) {
                 Step::Running => Some(Active::Ramp(r)),
                 out => {
-                    self.finish_ramp(r, out);
+                    self.finish_ramp(*r, out);
                     self.idle_until = self.now + self.cfg.settle_s;
                     None
                 }
@@ -1360,7 +1360,7 @@ impl Actuator {
 
     fn cancel_all(&mut self, reason: AbortReason) {
         match self.active.take() {
-            Some(Active::Ramp(r)) => self.finish_ramp(r, Step::Aborted(reason.clone())),
+            Some(Active::Ramp(r)) => self.finish_ramp(*r, Step::Aborted(reason.clone())),
             Some(Active::Inspect(i)) => self.abort_inspect(*i, reason.clone()),
             None => {}
         }

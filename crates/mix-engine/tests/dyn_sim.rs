@@ -14,7 +14,7 @@
 //!
 //! Documented outlier: gating bleed that sits above the analyser's relative gate (−20 LU) changes which frames
 //! count as active, so the strip's integrated loudness/active share/crest follow a bleed/hit decomposition the
-//! proxy cannot see from broadband statistics (≤ 2.0 LU, ≤ 0.55, ≤ 3.0 dB); the all-frames RMS (what reaches the
+//! proxy cannot see from broadband statistics (≤ 2.0 LU, ≤ 0.55, ≤ 3.0 dB, LRA ≤ 2.5 LU since M038); the all-frames RMS (what reaches the
 //! main) and the main stay within the defaults.
 //!
 //! Song modifications for gate/de-esser cases: `bleed` adds the OH L track at −10 dB into the TOM track (cymbal
@@ -316,6 +316,8 @@ pub fn tol_for(name: &str) -> Tol {
         t.active = 0.55;
         t.crest = 3.0;
         t.attack = 2.5;
+        // M038: the analyser's onset detector no longer counts bleed as hits, the proxy's event-rate fit moves with it
+        t.lra = 2.5;
     }
     if name.starts_with("kick") {
         t.main_spec = 1.5;
