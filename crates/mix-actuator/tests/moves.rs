@@ -3,13 +3,19 @@
 mod common;
 
 use common::*;
-use mix_actuator::{AbortReason, ActuatorConfig, ActuatorEvent, Job, JobKind, Refusal};
+use mix_actuator::{
+    AbortReason, ActuatorConfig, ActuatorEvent, Job, JobKind, PolicyGate, Refusal, RemitGate,
+};
 use mix_core::action::{Action, ParamChange};
+use mix_core::ids::StripId;
 use mix_core::value::Value;
+use mix_surface::model::ParamClass;
+use mix_surface::remit::{Decision, InspectionKind, WriteRequest};
 use mix_surface::remit::{Reason, Verdict};
 use mix_surface::testkit::FakeSurface;
 use mix_surface::Surface;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 fn mv(label: &str, changes: &[(&str, Value)]) -> Action {
     changes.iter().fold(Action::new(label), |a, (id, v)| {
@@ -202,24 +208,65 @@ fn discrete_params_are_single_writes() {
     assert_eq!(r.read("input.1/eq/on"), Value::Bool(false));
 }
 
+/// Default policy, except that model switches of the demo console are allowed (the default remit keeps them
+/// conditional/coupled; the ordering is what is under test).
+struct ModelsAllowed(PolicyGate);
+
+impl RemitGate for ModelsAllowed {
+    fn check_write(&self, req: &WriteRequest, base: &Value) -> Decision {
+        let mut d = self.0.check_write(req, base);
+        if matches!(req.class, ParamClass::EqModel | ParamClass::DynamicsModel) {
+            d.class = Verdict::Allowed;
+        }
+        d
+    }
+    fn check_inspection(&self, kind: InspectionKind, strip: &StripId) -> Decision {
+        self.0.check_inspection(kind, strip)
+    }
+}
+
 #[test]
 fn never_ramps_across_a_model_change() {
-    let mut r = Rig::new(ActuatorConfig::default());
-    // A model change and params of the same block cannot share a batch.
+    let s = Arc::new(FakeSurface::demo());
+    let gate = ModelsAllowed(PolicyGate::new(policy(), &*s).unwrap());
+    let mut r = Rig::with_gate(s, Box::new(gate), ActuatorConfig::default());
+    // A model change and params of the same block in one batch: the switch is written first, the params only
+    // after the surface's ParamsRemapped (never ramped across the change); unrelated params ride with the switch.
     let mixed = r.a.submit(mv(
         "mixed",
         &[
-            ("input.1/eq/model", Value::Enum("SOUL".into())),
+            ("input.1/eq/mid.gain", f(-3.0)), // exists only on SOUL
             ("input.2/fader", f(-1.0)),
-            ("input.1/eq/band.1.gain", f(-3.0)),
+            ("input.1/eq/model", Value::Enum("SOUL".into())),
         ],
     ));
     r.run_idle(5.0);
+    assert!(r.done(mixed), "{:#?}", r.log);
+    let wl = r.a.write_log();
+    let model_at = wl
+        .iter()
+        .position(|w| w.param.as_str() == "input.1/eq/model")
+        .expect("model written");
+    let gain_at: Vec<usize> = wl
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.param.as_str() == "input.1/eq/mid.gain")
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!gain_at.is_empty() && gain_at.iter().all(|i| *i > model_at));
+    assert!(wl[gain_at[0]].at_s > wl[model_at].at_s, "after the switch");
+    assert_eq!(r.read("input.1/eq/mid.gain"), f(-3.0));
+    assert_eq!(r.read("input.1/eq/model"), Value::Enum("SOUL".into()));
+    assert_eq!(r.read("input.2/fader"), f(-1.0));
+    // One Done event with all three changes.
     assert!(r
-        .find(|e| matches!(e, ActuatorEvent::Refused { id, reason: Refusal::MixedModelChange { .. }, .. } if *id == mixed))
+        .find(|e| matches!(e, ActuatorEvent::Done { id, changes } if *id == mixed && changes.len() == 3))
         .is_some());
-    assert!(r.a.write_log().is_empty());
+}
 
+#[test]
+fn engineer_model_change_aborts_a_running_ramp() {
+    let mut r = Rig::new(ActuatorConfig::default());
     // The engineer changes the model while a gain ramps: abort, nothing written after.
     let id =
         r.a.submit(mv("gain", &[("input.1/eq/band.1.gain", f(-6.0))]));

@@ -507,3 +507,11 @@ fn origin_sweep_other_clients_external_own_local() {
     }
     assert!(checked > 100, "{checked}");
 }
+
+/// M038: a batch that switches a block's model and sets one of the block's params writes the switch first, waits
+/// for `ParamsRemapped`, then writes the param.
+#[test]
+fn actuator_writes_the_model_switch_before_the_blocks_params() {
+    let con = InProc::start();
+    common::model_switch_is_written_before_the_blocks_params(std::sync::Arc::new(con.connect()));
+}

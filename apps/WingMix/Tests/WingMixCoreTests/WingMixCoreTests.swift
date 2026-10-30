@@ -128,6 +128,68 @@ func tempDir(_ tag: String) throws -> URL {
     }
 }
 
+@Suite struct StripNameTests {
+    let names = StripNames([
+        StripEntry(id: "input.13", kind: "input", name: "VOX 1"),
+        StripEntry(id: "bus.5", kind: "bus", name: " IEM 1 "),
+        StripEntry(id: "input.2", kind: "input", name: "  "),
+    ])
+
+    @Test func `labels carry the console name and the short id`() {
+        #expect(names.label("input.13") == "VOX 1 (ch 13)")
+        #expect(names.label("bus.5") == "IEM 1 (bus 5)")
+        #expect(names.label("input.2") == "ch 2")  // blank name = unnamed
+        #expect(names.label("matrix.3") == "mtx 3" && names.label("dca.1") == "DCA 1")
+        #expect(names.label("weird") == "weird")
+    }
+
+    @Test func `ids inside free text and param paths are rewritten`() {
+        #expect(names.humanize("input.13 fader +1.6 dB") == "VOX 1 (ch 13) fader +1.6 dB")
+        #expect(names.humanize("input.13/fader: -10.0 -> -7.0") == "VOX 1 (ch 13) fader: -10.0 -> -7.0")
+        #expect(names.humanize("bus.5/eq/1/gain") == "IEM 1 (bus 5) eq/1/gain")
+        #expect(names.humanize("mostly input.13 and input.7, not mix_band") == "mostly VOX 1 (ch 13) and ch 7, not mix_band")
+        #expect(names.humanize("no ids here") == "no ids here")
+        #expect(StripNames().humanize("input.13") == "ch 13")
+    }
+
+    @Test func `decodes the strips reply`() throws {
+        let raw = #"{"ok":true,"result":{"strips":[{"id":"input.1","kind":"input","name":"KICK"}]}}"#
+        let l = try ControlClient.parseReply(raw, as: StripList.self)
+        #expect(StripNames(l.strips).label("input.1") == "KICK (ch 1)")
+    }
+}
+
+@Suite struct EventStreamTests {
+    @Test func `line buffer splits chunks into lines`() {
+        var b = LineBuffer()
+        #expect(b.append(Array("{\"a\":1}\n{\"b".utf8)) == ["{\"a\":1}"])
+        #expect(b.append(Array("\":2}\n\n".utf8)) == ["{\"b\":2}", ""])
+    }
+
+    @Test func `events parse and skip junk`() {
+        let e = DaemonEvent.parse(#"{"source":"daemon","type":"console_connected","at_s":1.5,"unix":1}"#)
+        #expect(e?.type == "console_connected" && e?.atS == 1.5 && e?.changesStrips == true)
+        #expect(DaemonEvent.parse(#"{"source":"control","type":"measured"}"#)?.changesStrips == false)
+        #expect(DaemonEvent.parse("nonsense") == nil)
+    }
+
+    @Test func `stream reconnects when the daemon is not there yet`() async throws {
+        let dir = try tempDir("evs")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stream = EventStream(socketURL: DaemonPaths(stateDir: dir).socketURL, maxBackoff: 0.2)
+        var seen: [StreamItem] = []
+        for await item in stream.items() {
+            seen.append(item)
+            if seen.count == 2 { break }
+        }
+        #expect(seen.count == 2)
+        guard case .disconnected = seen[0], case .disconnected = seen[1] else {
+            Issue.record("expected repeated disconnects, got \(seen)")
+            return
+        }
+    }
+}
+
 @Suite struct StatusTests {
     let json = """
     {"running":true,"pid":4242,"version":"0.1.0","updated_unix":1000.0,"uptime_s":3,"state_dir":"/x",
@@ -218,6 +280,23 @@ let daemonExists = FileManager.default.isExecutableFile(atPath: daemonBinary.pat
         #expect(fileStatus.running && fileStatus.pid == Int(proc.processIdentifier))
         let snap = try await client.call(Snapshot.self, "snapshot")
         #expect(snap.console?.kind == "sim")
+        #expect(snap.liveContextApplied == true && snap.liveContext == "broadcast_video")
+        let strips = try await client.call(StripList.self, "strips")
+        #expect(StripNames(strips.strips).names.count >= 16)
+
+        // event stream: a console change arrives as an event
+        let stream = EventStream(socketURL: paths.socketURL)
+        let gotEvent = Task { () -> Bool in
+            for await item in stream.items() {
+                if case .event(let e) = item, e.type == "live_context_changed", e.raw["live_context"]?.string == "live" { return true }
+            }
+            return false
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        _ = try await client.request("set_live_context", ["context": "live"])
+        let timeout = Task { try await Task.sleep(for: .seconds(10)); gotEvent.cancel() }
+        #expect(await gotEvent.value)
+        timeout.cancel()
 
         // no session yet: STOP and PANIC are refused with a message, not a hang
         await #expect(throws: ControlError.daemon("no session: nothing to stop")) { try await client.request("STOP") }

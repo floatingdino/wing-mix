@@ -38,7 +38,7 @@ use crate::onset::{OnsetDetector, FLUX_GAMMA};
 use crate::stats::{percentile_in_place, Histogram};
 
 /// Version of the analysis algorithms; recorded in `AnalysisParams::version` of every profile.
-pub const ANALYSIS_VERSION: u32 = 1;
+pub const ANALYSIS_VERSION: u32 = 2;
 
 /// Errors from building an analyser.
 #[derive(Debug, Clone, PartialEq)]
@@ -349,6 +349,18 @@ pub struct StreamingAnalyser {
     range_decim: u32,
     range_counter: u32,
     scratch: Vec<f32>,
+    // Noise floor (M038): blocks of `nf_blk` frames, `nf_ring` holds the newest block levels (dB) and whether each
+    // was free of onsets; `nf_hist` is the Session histogram of onset-free blocks (`nf_hist_all`: every block).
+    nf_blk: usize,
+    nf_acc: f64,
+    nf_n: usize,
+    nf_clean: bool,
+    nf_ring: Vec<(f32, bool)>,
+    nf_pos: usize,
+    nf_len: usize,
+    nf_hist: Histogram,
+    nf_hist_all: Histogram,
+    nf_scratch: Vec<f32>,
     committed: u64,
     dropouts: u32,
     // Derived constants.
@@ -412,6 +424,8 @@ impl StreamingAnalyser {
         let ema_k = (-(cfg.hop as f64) / (sr as f64 * cfg.long_tau_s as f64)).exp();
 
         let mk_hist = || Histogram::new(DB_FLOOR, 20.0, 0.1);
+        let nf_blk = (0.05 * fps).round().max(1.0) as usize;
+        let nf_cap = ((cfg.long_tau_s.max(3.0) as f64 * fps) / nf_blk as f64).ceil() as usize + 1;
         Ok(StreamingAnalyser {
             ebu,
             fft,
@@ -441,10 +455,10 @@ impl StreamingAnalyser {
             frame_idx: 0,
             prev_lflux: [0.0; N_ERB],
             detectors: [
-                OnsetDetector::new(N_ERB, min_spacing),
-                OnsetDetector::new(band3_counts[0], min_spacing),
-                OnsetDetector::new(band3_counts[1], min_spacing),
-                OnsetDetector::new(band3_counts[2], min_spacing),
+                OnsetDetector::new(N_ERB, min_spacing, fps),
+                OnsetDetector::new(band3_counts[0], min_spacing, fps),
+                OnsetDetector::new(band3_counts[1], min_spacing, fps),
+                OnsetDetector::new(band3_counts[2], min_spacing, fps),
             ],
             pending: None,
             last_onset: i64::MIN / 2,
@@ -462,6 +476,16 @@ impl StreamingAnalyser {
             range_decim,
             range_counter: 0,
             scratch: vec![0.0; 2 * range_cap],
+            nf_blk,
+            nf_acc: 0.0,
+            nf_n: 0,
+            nf_clean: true,
+            nf_ring: vec![(DB_FLOOR, false); nf_cap],
+            nf_pos: 0,
+            nf_len: 0,
+            nf_hist: mk_hist(),
+            nf_hist_all: mk_hist(),
+            nf_scratch: vec![0.0; 2 * nf_cap],
             committed: 0,
             dropouts: 0,
             st_frames,
@@ -500,6 +524,8 @@ impl StreamingAnalyser {
     pub fn reset_session(&mut self) {
         self.session = Agg::ZERO;
         self.session_range.iter_mut().for_each(Histogram::reset);
+        self.nf_hist.reset();
+        self.nf_hist_all.reset();
         self.ebu.reset();
         self.session_start_frame = self.committed;
         self.dropouts = 0;
@@ -663,6 +689,7 @@ impl StreamingAnalyser {
         self.ema.add(r, 1.0 - self.ema_k);
         self.session.add(r, 1.0);
         self.committed += 1;
+        self.commit_noise_block(r);
 
         self.range_counter += 1;
         if self.range_counter >= self.range_decim {
@@ -681,6 +708,55 @@ impl StreamingAnalyser {
                     self.range_len = (self.range_len + 1).min(cap);
                 }
             }
+        }
+    }
+
+    /// Accumulates the frame into the current noise-floor block; a full block is stored with its level.
+    fn commit_noise_block(&mut self, r: &FrameRec) {
+        self.nf_acc += r.ms as f64;
+        self.nf_n += 1;
+        self.nf_clean &= !r.onset[0] && !r.post_onset;
+        if self.nf_n < self.nf_blk {
+            return;
+        }
+        let level = db(self.nf_acc / self.nf_n as f64);
+        let cap = self.nf_ring.len();
+        self.nf_ring[self.nf_pos] = (level, self.nf_clean);
+        self.nf_pos = (self.nf_pos + 1) % cap;
+        self.nf_len = (self.nf_len + 1).min(cap);
+        self.nf_hist_all.add(level);
+        if self.nf_clean {
+            self.nf_hist.add(level);
+        }
+        self.nf_acc = 0.0;
+        self.nf_n = 0;
+        self.nf_clean = true;
+    }
+
+    /// p10 of the onset-free block levels among the newest `frames` frames (all blocks if none is onset-free).
+    fn noise_floor(&mut self, frames: usize) -> f32 {
+        let k = (frames / self.nf_blk).max(1).min(self.nf_len);
+        let cap = self.nf_ring.len();
+        let half = self.nf_scratch.len() / 2;
+        let (vals, tmp) = self.nf_scratch.split_at_mut(half);
+        let mut n = 0;
+        for i in 0..k {
+            let (v, clean) = self.nf_ring[(self.nf_pos + cap - 1 - i) % cap];
+            if clean {
+                vals[n] = v;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            for i in 0..k {
+                vals[n] = self.nf_ring[(self.nf_pos + cap - 1 - i) % cap].0;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            DB_FLOOR
+        } else {
+            percentile_in_place(&vals[..n], tmp, 0.10)
         }
     }
 
@@ -788,6 +864,25 @@ impl StreamingAnalyser {
             0.0
         };
         lo.psr_db = amp_db(st.tp.max(st.peak)) - short_term;
+        lo.noise_floor_dbfs = match out.window {
+            Window::Momentary => self.noise_floor(self.m_frames),
+            Window::ShortTerm => self.noise_floor(self.st_frames),
+            Window::Long { .. } => {
+                self.noise_floor((self.cfg.long_tau_s as f64 * self.fps) as usize)
+            }
+            Window::Session => {
+                let h = if self.nf_hist.total() > 0 {
+                    &self.nf_hist
+                } else {
+                    &self.nf_hist_all
+                };
+                if h.total() > 0 {
+                    h.percentile(0.10)
+                } else {
+                    DB_FLOOR
+                }
+            }
+        };
         if matches!(out.window, Window::Session) {
             let i = lufs(self.ebu.loudness_global().unwrap_or(f64::NEG_INFINITY));
             lo.integrated_lufs = Some(i);

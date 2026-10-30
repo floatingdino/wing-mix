@@ -119,7 +119,7 @@ impl Features {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Loudness {
     pub momentary_lufs: f32,
     pub short_term_lufs: f32,
@@ -138,6 +138,36 @@ pub struct Loudness {
     pub psr_db: f32,
     /// Sample peak − RMS over the window.
     pub crest_db: f32,
+    /// Noise floor of the window (M038): p10 of the ~43 ms block mean-square level (dBFS, mean-square scale like
+    /// `rms_dbfs`) over blocks free of onsets (no onset in the block or in the ~64 ms after one). A strip that is
+    /// only its own bleed between hits reads the bleed level, so `rms_dbfs − noise_floor_dbfs` separates signal
+    /// from bleed/noise. Not subject to the loudness gate (a closed gate reads [`DB_FLOOR`]); if every block of
+    /// the window follows an onset, the p10 of all blocks is used. [`DB_FLOOR`] when there is no data; absent in
+    /// older JSON (reads [`DB_FLOOR`]).
+    #[serde(default = "floor_db")]
+    pub noise_floor_dbfs: f32,
+}
+
+fn floor_db() -> f32 {
+    DB_FLOOR
+}
+
+impl Default for Loudness {
+    fn default() -> Self {
+        Loudness {
+            momentary_lufs: 0.0,
+            short_term_lufs: 0.0,
+            integrated_lufs: None,
+            lra_lu: None,
+            true_peak_dbtp: 0.0,
+            sample_peak_dbfs: 0.0,
+            rms_dbfs: 0.0,
+            plr_db: None,
+            psr_db: 0.0,
+            crest_db: 0.0,
+            noise_floor_dbfs: DB_FLOOR,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -220,6 +250,19 @@ mod tests {
         let f = Features::new("main", Window::Long { tau_s: 10.0 }, true);
         let s = serde_json::to_string(&f).unwrap();
         let back: Features = serde_json::from_str(&s).unwrap();
+        assert_eq!(f, back);
+    }
+
+    #[test]
+    fn noise_floor_defaults_for_old_json() {
+        let f = Features::new("main", Window::Session, false);
+        let mut v: serde_json::Value = serde_json::to_value(&f).unwrap();
+        v["loudness"]
+            .as_object_mut()
+            .unwrap()
+            .remove("noise_floor_dbfs");
+        let back: Features = serde_json::from_value(v).unwrap();
+        assert_eq!(back.loudness.noise_floor_dbfs, DB_FLOOR);
         assert_eq!(f, back);
     }
 

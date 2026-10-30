@@ -30,6 +30,16 @@ final class AppModel {
     let client: ControlClient
     private var process: Process?
     private var poller: Task<Void, Never>?
+    private var streamTask: Task<Void, Never>?
+    /// The event stream is connected: refreshes are driven by events and polling is only a fallback.
+    var streamConnected = false
+    private var refreshing = false
+    private var refreshAgain = false
+    private var stripsStale = true
+    /// Console strip names (`strips`), used everywhere a strip id would be shown.
+    var names = StripNames()
+    /// Demo/screenshot mode: keep this snapshot instead of polling.
+    var frozenSnapshot: Snapshot?
     var daemonReady = false
     var daemonMessage = "Starting daemon..."
     var status: DaemonStatus?
@@ -61,6 +71,8 @@ final class AppModel {
     var wingIP = ""
     var simScene = "degraded"
     var simMultitrack = ""
+    /// Strip names given to the embedded sim (demo/screenshots); empty = the sim's own.
+    var simNames: [String] = []
     var inputSource: InputSource = .sim
     var selectedDevice = ""
     var taps: [TapSpec] = [.defaultMain]
@@ -111,6 +123,7 @@ final class AppModel {
         daemonReady = true
         await refreshStatus()
         await refreshDevices()
+        beginStream()
         beginPolling()
         if let s = status {
             if let m = s.mode, let mm = MixMode(rawValue: m) { mode = mm }
@@ -126,17 +139,65 @@ final class AppModel {
     /// App is quitting: stop a daemon we started.
     func shutdown() {
         poller?.cancel()
+        streamTask?.cancel()
         if process?.isRunning == true {
             _ = try? ControlClient(socketURL: paths.socketURL, timeout: 3).sendLine("quit")
         }
     }
 
+    /// Subscribe to the daemon's events; each one (and each heartbeat) triggers a coalesced refresh.
+    private func beginStream() {
+        streamTask?.cancel()
+        let stream = EventStream(socketURL: paths.socketURL)
+        streamTask = Task { [weak self] in
+            for await item in stream.items() {
+                guard let self else { return }
+                switch item {
+                case .connected:
+                    streamConnected = true
+                    stripsStale = true
+                    requestRefresh()
+                case .event(let e):
+                    if e.changesStrips || e.type == "session_started" { stripsStale = true }
+                    requestRefresh()
+                case .disconnected:
+                    streamConnected = false
+                }
+            }
+        }
+    }
+
+    /// Refresh now, or once more right after the one in flight (at most ~4 per second).
+    func requestRefresh() {
+        if refreshing {
+            refreshAgain = true
+            return
+        }
+        refreshing = true
+        Task {
+            repeat {
+                refreshAgain = false
+                await refreshStatus()
+                try? await Task.sleep(for: .milliseconds(250))
+            } while refreshAgain
+            refreshing = false
+        }
+    }
+
+    /// Fallback while the stream is down (500 ms); while it is up only the Live screen's meters are polled, since
+    /// they are not events (1 s).
     private func beginPolling() {
         poller?.cancel()
         poller = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshStatus()
-                try? await Task.sleep(for: .milliseconds(500))
+                guard let self else { return }
+                if !streamConnected {
+                    await refreshStatus()
+                    try? await Task.sleep(for: .milliseconds(500))
+                } else {
+                    if screen == .live, sessionRunning || isConnectedToConsole { await refreshStatus() }
+                    try? await Task.sleep(for: .seconds(1))
+                }
             }
         }
     }
@@ -146,19 +207,28 @@ final class AppModel {
             status = try await client.call(DaemonStatus.self, "status")
             daemonReady = true
             if status?.console != nil {
-                snapshot = try? await client.call(Snapshot.self, "snapshot")
+                if frozenSnapshot == nil { snapshot = try? await client.call(Snapshot.self, "snapshot") }
+                if stripsStale { await refreshStrips() }
                 if let lc = (snapshot?.liveContext ?? status?.liveContext).flatMap(LiveContext.init(rawValue:)), lc != liveContext {
-                liveContext = lc
-            }
-            if let m = snapshot?.mode, let mm = MixMode(rawValue: m), mm != mode { mode = mm }
+                    liveContext = lc
+                }
+                if let a = snapshot?.liveContextApplied { liveContextApplied = a }
+                if let m = snapshot?.mode, let mm = MixMode(rawValue: m), mm != mode { mode = mm }
                 if let info = snapshot?.target?.info { targetInfo = info }
             } else {
                 snapshot = nil
+                names = StripNames()
+                stripsStale = true
             }
         } catch {
             daemonReady = false
             daemonMessage = "Daemon not responding: \(error)"
         }
+    }
+
+    func refreshStrips() async {
+        stripsStale = false
+        if let list = try? await client.call(StripList.self, "strips") { names = StripNames(list.strips) }
     }
 
     // MARK: commands
@@ -277,6 +347,7 @@ final class AppModel {
         if selectedConsole == "sim" {
             var sim: [String: JSONValue] = ["scene": .string(simScene), "speed": 1]
             if !simMultitrack.isEmpty { sim["multitrack"] = .string(simMultitrack) }
+            if !simNames.isEmpty { sim["names"] = .array(simNames.map { .string($0) }) }
             args = ["console": "sim", "sim": .object(sim)]
         } else {
             args = ["console": .string(selectedConsole == "ip" ? wingIP : selectedConsole)]
@@ -328,6 +399,8 @@ final class AppModel {
     /// start a suggest session, so each screen can be captured against real data.
     func runDemo(dir: String) async {
         simMultitrack = dir + "/multitrack.wav"
+        simNames = ["KICK", "SNARE", "HAT", "TOM", "OH L", "OH R", "BASS", "KEYS L", "KEYS R", "GTR", "PAD", "LEAD",
+                    "VOX", "BV 1", "BV 2", "SHAKER"]
         selectedConsole = "sim"
         await connectConsole()
         inputSource = .sim

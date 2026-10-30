@@ -39,7 +39,7 @@ struct Measured {
 
 /// Averages (p50s) of the whole-song profiles of the 3 reference mixes in fixtures/mixes (Holy Forever, I Know That
 /// I Know, Show Me Your Face: contemporary worship, commercially mastered), measured by M016 with mix-reference
-/// (analysis v1). Statistics only; `tests/worship.rs` re-derives them from the local files.
+/// (analysis v2: onset rates re-measured by M038 with the strength gate; the other statistics are unchanged). Statistics only; `tests/worship.rs` re-derives them from the local files.
 const WORSHIP: Measured = Measured {
     erb_mid: [
         -16.6, -13.1, -14.5, -16.5, -16.3, -18.7, -20.0, -20.5, -19.4, -19.9, -21.3, -21.7, -19.3,
@@ -64,7 +64,7 @@ const WORSHIP: Measured = Measured {
     attack: [1.5, 2.4, 0.1, 0.0, 0.9, 1.6],
     width: [-22.7, -8.4, -2.4, -0.9, -1.1, -4.8],
     low_mono: 0.79,
-    band_onset: [3.3, 1.3, 2.8],
+    band_onset: [2.1, 1.2, 1.8],
 };
 
 /// Spread (dB) around measured curve values: 3 references are a small sample, keep the target wide.
@@ -100,7 +100,7 @@ const GENRES: &[GenreParams] = &[
         crest: 6.1,
         correlation: 0.47,
         width_db: -6.7,
-        onset_rate: 2.1,
+        onset_rate: 1.88,
     },
     GenreParams {
         aliases: &[],
