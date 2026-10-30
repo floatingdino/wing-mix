@@ -2,7 +2,7 @@
 id: M019
 title: mix-wing: correct change Origin for other clients + events for reconnect diff
 stage: S1
-status: review
+status: done
 owner: agent-M019
 depends: [M018]
 branch: task/M019
@@ -49,3 +49,4 @@ after a reconnect. Optionally expose the preamp alias in SimSurface.
   - Test: `cargo test -p mix-wing`, `make check`.
   Proposed follow-ups: (1) preamp alias in SimSurface (optional item not done); (2) refresh own-write mirror after
   a conflicting concurrent write (stale mirror when two clients write the same param at once).
+- 2026-10-30 coordinator: merged, make check passes. done. Simultaneous-write stale-mirror risk noted for M052 review.
