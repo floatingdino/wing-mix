@@ -317,7 +317,7 @@ id = "piano"
 family = "keys"
 name_hints = ["piano", "pno", "grand", "upright", "keys ?p"]
 fundamental_hz = [27.5, 4200]
-useful_range_hz = [30, 16000]
+useful_range_hz = [25, 16000]
 hpf = { freq_hz = [30, 100], slope_db_per_oct = 12, start_hz = 50, note = "higher (80-120) in band mixes where bass covers the low end" }
 character = [
   { name = "warmth", freq_hz = [100, 300], effect = "body" },
@@ -389,7 +389,7 @@ id = "backing_vocal"
 family = "vocal"
 name_hints = ["bv", "bvox", "bkg", "back", "harm", "choir", "bgv"]
 fundamental_hz = [85, 1100]
-useful_range_hz = [100, 16000]
+useful_range_hz = [80, 16000]
 hpf = { freq_hz = [100, 200], slope_db_per_oct = 18, start_hz = 130, note = "higher than lead: BVs need less body, leaving room for the lead" }
 character = [ { name = "air", freq_hz = [8000, 14000], effect = "blend/sheen" } ]
 problems = [
@@ -411,7 +411,7 @@ id = "speech"
 family = "speech"
 name_hints = ["speech", "mc", "host", "talk", "pastor", "presenter", "lectern", "lav", "headset"]
 fundamental_hz = [85, 255]
-useful_range_hz = [90, 12000]
+useful_range_hz = [80, 12000]
 hpf = { freq_hz = [80, 150], slope_db_per_oct = 18, start_hz = 100 }
 character = [ { name = "intelligibility", freq_hz = [2000, 4000], effect = "consonant clarity" } ]
 problems = [
