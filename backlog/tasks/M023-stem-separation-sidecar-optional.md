@@ -2,10 +2,10 @@
 id: M023
 title: Stem separation sidecar (optional)
 stage: S2
-status: todo
-owner: -
+status: in_progress
+owner: task-agent-M023
 depends: [M022]
-branch: -
+branch: task/M023
 model: sonnet
 ---
 
@@ -21,3 +21,4 @@ Coordinator note: implement mix-reference's `StemTargetProvider` hook (see M022 
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 task-agent: worktree .worktrees/M023. Plan: tools/stems (uv project + wingmix_stems with stdlib mock backend + install.sh gated by --approved), crates/mix-stems (client, cache, provider), StemInput gains `analysis`, ffmpeg mp3/aac tests in mix-reference. Real install/model download NOT run (awaiting HUMAN-ACTIONS #3).
