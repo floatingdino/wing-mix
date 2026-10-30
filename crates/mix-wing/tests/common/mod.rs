@@ -3,12 +3,10 @@
 #![allow(dead_code)]
 
 use mix_wing::{ConnectOptions, WingSurface};
-use std::net::{SocketAddr, TcpListener, UdpSocket};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::net::{SocketAddr, UdpSocket};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use wing_model::ParamStore;
 use wing_proto::server::{
     Hub, MeterBank, MeterStreamer, MeterSubscriptions, NativeServer, ServerConfig, ServerHandle,
@@ -89,49 +87,12 @@ impl InProc {
 
 // ---- headless wing-sim daemon -----------------------------------------------------------------------------------
 
-/// The wing-sim binary: `$WING_SIM_BIN`, else `wing-simulator/target/release/wing-sim` next to an ancestor of this
-/// crate (the sister repo checkout).
-pub fn wing_sim_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("WING_SIM_BIN") {
-        let p = PathBuf::from(p);
-        return p.is_file().then_some(p);
-    }
-    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for dir in here.ancestors() {
-        let p = dir.join("wing-simulator/target/release/wing-sim");
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
-}
-
-/// A port pair (p, p+1) free for TCP and UDP, outside the OS ephemeral range (other tests' sockets live there).
-fn free_port(salt: u32) -> u16 {
-    let mut x = (std::process::id() ^ salt.wrapping_mul(0x9E37_79B9)) as u64;
-    loop {
-        x = x
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let port = 20_000 + ((x >> 33) % 14_000) as u16 * 2;
-        let ok = |p: u16| {
-            TcpListener::bind(("0.0.0.0", p)).is_ok() && UdpSocket::bind(("0.0.0.0", p)).is_ok()
-        };
-        if port != 2222 && ok(port) && ok(port + 1) {
-            return port;
-        }
-    }
-}
-
-static SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// A headless wing-sim on private ports with its own (bogus) shm name and temp state dir. Never touches the
-/// user's own daemon on 2222/2223.
+/// A headless wing-sim on private ports with its own (bogus) shm name and temp state dir (mix-testsim). Never
+/// touches the user's own daemon on 2222/2223.
 pub struct Daemon {
-    child: Child,
+    inner: mix_testsim::SimDaemon,
     pub addr: SocketAddr,
     pub discovery: SocketAddr,
-    state_dir: PathBuf,
 }
 
 impl Daemon {
@@ -142,70 +103,17 @@ impl Daemon {
 
     /// Like [`Daemon::start`] with extra daemon arguments.
     pub fn start_with(extra: &[&str]) -> Option<Daemon> {
-        let bin = wing_sim_bin()?;
-        (0..5).find_map(|_| Self::start_once(&bin, extra))
-    }
-
-    fn start_once(bin: &Path, extra: &[&str]) -> Option<Daemon> {
-        let n = SEQ.fetch_add(1, Ordering::SeqCst);
-        let pid = std::process::id();
-        let state_dir = std::env::temp_dir().join(format!("wingmix-test-{pid}-{n}"));
-        let _ = std::fs::remove_dir_all(&state_dir);
-        std::fs::create_dir_all(&state_dir).unwrap();
-        let port = free_port(n);
-        assert_ne!(port, 2222);
-        let shm = format!("/wingmix-test-{pid}-{n}");
-        let child = Command::new(bin)
-            .args(["--name", "WMTEST", "--port", &port.to_string()])
-            .args(["--discovery-port", &port.to_string()])
-            .args(["--osc-port", &(port + 1).to_string()])
-            .args(["--no-hostio", "--shm-name", &shm, "--no-autosave"])
-            .args(extra)
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .stdout(Stdio::null())
-            .stderr(
-                std::fs::File::create(state_dir.join("wing-sim.log"))
-                    .map(Stdio::from)
-                    .unwrap_or_else(|_| Stdio::null()),
-            )
-            .spawn()
-            .ok()?;
-        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-        let mut d = Daemon {
-            child,
-            addr,
-            discovery: addr,
-            state_dir,
-        };
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                return Some(d);
-            }
-            if let Ok(Some(st)) = d.child.try_wait() {
-                let log =
-                    std::fs::read_to_string(d.state_dir.join("wing-sim.log")).unwrap_or_default();
-                eprintln!("wing-sim exited ({st}):\n{log}");
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let log = std::fs::read_to_string(d.state_dir.join("wing-sim.log")).unwrap_or_default();
-        eprintln!("wing-sim did not accept connections within 20 s:\n{log}");
-        None
+        let inner = mix_testsim::SimDaemon::start_with(extra)?;
+        Some(Daemon {
+            addr: inner.addr(),
+            discovery: inner.discovery(),
+            inner,
+        })
     }
 
     pub fn connect(&self) -> WingSurface {
+        let _ = &self.inner;
         WingSurface::connect(self.addr, &opts()).expect("connect wing-sim")
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.state_dir);
     }
 }
 

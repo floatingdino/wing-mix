@@ -766,11 +766,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mix-testsim"
+version = "0.1.0"
+dependencies = [
+ "mix-sim",
+ "wing-shm",
+]
+
+[[package]]
 name = "mix-wing"
 version = "0.1.0"
 dependencies = [
  "mix-core",
  "mix-surface",
+ "mix-testsim",
  "wing-blocks",
  "wing-model",
  "wing-proto",
