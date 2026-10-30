@@ -67,7 +67,8 @@ impl MeterStats {
     pub fn rel_to_main_db(&self, strip: &StripId) -> Option<f32> {
         let m = self.strips.get(&StripId::new("main", 1))?;
         let s = self.strips.get(strip)?;
-        (m.out_db as f64 > FLOOR_DBFS && s.out_db as f64 > FLOOR_DBFS).then(|| s.out_db - m.out_db)
+        (m.out_db as f64 > FLOOR_DBFS && s.out_db as f64 > FLOOR_DBFS)
+            .then_some(s.out_db - m.out_db)
     }
 
     /// The strip was metered over the window and played in none of it.

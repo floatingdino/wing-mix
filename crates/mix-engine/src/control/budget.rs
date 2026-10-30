@@ -51,7 +51,12 @@ pub fn shares(action: &Action) -> BTreeMap<ParamId, f64> {
         .iter()
         .filter_map(|c| {
             let d = c.to.as_f64()? - c.from.as_ref()?.as_f64()?;
-            let key = c.param.as_str().split_once('/').map_or("", |x| x.1).to_string();
+            let key = c
+                .param
+                .as_str()
+                .split_once('/')
+                .map_or("", |x| x.1)
+                .to_string();
             Some((c.param.clone(), key, d))
         })
         .collect();
@@ -118,7 +123,9 @@ pub enum Fit {
     /// Over the net limit (and it would increase the deviation): not this batch.
     OverNet,
     /// The rate window is full: try again at `until`.
-    Pace { until: f64 },
+    Pace {
+        until: f64,
+    },
     /// Batch count reached.
     Batches,
 }
@@ -293,11 +300,9 @@ mod tests {
             ch("input.1/dyn/makeup", 0.0, 6.0),
         ]);
         assert_eq!(cost(&comp), 0.0, "threshold is not a level, makeup is free");
-        let group = act(
-            (1..=8)
-                .map(|i| ch(&format!("input.{i}/fader"), -10.0, -13.0))
-                .collect(),
-        );
+        let group = act((1..=8)
+            .map(|i| ch(&format!("input.{i}/fader"), -10.0, -13.0))
+            .collect());
         assert!((cost(&group) - 3.0).abs() < 1e-9);
         let pair = act(vec![
             ch("input.28/eq/band.2.gain", 0.0, -3.0),

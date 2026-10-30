@@ -914,7 +914,11 @@ mod tests {
         let l = |c| window_loudness(&get(c).unwrap().features);
         let want = (-16.0 - -14.0) + meter_crest_prior(Some(mix_knowledge::Family::Vocal))
             - meter_crest_prior(Some(mix_knowledge::Family::Drums));
-        assert!(((l(1) - l(2)) as f64 - want).abs() < 1e-3, "{} vs {want}", l(1) - l(2));
+        assert!(
+            ((l(1) - l(2)) as f64 - want).abs() < 1e-3,
+            "{} vs {want}",
+            l(1) - l(2)
+        );
         // activity and gain reduction come along
         let v = get(1).unwrap();
         assert!((v.features.quality.gated_fraction - 0.2).abs() < 1e-6);

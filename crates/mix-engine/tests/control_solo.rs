@@ -294,8 +294,10 @@ fn no_solo_meters_refine_the_estimates() {
     // level checks run on the meter-refined strips (with reduced confidence); spectra are not judged
     let d = r.ctl.diagnosis().unwrap();
     let strip_level = d.problems.iter().filter(|p| {
-        matches!(p.scope.subject, mix_engine::diagnosis::Subject::Strip { .. })
-            && p.kind == mix_engine::diagnosis::ProblemKind::Level
+        matches!(
+            p.scope.subject,
+            mix_engine::diagnosis::Subject::Strip { .. }
+        ) && p.kind == mix_engine::diagnosis::ProblemKind::Level
     });
     assert!(strip_level.clone().count() > 0, "{:?}", d.problems);
     assert!(strip_level.clone().all(|p| p.confidence <= 0.5));

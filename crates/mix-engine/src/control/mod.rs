@@ -888,14 +888,7 @@ impl<'k> Controller<'k> {
         m.strips.extend(solo);
         if c.priors {
             let mt = (c.meters && meters.frames > 0).then_some(meters);
-            let est = strips::priors(
-                &raw.main,
-                &m.strips,
-                &rest,
-                self.kb,
-                c.min_prior_share,
-                mt,
-            );
+            let est = strips::priors(&raw.main, &m.strips, &rest, self.kb, c.min_prior_share, mt);
             cov.estimated = est.len();
             cov.meter_refined = est.iter().filter(|t| t.meter_refined).count();
             m.strips.extend(est);

@@ -96,7 +96,12 @@ impl Src<'_> {
 }
 
 pub(crate) fn check(cx: &mut Ctx<'_>) {
-    if cx.input.strips.iter().all(|s| s.estimated && !s.meter_refined) {
+    if cx
+        .input
+        .strips
+        .iter()
+        .all(|s| s.estimated && !s.meter_refined)
+    {
         cx.note("no strip taps: level balance, masking, sibilance and source checks skipped");
         return;
     }
@@ -113,9 +118,7 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
         .input
         .strips
         .iter()
-        .filter(|s| {
-            !s.fx_return && (!s.estimated || s.meter_refined) && is_active(cx, &s.features)
-        })
+        .filter(|s| !s.fx_return && (!s.estimated || s.meter_refined) && is_active(cx, &s.features))
         .map(|s| {
             let level = window_loudness(&s.features) + s.gain_to_main_db;
             let rel = &s.features.spectrum.erb_mid_rel_db;
