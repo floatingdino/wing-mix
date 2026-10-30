@@ -234,6 +234,10 @@ pub fn build_profile(
                 analysis: &ing.analysis,
             })
             .map_err(ReferenceError::Stems)?;
+        // Pairwise reference masking is derived from the stem profiles at ingest (providers may leave it empty).
+        if let Some(st) = p.stems.as_mut().filter(|s| s.masking.is_empty()) {
+            st.masking = mix_analysis::stem_masking(st);
+        }
     }
     Ok(p)
 }

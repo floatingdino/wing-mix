@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mix_analysis::{
-    analyse_buffer, stat_of, AnalyserConfig, OfflineAnalysis, OfflineOptions, ProfileBuilder,
+    analyse_buffer, stat_of, stem_masking, AnalyserConfig, OfflineAnalysis, OfflineOptions,
+    ProfileBuilder,
 };
 use mix_core::bands::{N_BROAD, N_ERB};
 use mix_core::{Stat, StemKind, StemProfile, StemTargets, DB_FLOOR};
@@ -287,10 +288,12 @@ impl StemTargetProvider for StemSeparator {
         if stems.is_empty() {
             return Ok(None);
         }
-        Ok(Some(StemTargets {
+        let mut targets = StemTargets {
             model: format!("{}@{}", entry.meta.model, entry.meta.version),
             stems,
-            masking: Vec::new(), // pairwise stem masking: proposed follow-up
-        }))
+            masking: Vec::new(),
+        };
+        targets.masking = stem_masking(&targets);
+        Ok(Some(targets))
     }
 }

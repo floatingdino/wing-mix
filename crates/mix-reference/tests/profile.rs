@@ -200,3 +200,39 @@ fn fixture_mixdown_profile() {
         "mono source has no side curve"
     );
 }
+
+/// Two stems with identical flat spectra: each masks the other, so ingest must fill `StemTargets.masking`.
+struct OverlappingStems;
+impl StemTargetProvider for OverlappingStems {
+    fn id(&self) -> String {
+        "overlap@0".into()
+    }
+    fn stem_targets(&self, _: &StemInput<'_>) -> Result<Option<StemTargets>, String> {
+        use mix_core::bands::{N_BROAD, N_ERB};
+        use mix_core::{Stat, StemKind, StemProfile};
+        let sp = || StemProfile {
+            level_rel_mix_db: Stat::constant(-3.0),
+            erb_rel_db: vec![Stat::constant(-30.0); N_ERB],
+            crest_db: [Stat::constant(10.0); N_BROAD],
+            width_db: Stat::constant(0.0),
+            onset_rate_hz: Stat::constant(1.0),
+        };
+        Ok(Some(StemTargets {
+            model: "overlap@0".into(),
+            stems: [(StemKind::Vocals, sp()), (StemKind::Guitar, sp())].into(),
+            masking: Vec::new(),
+        }))
+    }
+}
+
+#[test]
+fn stem_masking_is_filled_at_ingest() {
+    let opts = ProfileOptions {
+        stems: Some(Arc::new(OverlappingStems)),
+        ..Default::default()
+    };
+    let p = profile_bytes(song_wav(), "a.wav", Some("wav"), &opts, None).unwrap();
+    let st = p.stems.unwrap();
+    assert!(!st.masking.is_empty(), "masking pairs filled at ingest");
+    assert_eq!(st.masking, mix_analysis::stem_masking(&st));
+}

@@ -6,7 +6,7 @@
 //! - [`evidence`]: generic evidence extraction from a [`crate::model::Topology`].
 //!
 //! Typical use:
-//! ```ignore
+//! ```text
 //! let policy = Policy::load(path)?;
 //! let topo = surface.topology()?;
 //! let det = ScoringDetector::new(policy.detection.clone());
