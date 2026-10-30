@@ -1485,6 +1485,7 @@ impl Daemon {
                 .unwrap_or(Value::Null),
             subscribers: self.shared.hub.subscribers(),
             last_error: self.last_error.clone(),
+            tools: crate::tools::status(),
         }
     }
 

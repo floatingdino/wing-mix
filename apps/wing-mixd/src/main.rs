@@ -16,6 +16,8 @@ use wing_mixd::{status::default_state_dir, Config, DaemonHandle};
 const USAGE: &str = "usage: wing-mixd [--state-dir DIR] [--policy remit.toml] [--console sim|wing:<ip>|x32:<ip>[:port]] [--no-socket]";
 
 fn main() {
+    // Before anything else (single-threaded): an app-launched daemon has a minimal PATH without ~/.local/bin.
+    wing_mixd::tools::augment_path();
     let mut cfg = Config::new(default_state_dir());
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {

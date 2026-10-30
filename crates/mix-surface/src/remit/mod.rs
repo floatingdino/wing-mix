@@ -24,7 +24,9 @@ pub mod glob;
 pub mod pairs;
 pub mod policy;
 
-pub use detect::{Detection, Evidence, RoleDetector, ScoringDetector};
+pub use detect::{
+    BusEvidence, Detection, Evidence, FxInsert, MainPath, RoleDetector, ScoringDetector,
+};
 pub use eval::{
     evaluate, evaluate_inspection, Decision, InspectionKind, Reason, RemitContext, RemitSend,
     RemitSession, RemitStrip, WriteRequest,

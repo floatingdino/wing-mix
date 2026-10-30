@@ -5,19 +5,18 @@
 //! - [`map`] (crate `mix-wing-map`, shared with mix-sim): WING tree <-> generic [`mix_surface::ParamId`] / class mapping (remit.md appendix A.1), slot params
 //!   named through the active model.
 //! - [`convert`] (crate `mix-wing-map`): descriptor -> [`mix_surface::ParamSpec`], WING <-> generic values, knowledge-value clamps.
-//! - [`topology`]: generic [`mix_surface::Topology`] (names, tags, chain, sends, inserts, outputs, re-inputs,
+//! - [`topology`] (crate `mix-wing-map`, shared with mix-sim): generic [`mix_surface::Topology`] (names, tags, chain, sends, inserts, outputs, re-inputs,
 //!   talkback, FX slots) for role detection.
 //! - [`meters`]: channel-3 meter subscription with renewal, UDP receiver, frame decoding (levels, GR, solo, RTA).
 //! - [`discovery`]: UDP `WING?` discovery.
 //! - [`surface`]: [`WingSurface`], the [`mix_surface::Surface`] implementation (solo save/clear/restore, solo-mode
 //!   refusal, RTA claim/restore).
 
-pub use mix_wing_map::{convert, map};
+pub use mix_wing_map::{convert, map, topology};
 
 pub mod client;
 pub mod discovery;
 pub mod meters;
 pub mod surface;
-pub mod topology;
 
 pub use surface::{ConnectOptions, ReconnectPolicy, RtaClaim, WingSurface};

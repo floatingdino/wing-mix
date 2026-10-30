@@ -82,6 +82,9 @@ pub struct DaemonStatus {
     pub safety: Value,
     pub subscribers: usize,
     pub last_error: Option<String>,
+    /// External tools: `{"uv":{"path":..|null,"for":..},"claude":{..}}` (null path = not found on PATH).
+    #[serde(default)]
+    pub tools: Value,
 }
 
 /// Settings that survive a daemon restart (`<state-dir>/settings.json`; missing or unreadable = defaults).

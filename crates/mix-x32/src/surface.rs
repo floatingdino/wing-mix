@@ -398,7 +398,7 @@ impl Surface for X32Surface {
             }
             strips.push(st);
         }
-        Ok(Topology { strips })
+        Ok(Topology::new(strips))
     }
 
     fn params(&self, strip: &StripId) -> SurfaceResult<Vec<ParamSpec>> {
