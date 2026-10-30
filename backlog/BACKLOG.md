@@ -79,3 +79,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M061 | Genericity fixes from the X32 proof | M060, M036 | sonnet |
 | M062 | Solo-based per-strip measurement (stereo-tap setups) | M052, M039 | opus |
 | M063 | E2E follow-up fixes (RTA origin, guard edges, PANIC vs engineer) | M052 | sonnet |
+| M064 | Instant A/B/X switching: realised mix vs prior | M062 | opus |
