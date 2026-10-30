@@ -1903,6 +1903,7 @@ dependencies = [
  "mix-surface",
  "mix-testsim",
  "mix-wing",
+ "mix-x32",
  "serde",
  "serde_json",
 ]

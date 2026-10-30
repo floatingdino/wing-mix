@@ -28,7 +28,6 @@ use mix_knowledge::KnowledgeBase;
 use mix_sim::{Multitrack, SimConfig, SimSurface, Track};
 use mix_surface::remit::{detect_topology, Policy, ScoringDetector};
 use mix_surface::{Role, Surface};
-use mix_wing::WingSurface;
 use serde_json::{json, Value};
 
 use crate::analysis::{lock, Analysis, Meters, SharedMeter};
@@ -48,6 +47,55 @@ use crate::taps::TapLayout;
 pub const EXEC_TIMEOUT: Duration = Duration::from_secs(60);
 /// The default WING remit policy (data/remit/wing-default.toml), embedded.
 pub const DEFAULT_POLICY: &str = include_str!("../../../data/remit/wing-default.toml");
+/// The default X32/M32 remit policy (data/remit/x32-default.toml), embedded.
+pub const DEFAULT_POLICY_X32: &str = include_str!("../../../data/remit/x32-default.toml");
+
+/// Embedded default policy of a surface (`SurfaceInfo::surface`); the in-process sim is a WING.
+fn default_policy_for(surface: &str) -> Result<Policy, String> {
+    let text = match surface {
+        "wing" | "sim" => DEFAULT_POLICY,
+        "x32" => DEFAULT_POLICY_X32,
+        other => {
+            return Err(format!(
+                "no default remit policy for surface `{other}`: pass --policy"
+            ))
+        }
+    };
+    Policy::from_toml_str(text).map_err(|e| e.to_string())
+}
+
+/// `--console` spec -> connect request: `sim`, `wing:<ip>[:port]` or `x32:<ip>[:port]`.
+pub fn parse_console_spec(spec: &str) -> Result<ConnectConsole, String> {
+    let (kind, rest) = spec.split_once(':').unwrap_or((spec, ""));
+    match (kind, rest) {
+        ("sim", "") => Ok(ConnectConsole {
+            console: "sim".into(),
+            ..Default::default()
+        }),
+        ("wing" | "x32", addr) if !addr.is_empty() => {
+            // `host:port` (a bare IPv6 address is not supported here)
+            let (ip, port) = match addr.rsplit_once(':') {
+                Some((h, p)) => (
+                    h.to_string(),
+                    Some(
+                        p.parse::<u16>()
+                            .map_err(|_| format!("bad port in `{spec}`"))?,
+                    ),
+                ),
+                None => (addr.to_string(), None),
+            };
+            Ok(ConnectConsole {
+                console: kind.into(),
+                ip: Some(ip),
+                port,
+                ..Default::default()
+            })
+        }
+        _ => Err(format!(
+            "bad --console `{spec}` (sim, wing:<ip>[:port] or x32:<ip>[:port])"
+        )),
+    }
+}
 
 /// Daemon settings.
 #[derive(Debug, Clone)]
@@ -55,6 +103,8 @@ pub struct Config {
     pub state_dir: PathBuf,
     /// Remit policy TOML (default: the embedded WING default).
     pub policy: Option<PathBuf>,
+    /// Console to connect at start (`sim`, `wing:<ip>[:port]`, `x32:<ip>[:port]`); `None`: wait for `connect_console`.
+    pub console: Option<String>,
     /// Serve `<state-dir>/control.sock`.
     pub socket: bool,
     /// status.json rewrite period.
@@ -66,6 +116,7 @@ impl Config {
         Config {
             state_dir: state_dir.into(),
             policy: None,
+            console: None,
             socket: true,
             status_period: Duration::from_secs(1),
         }
@@ -149,10 +200,11 @@ impl DaemonHandle {
     pub fn spawn(cfg: Config) -> Result<DaemonHandle, String> {
         std::fs::create_dir_all(&cfg.state_dir)
             .map_err(|e| format!("{}: {e}", cfg.state_dir.display()))?;
-        let policy = match &cfg.policy {
-            Some(p) => Policy::load(p).map_err(|e| format!("{}: {e}", p.display()))?,
-            None => Policy::from_toml_str(DEFAULT_POLICY).map_err(|e| e.to_string())?,
+        let explicit = match &cfg.policy {
+            Some(p) => Some(Policy::load(p).map_err(|e| format!("{}: {e}", p.display()))?),
+            None => None,
         };
+        let console_req = cfg.console.as_deref().map(parse_console_spec).transpose()?;
         let (tx, rx) = channel();
         let shared = Arc::new(Shared {
             tx: Mutex::new(tx),
@@ -163,8 +215,20 @@ impl DaemonHandle {
         let c = cfg.clone();
         let join = std::thread::Builder::new()
             .name("mixd-engine".into())
-            .spawn(move || Daemon::new(c, policy, sh, rx).run())
+            .spawn(move || Daemon::new(c, explicit, sh, rx).run())
             .map_err(|e| e.to_string())?;
+        if let Some(req) = console_req {
+            let (rtx, rrx) = sync_channel(1);
+            shared.send(Msg::Req(Request::ConnectConsole(req), rtx));
+            let r = rrx
+                .recv_timeout(EXEC_TIMEOUT)
+                .unwrap_or_else(|_| Err("daemon did not answer".into()));
+            if let Err(e) = r {
+                shared.send(Msg::Req(Request::Quit, sync_channel(1).0));
+                let _ = join.join();
+                return Err(e);
+            }
+        }
         let server = if cfg.socket {
             let d: Arc<dyn Dispatch> = shared.clone();
             match ControlServer::spawn(&cfg.state_dir.join(SOCKET_FILE), d) {
@@ -268,8 +332,6 @@ struct Console {
     scene: String,
     name: String,
     surface: Arc<dyn Surface>,
-    /// The same surface as a concrete WING (RTA claim), when it is one.
-    wing: Option<Arc<WingSurface>>,
     sim: Option<SimConsole>,
 }
 
@@ -343,6 +405,9 @@ struct Session {
 
 struct Daemon {
     cfg: Config,
+    /// The policy loaded from `--policy`: used for every console (checked against it).
+    explicit_policy: Option<Policy>,
+    /// The policy in force: the explicit one, else the embedded default of the connected console's surface.
     policy: Policy,
     kb: &'static KnowledgeBase,
     shared: Arc<Shared>,
@@ -367,11 +432,20 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 impl Daemon {
-    fn new(cfg: Config, policy: Policy, shared: Arc<Shared>, rx: Receiver<Msg>) -> Self {
+    fn new(
+        cfg: Config,
+        explicit_policy: Option<Policy>,
+        shared: Arc<Shared>,
+        rx: Receiver<Msg>,
+    ) -> Self {
+        let policy = explicit_policy
+            .clone()
+            .unwrap_or_else(|| default_policy_for("wing").expect("embedded wing policy"));
         let live_context = crate::status::Settings::load(&cfg.state_dir).live_context;
         Daemon {
             roles: RoleStore::load(&cfg.state_dir),
             cfg,
+            explicit_policy,
             policy,
             kb: KnowledgeBase::embedded(),
             shared,
@@ -618,6 +692,10 @@ impl Daemon {
         let scene = c.scene.clone().unwrap_or_else(|| "default".into());
         let console = match c.console.as_str() {
             "sim" => connect_sim(c.sim.unwrap_or_default(), scene)?,
+            "x32" => {
+                let ip = c.ip.clone().ok_or("connect x32 needs `ip`")?;
+                connect_x32(&ip, c.port, scene)?
+            }
             other => {
                 let ip = match (other, &c.ip) {
                     ("wing", Some(ip)) => ip.clone(),
@@ -627,6 +705,14 @@ impl Daemon {
                 connect_wing(&ip, c.port, scene)?
             }
         };
+        // The policy must be written for this console (F5): the explicit `--policy`, else the surface's default.
+        let info = console.surface.info();
+        let policy = match &self.explicit_policy {
+            Some(p) => p.clone(),
+            None => default_policy_for(&info.surface)?,
+        };
+        policy.check_surface(&info).map_err(err)?;
+        self.policy = policy;
         self.disconnect();
         let out = json!({
             "kind": console.kind,
@@ -984,6 +1070,9 @@ impl Daemon {
 
     fn start(&mut self, o: StartOptions) -> Result<Value, String> {
         let console = self.console.as_ref().ok_or("connect a console first")?;
+        self.policy
+            .check_surface(&console.surface.info())
+            .map_err(err)?;
         let input = self.input.as_ref().ok_or("select an input first")?;
         if self.target.is_none() {
             return Err("load a reference or a description first".into());
@@ -1003,13 +1092,14 @@ impl Daemon {
                 .map_err(|e| format!("remit: {e}"))?;
             let live = LiveRolesGate::new(inner, handle.clone(), surface.clone());
             let gate = SafetyGate::new(Box::new(live), surface.clone(), monitor.clone());
-            let mut act = Actuator::new(surface, Box::new(gate), ActuatorConfig::default());
+            let mut act = Actuator::new(surface.clone(), Box::new(gate), ActuatorConfig::default());
             act.set_safety(monitor.clone());
             let act_rx = act.subscribe();
             let actuator = Arc::new(spawn_actuator(act));
-            // Console RTA -> feedback detector (WING only; the sim has no RTA). A failed claim is not fatal.
-            let rta = match (&console.wing, feedback_guard) {
-                (Some(w), true) => match RtaFeed::start(w.clone(), monitor.clone()) {
+            // Console RTA -> feedback detector, only when the console has an RTA (`RtaFeed::start` checks the
+            // capability). A failed claim is not fatal.
+            let rta = match feedback_guard {
+                true => match RtaFeed::start(surface.clone(), monitor.clone()) {
                     Ok(r) => r,
                     Err(e) => {
                         self.last_error = Some(format!("rta feed: {e}"));
@@ -1435,8 +1525,25 @@ fn connect_wing(ip: &str, port: Option<u16>, scene: String) -> Result<Console, S
         key: format!("wing:{}:{}", info.model, info.name),
         scene,
         name: format!("{} {} ({addr})", info.model, info.name),
-        surface: s.clone(),
-        wing: Some(s),
+        surface: s,
+        sim: None,
+    })
+}
+
+fn connect_x32(ip: &str, port: Option<u16>, scene: String) -> Result<Console, String> {
+    let port = port.unwrap_or(mix_x32::X32_PORT);
+    let addr = resolve(&format!("{ip}:{port}"))?;
+    let s = Arc::new(
+        mix_x32::X32Surface::connect(addr, &mix_x32::ConnectOptions::default())
+            .map_err(|e| format!("{addr}: {e}"))?,
+    );
+    let info = s.info();
+    Ok(Console {
+        kind: "x32",
+        key: format!("x32:{}:{}", info.model, info.name),
+        scene,
+        name: format!("{} {} ({addr})", info.model, info.name),
+        surface: s,
         sim: None,
     })
 }
@@ -1529,7 +1636,6 @@ fn connect_sim(o: SimOptions, scene: String) -> Result<Console, String> {
         scene,
         name: "wing-sim (in-process)".into(),
         surface,
-        wing: None,
         sim: Some(SimConsole {
             sim,
             inputs: (1..=channels).collect(),

@@ -369,3 +369,31 @@ fn no_solo_forbids_solo_and_listen_only() {
         mix_surface::remit::Verdict::Forbidden
     );
 }
+
+/// F5: a policy names its console; the connected surface must match (or be an emulation of that family).
+#[test]
+fn policy_surface_is_checked_against_the_connected_surface() {
+    use mix_surface::surface::{Capabilities, SurfaceInfo};
+    let info = |surface: &str, model: &str| SurfaceInfo {
+        surface: surface.into(),
+        name: "n".into(),
+        model: model.into(),
+        firmware: "1".into(),
+        capabilities: Capabilities::default(),
+    };
+    let wing = default_policy();
+    assert_eq!(wing.surface.as_deref(), Some("wing"));
+    assert!(wing.check_surface(&info("wing", "WING")).is_ok());
+    assert!(
+        wing.check_surface(&info("sim", "WING")).is_ok(),
+        "the sim is a WING"
+    );
+    let e = wing.check_surface(&info("x32", "X32")).unwrap_err();
+    assert!(
+        e.to_string().contains("`wing`") && e.to_string().contains("x32"),
+        "{e}"
+    );
+    let mut any = wing.clone();
+    any.surface = None;
+    assert!(any.check_surface(&info("x32", "X32")).is_ok());
+}

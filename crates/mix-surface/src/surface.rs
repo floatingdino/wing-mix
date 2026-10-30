@@ -254,6 +254,35 @@ pub struct RtaSource {
     pub tap: String,
 }
 
+/// An RTA source claim: the console's previous RTA source comes back when the guard drops (or on
+/// [`release`](RtaGuard::release)).
+pub struct RtaGuard<'a> {
+    restore: Option<Box<dyn FnOnce() + 'a>>,
+}
+
+impl<'a> RtaGuard<'a> {
+    pub fn new(restore: impl FnOnce() + 'a) -> Self {
+        RtaGuard {
+            restore: Some(Box::new(restore)),
+        }
+    }
+
+    /// Restore now (also done on drop).
+    pub fn release(mut self) {
+        if let Some(f) = self.restore.take() {
+            f();
+        }
+    }
+}
+
+impl Drop for RtaGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(f) = self.restore.take() {
+            f();
+        }
+    }
+}
+
 /// A console adapter. Methods take `&self` so one surface can be shared (wrap in `Arc`); implementations use
 /// interior mutability.
 pub trait Surface: Send + Sync {
@@ -317,6 +346,18 @@ pub trait Surface: Send + Sync {
     /// Current console RTA source (`None` = off/unassigned).
     fn rta_source(&self) -> SurfaceResult<Option<RtaSource>> {
         Err(SurfaceError::Unsupported("rta"))
+    }
+
+    /// Point the console RTA at `source` for as long as the guard lives; the previous source is restored on drop.
+    /// The default saves `rta_source()` and restores it with `set_rta_source`; an adapter whose RTA state is richer
+    /// than [`RtaSource`] overrides it to restore exactly. Consumers must only call it when
+    /// `capabilities.rta.is_some()`.
+    fn claim_rta(&self, source: &RtaSource) -> SurfaceResult<RtaGuard<'_>> {
+        let prior = self.rta_source()?;
+        self.set_rta_source(Some(source))?;
+        Ok(RtaGuard::new(move || {
+            let _ = self.set_rta_source(prior.as_ref());
+        }))
     }
 
     /// Point the console RTA somewhere; callers save `rta_source()` first and restore it after use.
