@@ -83,3 +83,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M065 | Bus role detection (multi-hop, FX buses) + bulk remit editing | M061 | opus |
 | M066 | Make CI green on macOS and Linux | - | sonnet |
 | M067 | Change budget pacing + meter-based strip estimates | M062 | opus |
+| M068 | SAFETY: PANIC main EQ + engineer mid-ramp write detection | M067 | opus |

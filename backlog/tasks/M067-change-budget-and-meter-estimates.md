@@ -2,7 +2,7 @@
 id: M067
 title: Change budget pacing + meter-based strip estimates
 stage: S3
-status: review
+status: done
 owner: agent-M067
 depends: [M062]
 branch: task/M067
@@ -91,3 +91,4 @@ Report before/after: e2e main+solo vs multichannel (re-measure both on current m
     3-4 minute no-solo runs: a drill-free no-solo e2e variant would show the meter effect; (4) tune
     `max_net_db`/`max_db_per_min` on real shows (runs used 11-26 / 60 dB); (5) flaky
     `wing-mixd server::tests::socket_round_trip_stream_and_cleanup` (passes alone).
+- 2026-10-31 coordinator: merged; make check + make app pass. done. Two safety findings → M068 (priority).
