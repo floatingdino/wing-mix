@@ -143,6 +143,9 @@ pub struct RemitContext {
     pub strips: BTreeMap<StripId, RemitStrip>,
     /// Surface reports a destructive solo mode (solo-in-place).
     pub solo_destructive: bool,
+    /// The surface has a solo/listen at all (`capabilities.solo`); without it every solo/listen inspection is
+    /// forbidden (and planners emit none) while writes are unaffected.
+    pub solo_available: bool,
     /// FX models that are external hardware loops.
     pub external_fx_models: Vec<String>,
 }
@@ -190,6 +193,7 @@ impl RemitContext {
         let mut ctx = RemitContext {
             strips: BTreeMap::new(),
             solo_destructive,
+            solo_available: caps.solo,
             external_fx_models: caps.external_fx_models.clone(),
         };
         for s in &topo.strips {
@@ -287,6 +291,9 @@ pub fn evaluate_inspection(
             Reason::Hard,
             "inspection while the solo mode is destructive (solo-in-place)",
         );
+    }
+    if !ctx.solo_available && kind != InspectionKind::Rta {
+        return Decision::deny(Reason::Hard, "the console has no solo/listen");
     }
     if ctx.get(strip).is_none() {
         return Decision::deny(

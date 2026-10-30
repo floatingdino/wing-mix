@@ -1,7 +1,7 @@
 //! Console RTA -> [`SafetyMonitor::feed_spectrum`] (M053).
 //!
-//! With a WING connected and the feedback guard on, the daemon points the console RTA at the main bus
-//! ([`WingSurface::claim_rta`]; the previous `rtasrc`/`rtatap` come back exactly when the feed stops) and feeds
+//! With a console that has an RTA (`capabilities.rta`) connected and the feedback guard on, the daemon points the
+//! console RTA at the main bus ([`Surface::claim_rta`]; the previous source comes back when the feed stops) and feeds
 //! every new meter frame's 120 RTA bands to the safety monitor's feedback detector, labelled `rta:<strip>`. That
 //! catches ringing the capture tap cannot see (e.g. a monitor wedge mix with no audio return). The actuator may
 //! re-point the RTA for an inspection and restores it to ours afterwards; frames then arrive under the inspected
@@ -20,7 +20,6 @@ use mix_actuator::SafetyMonitor;
 use mix_core::ids::StripId;
 use mix_surface::surface::RtaSource;
 use mix_surface::Surface;
-use mix_wing::WingSurface;
 use serde_json::{json, Value};
 
 /// Poll period for new meter frames.
@@ -50,7 +49,7 @@ pub struct RtaFeed {
 impl RtaFeed {
     /// Claim the RTA and start feeding `monitor`. `Ok(None)`: the console has no RTA. Errors: the claim failed.
     pub fn start(
-        surface: Arc<WingSurface>,
+        surface: Arc<dyn Surface>,
         monitor: SafetyMonitor,
     ) -> Result<Option<RtaFeed>, String> {
         let Some(caps) = surface.info().capabilities.rta else {
@@ -95,7 +94,7 @@ impl RtaFeed {
                     }
                     std::thread::sleep(POLL);
                 }
-                drop(claim); // restores rtasrc/rtatap
+                drop(claim); // restores the previous RTA source
             })
             .map_err(|e| e.to_string())?;
         match rx.recv_timeout(Duration::from_secs(30)) {

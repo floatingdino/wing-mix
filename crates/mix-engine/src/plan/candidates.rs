@@ -294,7 +294,10 @@ impl Gen<'_> {
         if !eq.on {
             changes.push(self.change(pid(s, "eq/on"), Value::Bool(true))?);
         }
-        let (slot, band_existing) = if let Some(slot) = shelf {
+        let mut shelf_type: Option<&'static str> = None;
+        let (slot, band_existing) = if let Some(want) = shelf {
+            let (slot, conv) = self.resolve_shelf(s, eq, want)?;
+            shelf_type = conv;
             (slot, eq.band(slot).copied())
         } else {
             // a PEQ band already working within 1/2 octave, else a free (0 dB) peak band
@@ -316,7 +319,11 @@ impl Gen<'_> {
                     let free = eq
                         .bands
                         .iter()
-                        .filter(|(sl, b)| matches!(sl, BandSlot::Peak(_)) && b.gain_db.abs() < 0.25)
+                        .filter(|(sl, b)| {
+                            matches!(sl, BandSlot::Peak(_))
+                                && b.kind == BandKind::Peq
+                                && b.gain_db.abs() < 0.25
+                        })
                         .min_by(|a, b| {
                             (a.1.freq_hz / freq)
                                 .log2()
@@ -359,12 +366,9 @@ impl Gen<'_> {
                     q
                 };
                 if shelf.is_some() {
-                    if self.state.str(s, &format!("eq/{p}.type")) != Some("SHV") {
+                    if let Some(ty) = shelf_type {
                         changes.push(
-                            self.change(
-                                pid(s, &format!("eq/{p}.type")),
-                                Value::Enum("SHV".into()),
-                            )?,
+                            self.change(pid(s, &format!("eq/{p}.type")), Value::Enum(ty.into()))?,
                         );
                     }
                 } else if let Some(c) = self.change(pid(s, &format!("eq/{p}.q")), fv(q)) {
@@ -409,6 +413,59 @@ impl Gen<'_> {
             why: why.to_string(),
             cost: cost * mult,
         })
+    }
+
+    /// The band that realises the low/high shelf `want` on `s`, and the band type to switch it to (if it is not
+    /// already a shelf). WING: the fixed `low`/`high` slot (type `SHV`). Consoles whose bands are all alike (X32):
+    /// a band already typed as that shelf, else the free peaking band at the matching end of the spectrum, when
+    /// its `type` param offers the shelf shape. `None`: this strip cannot do that shelf.
+    fn resolve_shelf(
+        &self,
+        s: &StripId,
+        eq: &super::state::EqSettings,
+        want: BandSlot,
+    ) -> Option<(BandSlot, Option<&'static str>)> {
+        let low = want == BandSlot::Low;
+        if let Some(b) = eq.band(want) {
+            return Some((want, (b.kind != BandKind::Shelf).then_some("SHV")));
+        }
+        let (shelf_kind, label) = if low {
+            (BandKind::LowShelf, "LSHV")
+        } else {
+            (BandKind::HighShelf, "HSHV")
+        };
+        let end = |a: &&(BandSlot, super::state::EqBand), b: &&(BandSlot, super::state::EqBand)| {
+            let o = a.1.freq_hz.total_cmp(&b.1.freq_hz);
+            if low {
+                o
+            } else {
+                o.reverse()
+            }
+        };
+        if let Some((sl, _)) = eq
+            .bands
+            .iter()
+            .filter(|(sl, b)| matches!(sl, BandSlot::Peak(_)) && b.kind == shelf_kind)
+            .min_by(end)
+        {
+            return Some((*sl, None));
+        }
+        let (sl, _) = eq
+            .bands
+            .iter()
+            .filter(|(sl, b)| {
+                matches!(sl, BandSlot::Peak(_)) && b.kind == BandKind::Peq && b.gain_db.abs() < 0.25
+            })
+            .filter(|(sl, _)| {
+                self.state
+                    .coerce(
+                        &pid(s, &format!("eq/{}.type", sl.prefix())),
+                        Value::Enum(label.into()),
+                    )
+                    .is_some()
+            })
+            .min_by(end)?;
+        Some((*sl, Some(label)))
     }
 
     /// Low cut on at the source's recommended frequency (or raised into its range).

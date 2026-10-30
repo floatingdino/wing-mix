@@ -72,7 +72,6 @@ impl PolicyGate {
 
     fn build(&self, surface: &dyn Surface) -> SurfaceResult<RemitContext> {
         let topo = surface.topology()?;
-        let solo = surface.solo_state()?;
         let det = ScoringDetector::new(self.policy.detection.clone());
         let found = detect_topology(&topo, &self.policy.detection, &det);
         let roles = effective_roles(&found, &self.confirmed_roles);
@@ -81,7 +80,7 @@ impl PolicyGate {
             &roles,
             &self.policy,
             &surface.info().capabilities,
-            solo.is_destructive(),
+            surface.solo_destructive()?,
         ))
     }
 

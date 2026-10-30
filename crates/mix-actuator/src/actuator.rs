@@ -844,6 +844,11 @@ impl Actuator {
             SoloTarget::Strip { .. } => InspectionKind::Solo,
             SoloTarget::Listen { .. } => InspectionKind::Listen,
         };
+        if !self.surface.info().capabilities.solo {
+            return Err(Refusal::Inspection {
+                detail: "the console has no solo/listen".into(),
+            });
+        }
         let d = self.gate.check_inspection(kind, req.target.strip_id());
         let saved = self.surface.solo_state().map_err(|e| Refusal::Inspection {
             detail: e.to_string(),

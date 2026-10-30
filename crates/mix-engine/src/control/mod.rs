@@ -69,8 +69,8 @@ use mix_surface::Role;
 
 use crate::diagnosis::{diagnose, window_loudness, Diagnosis, DiagnosisInput};
 use crate::plan::{
-    plan_with, score_with, ConsoleState, PlanInput, PlanScore, PlanStep, PlannedMove, Remit,
-    TransferModel, WingTransfer,
+    plan_with, score_with, transfer_for_surface, ConsoleState, PlanInput, PlanScore, PlanStep,
+    PlannedMove, Remit, TransferModel,
 };
 
 pub use config::{ControlConfig, KeepRule, Mode, SectionConfig};
@@ -106,7 +106,7 @@ pub fn remit_context(
         &roles,
         policy,
         &surface.info().capabilities,
-        surface.solo_state()?.is_destructive(),
+        surface.solo_destructive()?,
     ))
 }
 
@@ -263,7 +263,7 @@ impl<'k> Controller<'k> {
             policy,
             session: RemitSession::default(),
             roles: BTreeMap::new(),
-            transfer: Box::new(WingTransfer::new(sr)),
+            transfer: transfer_for_surface(&surface.info().surface, sr),
             surface,
             surface_rx,
             actuator_rx: actuator_events,

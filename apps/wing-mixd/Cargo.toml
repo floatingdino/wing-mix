@@ -16,6 +16,7 @@ path = "src/main.rs"
 mix-core = { path = "../../crates/mix-core" }
 mix-surface = { path = "../../crates/mix-surface" }
 mix-wing = { path = "../../crates/mix-wing" }
+mix-x32 = { path = "../../crates/mix-x32" }
 mix-sim = { path = "../../crates/mix-sim" }
 mix-analysis = { path = "../../crates/mix-analysis" }
 mix-capture = { path = "../../crates/mix-capture" }

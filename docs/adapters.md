@@ -90,30 +90,29 @@ absent. Run `cargo test -p mix-x32`.
 ## 4. Assumptions in the generic stack found while writing the X32 adapter
 
 A *surface* assumption is something `mix-surface` or a consumer expects of every adapter without the trait saying so.
+Status after M061 ("fixed" = the generic stack no longer assumes it; the X32 adapter was changed accordingly):
 
-| # | where | assumption | handled how |
+| # | where | assumption | status |
 |---|---|---|---|
-| A1 | `mix-engine::control` (`remit_context`) and `mix-actuator::gate::PolicyGate::build` | `surface.solo_state()?` is called unconditionally, so a surface without solo makes the gate fail closed (every write forbidden) | adapter returns "non-destructive, nothing active" from `solo_state()` and `Ok` from `clear_solo()`; `set_solo` returns `Unsupported`. Proper fix: consult `capabilities.solo` (follow-up F1) |
-| A2 | `SendTap` has `Pre/Post/Group` only | a send whose tap cannot be determined must be reported as something | adapter reports `Pre` (fail safe: looks like a monitor feed, bus stays locked until the user confirms its role) (F2) |
-| A3 | `mix-engine::plan::state::StripSettings` | EQ = fixed low shelf (`eq/low.*`) + peaking `eq/band.N.*` + fixed high shelf (`eq/high.*`), every `band.N` is PEQ; WING `STD` Q convention and EQ designs (`WingTransfer`) | X32 any band can be shelf/cut/PEQ/VEQ (`band.K.type`); the planner would predict all of them as PEQ with WING's Q. Needs an EQ-shape-aware transfer model (F3) |
-| A4 | `mix-engine::control::mod.rs`, `plan::plan` | `WingTransfer` is the only effect-prediction model wired in (the `TransferModel` trait is the seam but is not injectable from the public entry points) | none needed for fader/pan/mute; EQ/HPF predictions use WING DSP (F3) |
-| A5 | `apps/wing-mixd` (`rta.rs`) | the daemon connects `mix_wing::WingSurface` concretely and drives RTA through WING-only `claim_rta`; no surface factory | a second console cannot be selected at runtime yet (F4) |
-| A6 | `Policy.surface` | the field is parsed but never compared with `SurfaceInfo.surface`; callers hardcode `wing-default.toml` paths (tests, daemon) | x32 test asserts they match (F5) |
-| A7 | `ParamClass` | no class for a discrete EQ band shape; `eq_model` (conditional, discrete) is the closest | X32 `band.K.type` classed `eq_model`; no `ParamsRemapped` is needed because the param set is static |
-| A8 | role detection inputs | `Strip.outputs` (physical-out routing) and strip tags are expected to exist; the X32 adapter fills neither from the console (outputs empty, tags from `#WORD` in the 12-char name) | detection falls back to names and send evidence; default `MixBus NN` names carry none, so unnamed buses end up `unknown` (locked until confirmed) |
+| A1 | `mix-engine::control` (`remit_context`) and `mix-actuator::gate::PolicyGate::build` | `solo_state()?` was called unconditionally, so a surface without solo failed closed | **fixed (F1)**: `Surface::solo_destructive()` consults `capabilities.solo`; `RemitContext.solo_available` forbids solo/listen inspections, the planner emits no `Inspect` steps (no "denied" note either), the actuator refuses `Job::Inspect` without calling the surface. An adapter without solo returns `Unsupported` from `solo_state`/`set_solo`/`clear_solo`. |
+| A2 | `SendTap` had `Pre/Post/Group` only | a send whose tap cannot be determined had to be reported as something | **fixed (F2)**: `SendTap::Unknown`; role detection counts it like `Pre` (monitor-looking feed: the bus stays protected until the user confirms its role), the remit sees it tapped at the earliest point. |
+| A3 | `mix-engine::plan::state::StripSettings` | EQ = fixed low shelf + 8 PEQs + fixed high shelf with WING's Q convention | **fixed (F3)**: band shape is data. `eq/<slot>.type` (when present) gives each band's `BandKind` (`PEQ`/`VEQ` peak, `SHV`/`LSHV`/`HSHV` shelf, `LCUT`/`HCUT` cut); consoles without per-band types (WING peak bands) are peaking. The planner finds a console's shelf on any band whose type is that shelf, else retypes the free band at the matching spectrum end (needs the `type` param to offer `LSHV`/`HSHV`); cut bands are never retuned. |
+| A4 | `mix-engine::control`, `plan::plan` | `WingTransfer` was the only wired-in effect model | **fixed (F3)**: `Controller::new` picks `plan::transfer_for_surface(info.surface)`: `WingTransfer` for `wing`/`sim`, `GenericTransfer` (RBJ-cookbook peak/shelf/cut per band shape, Butterworth cuts, X32/M32 cuts 12 dB/oct; compressor/gate/pan/de-esser delegate to WING's static curves, an approximation) otherwise. `plan_with`/`Controller::with_transfer` accept any `TransferModel`; `plan()` is the WING shortcut. Not hardware-verified for the X32. |
+| A5 | `apps/wing-mixd` | the daemon connected `WingSurface` concretely and drove RTA through WING-only `claim_rta` | **fixed (F4)**: the daemon holds `Arc<dyn Surface>`; `--console sim\|wing:<ip>\|x32:<ip>[:port]` (or `connect_console`); the RTA feed uses `Surface::claim_rta` (default: save `rta_source`, set, restore; WING overrides it with its exact raw restore) and only exists when `capabilities.rta` does. |
+| A6 | `Policy.surface` | parsed but never compared with `SurfaceInfo.surface` | **fixed (F5)**: `Policy::check_surface(&SurfaceInfo)`; the daemon picks the embedded default policy by surface (or `--policy`) and refuses a mismatch at connect and again at session start (an emulation matches by `SurfaceInfo.model`: the sim, model `WING`, runs the `wing` policy). `PolicyGate::new` itself does not check (test surfaces have free-form names). |
+| A7 | `ParamClass` | no class for a discrete EQ band shape; `eq_model` (conditional, discrete) is the closest | unchanged: X32 `band.K.type` classed `eq_model`; the planner writes it only to retype a free band into a shelf, and the remit decides whether that is allowed |
+| A8 | role detection inputs | `Strip.outputs` and strip tags are expected to exist; the X32 adapter fills neither from the console | unchanged: detection falls back to names and send evidence; default `MixBus NN` names carry none, so unnamed buses end up `unknown` (locked until confirmed) |
 | A9 | policy format id | `wing-mix-remit/1` is the project's name, not a WING dependency; policy comments/notes mention WING | none |
 
 Things that did **not** need WING knowledge: `Topology`/`Strip`/`StripId` grammar, `ParamSpec` + `coerce`, `Origin`
 event contract, the conformance suite, `ScoringDetector` + `RemitContext` + `evaluate` (coupling and revive logic worked on
 X32 sends/taps unchanged), `PolicyGate`.
 
-## 5. Follow-ups (not done here)
+## 5. Follow-ups (not done)
 
-- F1: `mix-engine::control` / `PolicyGate::build`: skip `solo_state()` when `!capabilities.solo` (then adapters may return `Unsupported`).
-- F2: add `SendTap::Unknown` (treated as protected by detection) instead of overloading `Pre`.
-- F3: EQ-shape-aware generic EQ view + a console-selectable `TransferModel` (`X32Transfer`: Behringer EQ designs).
-- F4: console factory in `wing-mixd` (`--console wing|x32`), RTA/meter claim through the `Surface` trait only.
-- F5: load the policy by `SurfaceInfo.surface` and refuse a mismatch.
+- F1-F5: done in M061 (see the table above).
 - F6: X32: `/meters` (`/meters/1` input blob), gate/dynamics, aux-in/FX-return/matrix/DCA strips, solo (`/-stat/solo`, `/-stat/solosw/NN`),
   disconnect detection/`Reconnected` events, verification of every value law and the send `type` mapping on real hardware
-  (human action; add to docs/HUMAN-ACTIONS.md when scheduled).
+  (human action; add to docs/HUMAN-ACTIONS.md when scheduled). With solo added, set `capabilities.solo = true` and implement
+  `solo_state`/`set_solo`/`clear_solo`; nothing else needs to change.
+- F7: a real X32 EQ/dynamics transfer model (`GenericTransfer` is a cookbook approximation) once hardware measurements exist.

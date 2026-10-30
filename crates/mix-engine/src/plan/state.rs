@@ -155,7 +155,12 @@ impl ConsoleState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BandKind {
     Peq,
+    /// WING shelf: the slot (`low`/`high`) decides the direction.
     Shelf,
+    LowShelf,
+    HighShelf,
+    LowCut,
+    HighCut,
     /// Any other type (cuts, crossovers): treated as fixed (not modelled for changes).
     Other,
 }
@@ -391,8 +396,12 @@ pub struct StripSettings {
 
 fn band_kind(s: Option<&str>) -> BandKind {
     match s {
-        None | Some("PEQ") => BandKind::Peq,
+        None | Some("PEQ" | "VEQ") => BandKind::Peq,
         Some("SHV") => BandKind::Shelf,
+        Some("LSHV") => BandKind::LowShelf,
+        Some("HSHV") => BandKind::HighShelf,
+        Some("LCUT") => BandKind::LowCut,
+        Some("HCUT") => BandKind::HighCut,
         _ => BandKind::Other,
     }
 }
@@ -424,10 +433,8 @@ impl StripSettings {
                     else {
                         continue;
                     };
-                    let kind = match slot {
-                        BandSlot::Peak(_) => BandKind::Peq,
-                        _ => band_kind(st.str(id, &format!("eq/{p}.type"))),
-                    };
+                    // band shape is data: `eq/<slot>.type` when the console has one (WING peak bands do not: PEQ)
+                    let kind = band_kind(st.str(id, &format!("eq/{p}.type")));
                     bands.push((
                         slot,
                         EqBand {

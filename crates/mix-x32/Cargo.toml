@@ -11,3 +11,5 @@ mix-surface = { path = "../mix-surface" }
 
 [dev-dependencies]
 mix-actuator = { path = "../mix-actuator" }
+mix-engine = { path = "../mix-engine" }
+mix-knowledge = { path = "../mix-knowledge" }

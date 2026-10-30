@@ -285,6 +285,25 @@ impl Policy {
         Ok(p)
     }
 
+    /// Refuse a policy written for another console: `Policy.surface` (when set) must name the connected surface
+    /// (`SurfaceInfo.surface`), or the console family an emulation reports in `SurfaceInfo.model` (the in-process
+    /// wing-sim is surface `sim`, model `WING`, and runs the `wing` policy).
+    pub fn check_surface(&self, info: &crate::surface::SurfaceInfo) -> Result<(), PolicyError> {
+        let Some(want) = self.surface.as_deref() else {
+            return Ok(());
+        };
+        let family = info.model.to_ascii_lowercase();
+        if want.eq_ignore_ascii_case(&info.surface)
+            || family.starts_with(&want.to_ascii_lowercase())
+        {
+            return Ok(());
+        }
+        Err(PolicyError(format!(
+            "remit policy is for surface `{want}` but the console is `{}` ({})",
+            info.surface, info.model
+        )))
+    }
+
     /// Load from a file.
     pub fn load(path: &std::path::Path) -> Result<Policy, PolicyError> {
         let text = std::fs::read_to_string(path)
