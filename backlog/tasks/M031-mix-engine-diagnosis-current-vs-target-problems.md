@@ -47,7 +47,7 @@ Compare current Features (main + per-channel/solo where available) against Targe
     Session snapshots -> skipped there (PLR/LRA used).
   - Files: crates/mix-engine/{Cargo.toml, src/lib.rs, src/diagnosis/{mod,problem,mix,sources,intent,stem_masking,
     synth,tests}.rs, tests/fixture_diagnosis.rs}.
-  - Test: `cargo test -p mix-engine` (25 tests incl. identical-input no-problem cases with/without stems, Long/
+  - Test: `cargo test -p mix-engine` (24 unit tests incl. identical-input no-problem cases with/without stems, Long/
     Session/ShortTerm; 13 injected mix deltas each detected alone; ranking; stems/masking/sibilance/source
     problems/intents/serde). Real fixture: `cargo test -p mix-engine --release --test fixture_diagnosis --
     --include-ignored --nocapture`. `make check` passes. `make check-full`: all pass except a pre-existing
