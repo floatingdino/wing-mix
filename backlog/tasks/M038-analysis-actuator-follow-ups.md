@@ -2,7 +2,7 @@
 id: M038
 title: Analysis + actuator follow-ups: noise floor stat, onset double-count, model-switch ordering
 stage: S4
-status: review
+status: done
 owner: agent-M038
 depends: [M035]
 branch: task/M038
@@ -69,3 +69,4 @@ zero-alloc tests green; criterion bench unchanged within 10%.
     onset rate is accurate; (2) add `noise_floor_dbfs` to TargetProfile stats (reference-side floor); (3) per-band
     noise floor; (4) log compression lets strong bleed (> -20 dB) through the strength gate: a per-band flux normalisation
     could separate it.
+- 2026-10-31 coordinator: merged, make check passes. done. noise_floor wiring into proxy → M036.
