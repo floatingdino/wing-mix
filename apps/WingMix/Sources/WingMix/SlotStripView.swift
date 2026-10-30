@@ -20,12 +20,12 @@ struct SlotStripView: View {
                     Text("No slots yet. Store the console as it is now; a session that converges is stored automatically, and Original is the console as the session found it.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(list?.slots ?? []) { s in slotButton(s) }
-                        }
-                        .padding(.vertical, 2)
+                    let row = HStack(spacing: 8) {
+                        ForEach(list?.slots ?? []) { s in slotButton(s) }
                     }
+                    .padding(.vertical, 2)
+                    // ImageRenderer cannot draw a ScrollView (screenshots)
+                    if shot { row } else { ScrollView(.horizontal, showsIndicators: false) { row } }
                 }
                 footer
                 if let d = model.slotDiff { diffView(d) }
