@@ -28,7 +28,7 @@ only the holds below apply, not the size limits).
 | Boost per move (fader, send, trim/preamp, EQ gain) | +3 dB each | A move that raises the value by more than this is refused. Checked at plan time (value now to target). |
 | Boost per session (same kinds) | +6 dB above the value the session first touched | Refused if the target ends higher than baseline + limit. Baseline = `Actuator::baseline` (captured before the first write). |
 | Fader ceiling | +6 dB absolute | Faders and sends are never raised above it. |
-| Remit envelope | per policy (`max_delta_db`, `max_boost_db`, `max_cut_db`, `max_delta_oct`, `max_delta_pct`) | Enforced from the session baseline (the remit evaluator only reports it). A write that moves the param back toward its baseline is never refused. |
+| Remit envelope | per policy (`max_delta_db`, `max_boost_db`, `max_cut_db`, `max_delta_oct`, `max_delta_pct`) | Enforced from the session baseline (the remit evaluator only reports it). A write that moves the param back toward its baseline is never refused. `max_delta_pct` applies to percent and pan params (M039: pans were not checked before; a stereo-pair side gets `input-pair-spread`'s +-100 on its own side, mono sources +-50). |
 | Monitor-coupled params | limits x 0.5 (`monitor_caution_scale`) | Params the remit marks `coupled` (EQ/dyn before an IEM send tap, FX bus re-input to IEMs) get half the per-move/session limits, and their boosts are also held while feedback is *suspected* (below). The policy's own `envelope_scale` applies on top. |
 | Discrete changes (remit `discrete`: polarity, delay, models) | strip output below -60 dB on live meters | Refused when the strip is audible or has no meter (fails closed). Replaces fading the path, which would write params outside the move. |
 | Mains loudness | short-term > -8 LUFS or momentary > -5 LUFS | **Hold**: every gain increase refused (running boosts abort) until both are 1.5 dB below the ceiling. Event `Safety{MainsLoudness}`. |
@@ -42,8 +42,10 @@ baseline and non-gain params continue. While a hold is active the operator can s
 ## Feedback-risk guard
 
 Input: third-octave frames from `Features` (main mix, or any tap via `feed_features`) or console RTA bands. Per
-source it keeps 4 s of frames. For each band it computes **prominence** = level minus the mean of the four neighbouring
-bands, and trips when all hold over the window:
+source it keeps 4 s of frames. For each band it computes **prominence** = level minus the **power** mean of the four
+neighbouring bands (peak-to-neighbouring-power ratio, PNPR; M039: it was a dB mean, so one neighbour falling silent,
+e.g. a bass line moving from 50 to 80 Hz, made the new note look 12 dB prominent and stopped a real-song closed loop;
+flat neighbours give the same value as before), and trips when all hold over the window:
 
 - prominence now >= 12 dB, and band level >= -70 dB;
 - prominence rose >= 9 dB over the window (span >= 1.5 s);
@@ -67,7 +69,8 @@ continue). At half the thresholds the state is **suspect**: coupled boosts are h
 Validation (`crates/mix-engine/tests/feedback_music.rs`): 0 trips on the synthetic song (reference and degraded,
 40 s each) and on all 35 played sections of the three matched songs as recorded at FOH (785 s; the M041 detector
 tripped 5 times there and on the synthetic song); the loop harness runs with the guard on; every M041 trip test
-(`sim_feedback`, `guards`, unit tests) passes unchanged.
+(`sim_feedback`, `guards`, unit tests) passes unchanged. M039 unit test `bass_note_change_next_to_a_silent_band_does_not_trip`
+replays the frames of the holy-forever trip (and checks the same rise as a pure tone still trips).
 
 On a trip the actuator: emits `ActuatorEvent::Safety{trip, reverted}`, STOPs (queue dropped, running move ends in
 place), and if the last completed or running move finished within `revert_window_s` (20 s) ramps it back at

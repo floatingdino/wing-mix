@@ -9,12 +9,13 @@
 //! - guitar HPF off → `tonal` above target in sub/bass involving GTR;
 //! - hats +8 dB → `tonal` above target in presence/brilliance/air involving HAT;
 //! - snare −6 dB → `tonal` below target in mid/upper_mid/presence involving SNARE (weak: the louder hats also
-//!   lower every other drum band relative to the drum stem);
+//!   lower every other drum band relative to the drum stem), or (M039) the kit-balance `balance_dev_lu` below 0;
 //! - OH L/R panned centre → a `width` problem, narrower than target.
 //!
 //! Below observability on some seeds (also missed by the M031 diagnosis before M034, which raised ~150 problems
 //! on the matched mix): the keys' +8 dB at 250 Hz on seeds 6 and 8 (the keys carry < 5 % of the main's low-mid and
-//! the Other stem's low-mid stays inside the reference's 20 dB window spread) and the snare on seed 8.
+//! the Other stem's low-mid stays inside the reference's 20 dB window spread; the planner still finds the boost as a
+//! contribution to that excess, M039). The snare on seed 8 is found by the kit balance since M039.
 //!
 //! Not observable: "vocal not compressed" (no strip/stem dynamics check: the session crest of a strip is not
 //! comparable with the stem's short-term crest distribution; M034 follow-up).
@@ -87,10 +88,12 @@ fn missing(d: &Diagnosis) -> Vec<&'static str> {
                 && p.evidence.deviation > 0.0
         }),
         ("snare too quiet", &|p| {
-            tonal(p)
+            (tonal(p)
                 && in_bands(p, &["mid", "upper_mid", "presence"])
                 && involves(p, 2)
-                && p.evidence.deviation < 0.0
+                && p.evidence.deviation < 0.0)
+                // M039 kit balance
+                || (p.id == "level:input.2:balance_dev_lu" && p.evidence.deviation < 0.0)
         }),
         ("overheads centred", &|p| {
             p.kind == ProblemKind::Width && p.evidence.deviation < 0.0
@@ -145,8 +148,7 @@ fn calibrate(seed: u64, kb: &KnowledgeBase) -> (Vec<String>, Vec<&'static str>) 
 }
 
 /// Deltas this fixture cannot show on a seed (module docs).
-const UNOBSERVABLE: &[(u64, &str)] =
-    &[(6, "keys muddy"), (8, "keys muddy"), (8, "snare too quiet")];
+const UNOBSERVABLE: &[(u64, &str)] = &[(6, "keys muddy"), (8, "keys muddy")];
 
 fn assert_calibrated(seeds: &[u64]) {
     let kb = KnowledgeBase::embedded();
