@@ -10,6 +10,10 @@ mix-capture = { path = "../../crates/mix-capture" }
 mix-fixtures = { path = "../../crates/mix-fixtures" }
 mix-reference = { path = "../../crates/mix-reference" }
 mix-core = { path = "../../crates/mix-core" }
+mix-describe = { path = "../../crates/mix-describe" }
+mix-knowledge = { path = "../../crates/mix-knowledge" }
+mix-llm = { path = "../../crates/mix-llm" }
+serde_json.workspace = true
 
 [dev-dependencies]
 hound = { workspace = true }

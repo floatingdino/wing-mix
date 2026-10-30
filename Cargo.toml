@@ -13,6 +13,7 @@ members = [
     "crates/mix-engine",
     "crates/mix-actuator",
     "crates/mix-llm",
+    "crates/mix-describe",
     "apps/wing-mixd",
     "apps/wing-mix-cli",
 ]
