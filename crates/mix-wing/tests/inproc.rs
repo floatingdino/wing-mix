@@ -405,3 +405,105 @@ fn preamp_alias_is_classified_by_remit() {
         mix_surface::model::ParamClass::Phantom
     );
 }
+
+/// A value different from the current one on the param's grid (None: skip the param).
+fn other_value(s: &impl Surface, spec: &mix_surface::model::ParamSpec, salt: f64) -> Option<Value> {
+    use mix_surface::model::ValueKind as K;
+    let cur = s.read(&spec.id).ok()?;
+    match (&spec.kind, cur) {
+        (K::Bool, Value::Bool(b)) => Some(Value::Bool(!b)),
+        (K::Float, Value::Float(c)) => {
+            let (lo, hi) = spec.range?;
+            let t = lo + (hi - lo) * (0.2 + 0.5 * salt);
+            let t = if (t - c).abs() < (hi - lo) * 0.05 {
+                lo + (hi - lo) * 0.9
+            } else {
+                t
+            };
+            Some(Value::Float(t))
+        }
+        (K::Int, Value::Int(c)) => {
+            let (lo, hi) = spec.range?;
+            let t = (lo + (hi - lo) * (0.2 + 0.5 * salt)).round() as i64;
+            Some(Value::Int(if t == c { t + 1 } else { t }))
+        }
+        _ => None,
+    }
+}
+
+/// Barrier both clients, then drain until quiet so the event threads have dispatched everything.
+fn settle(
+    a: &mix_wing::WingSurface,
+    b: &mix_wing::WingSurface,
+    rx: &std::sync::mpsc::Receiver<SurfaceEvent>,
+) -> Vec<SurfaceEvent> {
+    let t = Duration::from_secs(2);
+    b.client().barrier(t).unwrap();
+    a.client().barrier(t).unwrap();
+    let mut out = Vec::new();
+    while let Ok(ev) = rx.recv_timeout(Duration::from_millis(8)) {
+        out.push(ev);
+    }
+    out
+}
+
+fn param_events(evs: &[SurfaceEvent], p: &ParamId) -> Vec<(Origin, Value)> {
+    evs.iter()
+        .filter_map(|e| match e {
+            SurfaceEvent::ParamChanged {
+                param,
+                value,
+                origin,
+            } if param == p => Some((*origin, value.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Acceptance (M019): over every writable numeric/bool param of representative strips, client B's write is seen by
+/// client A as exactly one External event and A's own write as exactly one Local event (no External echo).
+#[test]
+fn origin_sweep_other_clients_external_own_local() {
+    let con = InProc::start();
+    let a = con.connect();
+    let b = con.connect();
+    let rx = a.subscribe();
+    let mut checked = 0;
+    for strip in [
+        StripId::new("input", 1),
+        StripId::new("bus", 1),
+        StripId::new("main", 1),
+        StripId::new("dca", 1),
+    ] {
+        for (i, spec) in a.params(&strip).unwrap().iter().enumerate() {
+            if spec.read_only {
+                continue;
+            }
+            let salt = (i % 7) as f64 / 7.0;
+            let Some(vb) = other_value(&a, spec, salt) else {
+                continue;
+            };
+            settle(&a, &b, &rx);
+            if b.write(&spec.id, vb.clone()).is_err() {
+                continue;
+            }
+            let ev = param_events(&settle(&a, &b, &rx), &spec.id);
+            assert_eq!(ev.len(), 1, "{} from B: {ev:?}", spec.id);
+            assert_eq!(ev[0].0, Origin::External, "{} from B", spec.id);
+            let Some(va) = other_value(&a, spec, 1.0 - salt) else {
+                continue;
+            };
+            a.write(&spec.id, va).unwrap();
+            let ev = param_events(&settle(&a, &b, &rx), &spec.id);
+            // (no event at all when the value quantises to the one already held)
+            assert!(ev.len() <= 1, "{} own write: {ev:?}", spec.id);
+            assert!(
+                ev.iter().all(|e| e.0 == Origin::Local),
+                "{} own write: {ev:?}",
+                spec.id
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "{checked}");
+}

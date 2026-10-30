@@ -80,6 +80,57 @@ pub struct NativeClient {
     reader: Mutex<Option<JoinHandle<()>>>,
     /// Sender cloned into each (re)started reader thread.
     tx: Mutex<Sender<ClientMsg>>,
+    /// Mirror as it was when the link dropped; kept across failed reconnect attempts (a failed resync may have
+    /// half-updated the mirror) until one succeeds and the differences have been announced.
+    pre_disconnect: Mutex<Option<Snapshot>>,
+}
+
+/// Values of every announced parameter (all but the `$` live leaves, which change constantly; solo leaves excepted).
+struct Snapshot(Vec<(NodeId, Slot)>);
+
+#[derive(PartialEq)]
+enum Slot {
+    Num { raw: u32, desc: usize },
+    Text(String),
+}
+
+fn announced(id: NodeId) -> bool {
+    let s = Schema::get();
+    let p = s.path(id);
+    let live = p.split('/').skip(1).any(|x| x.starts_with('$'));
+    s.is_param(id) && (!live || crate::map::is_solo_leaf(s.name(id)))
+}
+
+fn slot(store: &ParamStore, id: NodeId) -> Option<Slot> {
+    if let Some(t) = store.with_str(id, |t| t.to_string()) {
+        return Some(Slot::Text(t));
+    }
+    let d = store.desc(id)?;
+    Some(Slot::Num {
+        raw: store.get_raw(id),
+        desc: d as *const _ as usize,
+    })
+}
+
+impl Snapshot {
+    fn take(store: &ParamStore) -> Snapshot {
+        Snapshot(
+            Schema::get()
+                .ids()
+                .filter(|&id| announced(id))
+                .filter_map(|id| Some((id, slot(store, id)?)))
+                .collect(),
+        )
+    }
+
+    /// Nodes whose value (or active descriptor) differs in `store` now.
+    fn diff(&self, store: &ParamStore) -> Vec<NodeId> {
+        self.0
+            .iter()
+            .filter(|(id, old)| slot(store, *id).is_some_and(|now| now != *old))
+            .map(|(id, _)| *id)
+            .collect()
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -138,6 +189,7 @@ impl NativeClient {
             peer: addr,
             reader: Mutex::new(None),
             tx: Mutex::new(tx),
+            pre_disconnect: Mutex::new(None),
         });
         client.spawn_reader(rd)?;
         Ok((client, rx))
@@ -156,7 +208,8 @@ impl NativeClient {
     }
 
     /// Re-establish a lost connection in place: a fresh TCP connection, a full resync of the mirror (silent: no
-    /// change messages, the caller announces the reconnect) and a restarted reader/keepalive. The mirror, the
+    /// change messages during the resync, the caller announces the reconnect; afterwards one [`ORIGIN_REMOTE`] change
+    /// message per value that differs from before the outage is queued) and a restarted reader/keepalive. The mirror, the
     /// message channel and every `Arc<NativeClient>` stay valid. No-op when the connection is alive; fails when the
     /// client was [`closed`](Self::close) or the console is unreachable (call again to retry).
     pub fn reconnect(
@@ -195,9 +248,27 @@ impl NativeClient {
             self.shared.alive.store(true, SeqCst);
         }
         self.spawn_reader(rd)?;
+        {
+            let mut pre = lock(&self.pre_disconnect);
+            if pre.is_none() {
+                *pre = Some(Snapshot::take(&self.store));
+            }
+        }
         if let Err(e) = self.sync(sync_timeout) {
             let _ = lock(&self.writer).stream.shutdown(Shutdown::Both);
             return Err(e);
+        }
+        // announce what changed while we were away as console changes (queued behind whatever the caller emits)
+        if let Some(pre) = lock(&self.pre_disconnect).take() {
+            let tx = lock(&self.tx);
+            for id in pre.diff(&self.store) {
+                let _ = tx.send(ClientMsg::Change(Change {
+                    id: id.0,
+                    desc: 0,
+                    raw: self.store.get_raw(id),
+                    origin: ORIGIN_REMOTE,
+                }));
+            }
         }
         Ok(())
     }
