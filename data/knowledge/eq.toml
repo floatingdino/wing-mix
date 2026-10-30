@@ -1,0 +1,209 @@
+# Wing Mix knowledge base: EQ move vocabulary, limits, corrective/tonal rules and masking resolution.
+# Rationale and citations: docs/research/mix-knowledge.md (section "eq.toml").
+# Feature names, bands, blocks, condition/action grammar: data/knowledge/workflow.toml.
+
+[schema]
+version = 1
+file = "eq"
+description = "EQ move vocabulary (Q classes, gain limits, cut-before-boost policy), mix-level tonal rules that attribute a band deviation to strips, and masking-resolution strategies with a source priority order."
+
+[schema.fields]
+q_class          = "[q_class.<name>] q = [lo, hi] RBJ bandwidth Q, use = what it is for"
+limits           = "[limits] hard caps the planner must respect per move and per strip"
+policy           = "[policy] ordering preferences the planner's cost function encodes"
+rule             = "[[rule]] id, scope (strip | mix), when/when_any, action (Eq action with q_class or q), strategy, priority 1..5, confidence, sources, note"
+masking_strategy = "[[masking_strategy]] id, order (try lowest first), when, action(s) on <self> (the lower-priority, masked-or-masking strip) and/or <other>, cost (relative change cost for the planner), confidence, sources"
+priority_order   = "[masking] priority list: on conflict the earlier source keeps its band; the later one yields"
+
+# ---------------------------------------------------------------------------------------------------------------
+# Q vocabulary (RBJ bandwidth Q; BW in octaves ~= 1.44 / Q for moderate Q). WING ch EQ Q range 0.44..10.
+[q_class.notch]
+q = [6.0, 10.0]
+use = "feedback/ring and single resonances; cuts only"
+[q_class.narrow]
+q = [3.0, 6.0]
+use = "corrective cuts of drum ring, cabinet/body resonances"
+[q_class.medium]
+q = [1.0, 3.0]
+use = "corrective regions (box, nasal, mud) and targeted small boosts"
+[q_class.broad]
+q = [0.5, 1.0]
+use = "tonal shaping; all boosts should be broad"
+[q_class.shelf]
+q = [0.5, 0.9]
+use = "shelf slope parameter where the surface exposes Q on shelves (0.7 ~ maximally flat)"
+
+[limits]
+max_boost_db_peq = 6.0          # beyond this, re-check source/mic/arrangement rather than EQ harder
+max_boost_db_shelf = 6.0
+preferred_boost_db = [0.5, 3.0] # typical tonal boost
+max_cut_db_peq = 12.0
+max_cut_db_notch = 15.0         # feedback notches only
+max_step_db = 3.0               # largest single gain change before re-measuring (actuator ramps it, M040)
+max_total_boost_db_per_strip = 8.0   # sum of positive band gains
+max_freq_step_oct = 0.5         # largest frequency move of an existing band per step
+boost_q_max = 2.0               # boosts narrower than this sound peaky/resonant
+surface_gain_range_db = [-15.0, 15.0]  # WING STD EQ; adapter overrides
+sources = ["senior2011", "owsinski2017", "izhaki2018", "behringer_wing"]
+
+[policy]
+cut_before_boost = true          # given two moves with equal predicted benefit, prefer the cut (cost x0.6)
+boost_penalty = 1.6              # cost multiplier for boosts vs cuts of equal magnitude
+prefer_fix_at_source = true      # fix a mix-level deviation on the contributing strip(s) before bus/main EQ
+prefer_filter_over_shelf_cut = true   # below the useful range use Filter (phase 2) not an EQ shelf
+prefer_dynamic_eq_when_intermittent = true  # if a band's excess appears in < 30 % of active blocks, use Dyn dynamic_eq
+evaluate_loudness_matched = true # compare before/after at equal lufs_s
+small_moves_first = true
+order_within_strip = ["filter", "notch_cuts", "region_cuts", "dynamics", "broad_boosts", "air_shelf"]
+sources = ["senior2011", "izhaki2018", "owsinski2017", "katz2015"]
+
+# ======================================= STRIP-LEVEL RULES =====================================================
+[[rule]]
+id = "eq_resonance_notch"
+scope = "strip"
+when = [ { feature = "resonance_db", op = ">", value = 6.0 } ]
+action = { block = "Eq", type = "peq", freq_hz = "resonance_hz", gain_db = [-8.0, -3.0], q_class = "narrow" }
+strategy = "cut depth ~= resonance_db - 3, capped by limits"
+priority = 1
+confidence = "high"
+sources = ["senior2011", "izhaki2018"]
+
+[[rule]]
+id = "eq_feedback_notch"
+scope = "strip"
+when = [ { feature = "feedback_risk_db", op = ">", value = 10.0 } ]
+action = { block = "Eq", type = "peq", freq_hz = "resonance_hz", gain_db = [-9.0, -3.0], q_class = "notch" }
+strategy = "live safety: immediate, smallest cut that stops growth; also consider fader -3 dB first"
+priority = 1
+confidence = "high"
+sources = ["shure_mics", "owsinski2017"]
+
+[[rule]]
+id = "eq_source_problem"
+scope = "strip"
+when = []
+action = { from = "sources.toml problems" }
+strategy = "evaluate each source's problems list in order; the source's band_dev_db is measured against the per-stem target when stems exist, else against band_rel_db expectations"
+priority = 2
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[rule]]
+id = "eq_lpf_noise"
+scope = "strip"
+when = [ { feature = "band_rel_db.air", op = ">", value = -20.0 } ]
+feature_basis = "and the source's useful_range_hz upper bound < 10 kHz (bass amp, guitar cab, kick)"
+action = { block = "Filter", kind = "lpf", freq_hz = "useful_range_hz.hi", slope_db_per_oct = 12 }
+priority = 3
+confidence = "medium"
+sources = ["senior2011"]
+
+# ======================================= MIX-LEVEL TONAL RULES =================================================
+# A mix band deviation is attributed to strips by their energy contribution in that band (M031/M032):
+#   contribution(strip, band) = strip band energy at the main bus (post fader/pan) / mix band energy.
+# The planner tries the top contributors whose source type lists the band as a problem/character region first.
+[[rule]]
+id = "mix_band_excess"
+scope = "mix"
+when = [ { feature = "band_dev_db", op = ">", value = 2.0 } ]
+action = { block = "Eq", type = "peq", freq_hz = "band_center", gain_db = [-4.0, -1.0], q_class = "broad" }
+strategy = "apply to the 1-3 strips with the largest contribution; split the cut so the summed reduction ~= the deviation; exclude strips that own the band (masking priority)"
+priority = 2
+confidence = "medium"
+sources = ["senior2011", "pestana2013", "hafezi2015"]
+
+[[rule]]
+id = "mix_band_deficit"
+scope = "mix"
+when = [ { feature = "band_dev_db", op = "<", value = -2.0 } ]
+action = { block = "Eq", type = "peq", freq_hz = "band_center", gain_db = [1.0, 3.0], q_class = "broad" }
+strategy = "first look for a cut elsewhere that lifts the band relatively (cut_before_boost: e.g. deficit in presence may be excess low_mid); else boost on the 1-2 highest-priority strips whose character lists the band"
+priority = 3
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+
+[[rule]]
+id = "mix_tilt"
+scope = "mix"
+when = [ { feature = "tilt_dev_db_per_oct", op = "outside", value = [-0.5, 0.5] } ]
+action = { block = "Eq", type = "high_shelf", freq_hz = [3000, 8000], gain_db = [-3.0, 3.0], q_class = "shelf" }
+strategy = "a whole-spectrum tilt is best fixed on the main/bus EQ (tilt control where available, WING bus/main tilt +/-6 dB) if remit allows; else as shelves on the brightest/darkest contributors"
+priority = 4
+confidence = "medium"
+sources = ["pestana2013", "katz2015"]
+
+[[rule]]
+id = "mix_low_end_mono"
+scope = "mix"
+when = [ { feature = "low_correlation", op = "<", value = 0.7 } ]
+action = { block = "Pan", position_pct = [0, 0] }
+strategy = "centre the strips contributing most below 120 Hz (kick, bass, sub synths); low frequencies off-centre waste headroom and vary by seat"
+priority = 2
+confidence = "high"
+sources = ["pestana2014", "owsinski2017", "katz2015"]
+
+# ======================================= MASKING ===============================================================
+# masking_db.<band> of <self> by <other> > threshold while both are active => conflict.
+[masking]
+threshold_db = 3.0
+min_overlap_pct = 30.0           # both strips active in >= 30 % of the same blocks
+# Earlier = higher priority: keeps its band; later yields. Overridable by TargetProfile emphasis ("vocal-forward").
+priority_order = ["lead_vocal", "speech", "kick", "snare_top", "bass_di", "bass_amp", "backing_vocal", "electric_guitar", "piano", "acoustic_guitar", "brass", "keys_synth", "tom_rack", "tom_floor", "overheads", "hihat", "room", "snare_bottom", "playback"]
+# Who owns which region of the low end (kick vs bass): one owns the sub, the other the punch region.
+low_end_split = { kick_owns_hz = [50, 80], bass_owns_hz = [80, 120], alternative = "swap when the bass is the sub-heavy element (synth bass / EDM)" }
+sources = ["hafezi2015", "wakefield2015", "senior2011", "izhaki2018"]
+
+[[masking_strategy]]
+id = "complementary_cut"
+order = 1
+when = [ { feature = "masking_db", op = ">", value = 3.0 } ]
+actions = [ { target = "<yielding>", block = "Eq", type = "peq", freq_hz = "masking_peak_hz", gain_db = [-4.0, -1.5], q_class = "medium" } ]
+cost = 1.0
+confidence = "high"
+sources = ["hafezi2015", "senior2011"]
+note = "cut the lower-priority strip where the higher-priority one has its key energy (e.g. guitars at the vocal's 2-4 kHz)"
+
+[[masking_strategy]]
+id = "mirrored_eq"
+order = 2
+when = [ { feature = "masking_db", op = ">", value = 5.0 } ]
+actions = [
+  { target = "<yielding>", block = "Eq", type = "peq", freq_hz = "masking_peak_hz", gain_db = [-4.0, -2.0], q_class = "medium" },
+  { target = "<keeping>", block = "Eq", type = "peq", freq_hz = "masking_peak_hz", gain_db = [1.0, 2.0], q_class = "broad" },
+]
+cost = 1.4
+confidence = "medium"
+sources = ["wakefield2015", "izhaki2018"]
+note = "cut one, small boost the other at the same frequency; effective but uses a boost"
+
+[[masking_strategy]]
+id = "pan_apart"
+order = 3
+when = [ { feature = "masking_db", op = ">", value = 3.0 } ]
+feature_basis = "only when the band is above 200 Hz and neither strip is lead_vocal/kick/snare_top/bass (those stay centred)"
+actions = [ { target = "<yielding>", block = "Pan", position_pct = [-60, 60] } ]
+cost = 1.2
+confidence = "medium"
+sources = ["wakefield2015", "pestana2014"]
+note = "Wakefield & Dewey found listeners preferred panning-based tools for two-instrument masking; cheap when the arrangement allows"
+
+[[masking_strategy]]
+id = "dynamic_duck"
+order = 4
+when = [ { feature = "masking_db", op = ">", value = 3.0 } ]
+feature_basis = "masking is intermittent (present in < 50 % of overlapping blocks) - e.g. vocal phrases over guitars, kick hits over bass"
+actions = [ { target = "<yielding>", block = "Dyn", kind = "dynamic_eq", freq_hz = "masking_peak_hz", range_db = [2.0, 4.0], sidechain = "<keeping>" } ]
+cost = 1.6
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+note = "requires a keyable dynamic EQ/compressor; WING gate/dyn side-chain can take another channel as key"
+
+[[masking_strategy]]
+id = "level"
+order = 5
+when = [ { feature = "masking_db", op = ">", value = 6.0 } ]
+actions = [ { target = "<yielding>", block = "Fader", level_db = [-3.0, -1.0] } ]
+cost = 1.8
+confidence = "medium"
+sources = ["senior2011"]
+note = "last resort: changes the balance the target asked for"

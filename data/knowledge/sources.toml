@@ -1,0 +1,469 @@
+# Wing Mix knowledge base: per-source-type defaults and typical problem frequencies.
+# Rationale and citations: docs/research/mix-knowledge.md (section "sources.toml").
+# Feature names, bands, blocks, condition/action grammar: data/knowledge/workflow.toml [schema], [features], [blocks].
+
+[schema]
+version = 1
+file = "sources"
+description = "One [[source]] per source type: name-matching hints, useful range, filter defaults, characteristic bands, typical problems (as conditional EQ actions), and references to dynamics/fx presets, pan and balance hints."
+
+[schema.source_fields]
+id               = "string, unique source type id (used by M025 channel identification and other files' applies_to)"
+family           = "string: drums | bass | guitar | keys | vocal | playback | ambience | speech | brass_strings"
+name_hints       = "list of case-insensitive substrings/regex fragments matched against strip names/tags (M025 combines with audio features)"
+fundamental_hz   = "[lo, hi] Hz where the source's fundamentals/body energy normally lie"
+useful_range_hz  = "[lo, hi] Hz outside of which content is mostly noise/bleed for this source"
+hpf              = "Filter action: { freq_hz = [lo, hi], slope_db_per_oct = n, start_hz = n } - start_hz is the conservative first move"
+lpf              = "optional Filter action, same shape"
+character        = "list of { name, freq_hz = [lo, hi], effect } - what boosting the region does; used by vocabulary/tonal EQ"
+problems         = "list of { id, freq_hz = [lo, hi], when = [conditions], action = Eq action, confidence, note }; actions are cuts unless stated"
+gate_preset      = "id in dynamics.toml [[gate_preset]] or \"none\""
+dyn_preset       = "id in dynamics.toml [[comp_preset]] or \"none\""
+deess_preset     = "optional id in dynamics.toml [[deess_preset]]"
+fx_preset        = "id in fx.toml [[send_preset]] or \"none\""
+pan_pct          = "[lo, hi] typical pan position range (-100 L .. +100 R); for stereo pairs the spread of the pair"
+level_rel_mix_lu = "[lo, hi] typical level_rel_mix_lu when no reference/stem target exists (genre-dependent, low confidence; TargetProfile overrides)"
+polarity_note    = "optional string: polarity/time-alignment checks"
+confidence       = "high | medium | low - consensus strength across sources"
+sources          = "keys into workflow.toml [sources]"
+
+# Problems carry their own condition lists. Common shapes:
+#   band excess: { feature = "band_dev_db.<band>", op = ">", value = X }  (strip vs its own target or mix target)
+#   narrow resonance: { feature = "resonance_db", op = ">", value = 6 } plus { feature = "resonance_hz", op = "between", value = [lo, hi] }
+
+# ======================================= DRUMS =================================================================
+[[source]]
+id = "kick"
+family = "drums"
+name_hints = ["kick", "kik", "bd", "bass ?drum", "kick ?in", "kick ?out", "kick ?sub"]
+fundamental_hz = [45, 100]
+useful_range_hz = [30, 10000]
+hpf = { freq_hz = [25, 45], slope_db_per_oct = 24, start_hz = 30 }
+lpf = { freq_hz = [7000, 12000], slope_db_per_oct = 12, start_hz = 10000, note = "optional, reduces cymbal bleed into kick" }
+character = [
+  { name = "sub_weight", freq_hz = [40, 70], effect = "felt low end; boosting adds weight but eats headroom" },
+  { name = "punch", freq_hz = [70, 120], effect = "chest thump" },
+  { name = "beater_click", freq_hz = [2000, 5000], effect = "attack/definition through a dense mix" },
+]
+problems = [
+  { id = "kick_box", freq_hz = [250, 500], when = [ { feature = "band_rel_db.low_mid", op = ">", value = -10.0 } ], action = { block = "Eq", type = "peq", freq_hz = [250, 450], gain_db = [-8.0, -3.0], q = [1.0, 2.5] }, confidence = "high", note = "cardboard/boxy tone, classic scoop region" },
+  { id = "kick_mud_vs_bass", freq_hz = [100, 250], when = [ { feature = "masking_db.low_mid_lo", op = ">", value = 3.0 } ], action = { block = "Eq", type = "peq", freq_hz = [120, 220], gain_db = [-4.0, -2.0], q = [1.0, 2.0] }, confidence = "medium", note = "make room for bass body; see eq.toml masking rules" },
+  { id = "kick_no_click", freq_hz = [2000, 5000], when = [ { feature = "transient_db", op = "<", value = 6.0 } ], action = { block = "Eq", type = "peq", freq_hz = [2500, 4500], gain_db = [2.0, 5.0], q = [1.0, 2.0] }, confidence = "medium", note = "boost: attack missing in mix" },
+]
+gate_preset = "kick_gate"
+dyn_preset = "kick_comp"
+fx_preset = "drums_short_room"
+pan_pct = [0, 0]
+level_rel_mix_lu = [-8.0, -3.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018", "shure_mics"]
+
+[[source]]
+id = "snare_top"
+family = "drums"
+name_hints = ["snare", "sn ?top", "snr", "sd", "snare ?t"]
+fundamental_hz = [150, 250]
+useful_range_hz = [80, 16000]
+hpf = { freq_hz = [70, 120], slope_db_per_oct = 18, start_hz = 90 }
+character = [
+  { name = "body", freq_hz = [150, 250], effect = "fatness/weight of the hit" },
+  { name = "crack", freq_hz = [2000, 5000], effect = "attack/crack" },
+  { name = "snap", freq_hz = [5000, 10000], effect = "wire sizzle, air" },
+]
+problems = [
+  { id = "snare_ring", freq_hz = [300, 1200], when = [ { feature = "resonance_db", op = ">", value = 6.0 }, { feature = "resonance_hz", op = "between", value = [300, 1200] } ], action = { block = "Eq", type = "peq", freq_hz = "resonance_hz", gain_db = [-8.0, -3.0], q = [4.0, 8.0] }, confidence = "high", note = "drum-head overtone ring; narrow cut at the measured peak" },
+  { id = "snare_box", freq_hz = [400, 800], when = [ { feature = "band_rel_db.mid", op = ">", value = -6.0 } ], action = { block = "Eq", type = "peq", freq_hz = [400, 800], gain_db = [-5.0, -2.0], q = [1.0, 2.0] }, confidence = "medium" },
+  { id = "snare_hihat_bleed", freq_hz = [6000, 12000], when = [ { feature = "noise_floor_dbfs", op = ">", value = -50.0 } ], action = { block = "Gate", mode = "expander", expander_ratio = [2.0, 3.0], range_db = [6.0, 12.0] }, confidence = "medium", note = "prefer expansion over EQ: cutting hats also cuts snap" },
+]
+gate_preset = "snare_expander"
+dyn_preset = "snare_comp"
+fx_preset = "snare_plate"
+pan_pct = [-10, 10]
+level_rel_mix_lu = [-8.0, -3.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[source]]
+id = "snare_bottom"
+family = "drums"
+name_hints = ["snare ?b", "sn ?bot", "snare ?under", "snr ?b"]
+fundamental_hz = [150, 250]
+useful_range_hz = [150, 16000]
+hpf = { freq_hz = [150, 300], slope_db_per_oct = 24, start_hz = 200 }
+character = [ { name = "wires", freq_hz = [4000, 10000], effect = "snare wire buzz/snap" } ]
+problems = [
+  { id = "snare_bottom_kick_bleed", freq_hz = [40, 150], when = [ { feature = "band_rel_db.bass", op = ">", value = -15.0 } ], action = { block = "Filter", kind = "hpf", freq_hz = [180, 300], slope_db_per_oct = 24 }, confidence = "high" },
+]
+gate_preset = "snare_expander"
+dyn_preset = "none"
+fx_preset = "none"
+pan_pct = [-10, 10]
+level_rel_mix_lu = [-18.0, -10.0]
+polarity_note = "Faces the top mic: usually needs polarity inverted relative to snare_top; verify by low-band sum (sum of top+bottom 150-300 Hz should increase when polarity is right)."
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "shure_mics"]
+
+[[source]]
+id = "tom_rack"
+family = "drums"
+name_hints = ["tom", "rack", "t1", "t2", "hi ?tom", "mid ?tom"]
+fundamental_hz = [90, 250]
+useful_range_hz = [60, 10000]
+hpf = { freq_hz = [50, 100], slope_db_per_oct = 18, start_hz = 70 }
+character = [
+  { name = "body", freq_hz = [90, 250], effect = "tone/pitch of the drum" },
+  { name = "attack", freq_hz = [3000, 6000], effect = "stick attack" },
+]
+problems = [
+  { id = "tom_box", freq_hz = [300, 700], when = [ { feature = "band_rel_db.low_mid", op = ">", value = -8.0 } ], action = { block = "Eq", type = "peq", freq_hz = [300, 600], gain_db = [-8.0, -3.0], q = [1.0, 2.5] }, confidence = "high" },
+  { id = "tom_cymbal_bleed", freq_hz = [5000, 16000], when = [ { feature = "activity_pct", op = "<", value = 20.0 } ], action = { block = "Gate", mode = "gate", range_db = [15.0, 40.0] }, confidence = "high", note = "toms are sparse; gate/expander removes bleed and low-mid build-up" },
+]
+gate_preset = "tom_gate"
+dyn_preset = "tom_comp"
+fx_preset = "drums_short_room"
+pan_pct = [-60, 60]
+level_rel_mix_lu = [-8.0, -3.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[source]]
+id = "tom_floor"
+family = "drums"
+name_hints = ["floor", "ftom", "ft", "t3", "t4", "low ?tom"]
+fundamental_hz = [60, 150]
+useful_range_hz = [40, 10000]
+hpf = { freq_hz = [35, 70], slope_db_per_oct = 18, start_hz = 50 }
+character = [
+  { name = "body", freq_hz = [60, 150], effect = "depth/boom" },
+  { name = "attack", freq_hz = [3000, 5000], effect = "stick attack" },
+]
+problems = [
+  { id = "floor_box", freq_hz = [250, 600], when = [ { feature = "band_rel_db.low_mid", op = ">", value = -8.0 } ], action = { block = "Eq", type = "peq", freq_hz = [250, 500], gain_db = [-8.0, -3.0], q = [1.0, 2.5] }, confidence = "high" },
+]
+gate_preset = "tom_gate"
+dyn_preset = "tom_comp"
+fx_preset = "drums_short_room"
+pan_pct = [30, 70]
+level_rel_mix_lu = [-8.0, -3.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017"]
+
+[[source]]
+id = "hihat"
+family = "drums"
+name_hints = ["hh", "hat", "hihat", "hi-hat"]
+fundamental_hz = [300, 800]
+useful_range_hz = [200, 18000]
+hpf = { freq_hz = [200, 500], slope_db_per_oct = 24, start_hz = 300 }
+character = [
+  { name = "clank", freq_hz = [600, 1500], effect = "metallic clang" },
+  { name = "shimmer", freq_hz = [8000, 14000], effect = "air/sizzle" },
+]
+problems = [
+  { id = "hat_harsh", freq_hz = [2000, 5000], when = [ { feature = "band_dev_db.presence", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [2500, 5000], gain_db = [-5.0, -2.0], q = [1.0, 2.0] }, confidence = "medium" },
+]
+gate_preset = "none"
+dyn_preset = "none"
+fx_preset = "none"
+pan_pct = [-50, -20]
+level_rel_mix_lu = [-18.0, -10.0]
+polarity_note = "Pan to match its position in the overheads (drummer or audience perspective, consistent across the kit)."
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[source]]
+id = "overheads"
+family = "drums"
+name_hints = ["oh", "overhead", "ovh", "cym", "cymbal"]
+fundamental_hz = [100, 500]
+useful_range_hz = [80, 20000]
+hpf = { freq_hz = [80, 400], slope_db_per_oct = 12, start_hz = 120, note = "low end if OH are the main kit image; up to 300-500 Hz if used as cymbal mics only" }
+character = [
+  { name = "kit_image", freq_hz = [100, 500], effect = "whole-kit body" },
+  { name = "air", freq_hz = [8000, 16000], effect = "cymbal shimmer (high shelf)" },
+]
+problems = [
+  { id = "oh_harsh", freq_hz = [2000, 5000], when = [ { feature = "band_dev_db.presence", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [2000, 4500], gain_db = [-5.0, -2.0], q = [0.8, 2.0] }, confidence = "medium", note = "cymbal harshness/'gong' on loud crashes" },
+  { id = "oh_room_mud", freq_hz = [250, 600], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [300, 600], gain_db = [-4.0, -2.0], q = [0.8, 1.5] }, confidence = "medium" },
+]
+gate_preset = "none"
+dyn_preset = "overhead_comp"
+fx_preset = "none"
+pan_pct = [-100, 100]
+level_rel_mix_lu = [-12.0, -6.0]
+polarity_note = "Check time alignment against snare/kick (snare arrival in OH 2-5 ms later); delay close mics or accept. Check L/R correlation > 0.3 for a stable image."
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018", "shure_mics"]
+
+[[source]]
+id = "room"
+family = "ambience"
+name_hints = ["room", "amb", "rm", "crush", "trash"]
+fundamental_hz = [60, 400]
+useful_range_hz = [50, 16000]
+hpf = { freq_hz = [50, 120], slope_db_per_oct = 18, start_hz = 80 }
+character = [ { name = "size", freq_hz = [100, 400], effect = "room body/size" } ]
+problems = [
+  { id = "room_mud", freq_hz = [200, 500], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [200, 450], gain_db = [-6.0, -2.0], q = [0.7, 1.5] }, confidence = "medium" },
+]
+gate_preset = "none"
+dyn_preset = "room_crush"
+fx_preset = "none"
+pan_pct = [-100, 100]
+level_rel_mix_lu = [-18.0, -8.0]
+polarity_note = "Room mics lag close mics by ~3 ms per metre; in live sound room mics are often absent or used for audience/broadcast feeds."
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+# ======================================= BASS ==================================================================
+[[source]]
+id = "bass_di"
+family = "bass"
+name_hints = ["bass ?di", "bass", "bs ?di", "bgtr", "e ?bass"]
+fundamental_hz = [41, 250]
+useful_range_hz = [30, 6000]
+hpf = { freq_hz = [25, 45], slope_db_per_oct = 18, start_hz = 30, note = "low E is 41.2 Hz (5-string low B 30.9 Hz): never above the lowest fundamental" }
+character = [
+  { name = "weight", freq_hz = [40, 100], effect = "fundamental / low-end weight" },
+  { name = "growl", freq_hz = [600, 1200], effect = "note definition on small speakers" },
+  { name = "string_attack", freq_hz = [1500, 4000], effect = "pick/finger attack, articulation" },
+]
+problems = [
+  { id = "bass_mud", freq_hz = [200, 400], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [200, 350], gain_db = [-5.0, -2.0], q = [1.0, 2.0] }, confidence = "high" },
+  { id = "bass_undefined", freq_hz = [600, 1200], when = [ { feature = "band_dev_db.mid", op = "<", value = -3.0 } ], action = { block = "Eq", type = "peq", freq_hz = [700, 1200], gain_db = [2.0, 4.0], q = [1.0, 2.0] }, confidence = "medium", note = "boost: notes not audible on small systems" },
+  { id = "bass_note_unevenness", freq_hz = [40, 200], when = [ { feature = "crest_db", op = ">", value = 14.0 } ], action = { block = "Dyn", kind = "compressor", ratio = [3.0, 6.0] }, confidence = "high", note = "uneven notes: compression (dynamics.toml bass_comp)" },
+]
+gate_preset = "none"
+dyn_preset = "bass_comp"
+fx_preset = "none"
+pan_pct = [0, 0]
+level_rel_mix_lu = [-6.0, -2.0]
+polarity_note = "With bass_amp: align DI and amp (amp mic lags 1-5 ms incl. amp latency); check low-band sum."
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[source]]
+id = "bass_amp"
+family = "bass"
+name_hints = ["bass ?amp", "bass ?mic", "b ?cab", "bass ?cab"]
+fundamental_hz = [41, 250]
+useful_range_hz = [35, 5000]
+hpf = { freq_hz = [30, 50], slope_db_per_oct = 18, start_hz = 35 }
+lpf = { freq_hz = [4000, 7000], slope_db_per_oct = 12, start_hz = 5000, note = "cabinet rolls off above; removes cymbal bleed" }
+character = [ { name = "growl", freq_hz = [500, 1500], effect = "amp grit/midrange" } ]
+problems = [
+  { id = "bass_amp_boom", freq_hz = [80, 200], when = [ { feature = "resonance_db", op = ">", value = 6.0 }, { feature = "resonance_hz", op = "between", value = [80, 200] } ], action = { block = "Eq", type = "peq", freq_hz = "resonance_hz", gain_db = [-6.0, -3.0], q = [2.0, 5.0] }, confidence = "medium", note = "cabinet/stage resonance" },
+]
+gate_preset = "none"
+dyn_preset = "bass_comp"
+fx_preset = "none"
+pan_pct = [0, 0]
+level_rel_mix_lu = [-8.0, -3.0]
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+# ======================================= GUITARS ===============================================================
+[[source]]
+id = "electric_guitar"
+family = "guitar"
+name_hints = ["gtr", "guitar", "egtr", "e ?gt", "elec", "lead ?gtr", "rhy"]
+fundamental_hz = [82, 1200]
+useful_range_hz = [80, 10000]
+hpf = { freq_hz = [70, 150], slope_db_per_oct = 18, start_hz = 90, note = "higher (120-150) in dense arrangements so the guitar leaves bass/kick room" }
+lpf = { freq_hz = [6000, 12000], slope_db_per_oct = 12, start_hz = 9000, note = "speaker cabinets have little useful content above ~6 kHz; removes fizz/noise" }
+character = [
+  { name = "body", freq_hz = [150, 400], effect = "thickness" },
+  { name = "bite", freq_hz = [1500, 4000], effect = "presence/aggression" },
+]
+problems = [
+  { id = "gtr_mud", freq_hz = [200, 400], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [200, 400], gain_db = [-4.0, -2.0], q = [1.0, 2.0] }, confidence = "high" },
+  { id = "gtr_fizz", freq_hz = [3000, 7000], when = [ { feature = "band_dev_db.presence", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [3000, 6000], gain_db = [-5.0, -2.0], q = [1.0, 3.0] }, confidence = "medium", note = "harsh distortion fizz" },
+  { id = "gtr_masks_vocal", freq_hz = [1500, 4000], when = [ { feature = "masking_db.presence", op = ">", value = 3.0 } ], action = { block = "Eq", type = "peq", freq_hz = [2000, 4000], gain_db = [-3.0, -1.5], q = [1.0, 2.0] }, confidence = "medium", note = "see eq.toml masking; or pan away from centre" },
+]
+gate_preset = "amp_noise_expander"
+dyn_preset = "none"
+fx_preset = "guitar_ambience"
+pan_pct = [-100, 100]
+level_rel_mix_lu = [-10.0, -4.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[source]]
+id = "acoustic_guitar"
+family = "guitar"
+name_hints = ["ac ?gtr", "acoustic", "agtr", "acc ?gt", "ag"]
+fundamental_hz = [82, 1200]
+useful_range_hz = [80, 16000]
+hpf = { freq_hz = [80, 150], slope_db_per_oct = 18, start_hz = 100 }
+character = [
+  { name = "body", freq_hz = [100, 250], effect = "body resonance (boom in excess)" },
+  { name = "sparkle", freq_hz = [5000, 12000], effect = "strum detail/air" },
+]
+problems = [
+  { id = "ag_boom", freq_hz = [100, 250], when = [ { feature = "band_dev_db.low_mid_lo", op = ">", value = 3.0 } ], action = { block = "Eq", type = "peq", freq_hz = [100, 220], gain_db = [-6.0, -2.0], q = [1.0, 3.0] }, confidence = "high", note = "body/soundhole resonance and piezo boom; feedback-prone live" },
+  { id = "ag_quack", freq_hz = [600, 1500], when = [ { feature = "band_dev_db.upper_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [800, 1500], gain_db = [-4.0, -2.0], q = [1.5, 3.0] }, confidence = "medium", note = "piezo 'quack'" },
+]
+gate_preset = "none"
+dyn_preset = "acoustic_comp"
+fx_preset = "acoustic_ambience"
+pan_pct = [-60, 60]
+level_rel_mix_lu = [-10.0, -4.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017"]
+
+# ======================================= KEYS ==================================================================
+[[source]]
+id = "piano"
+family = "keys"
+name_hints = ["piano", "pno", "grand", "upright", "keys ?p"]
+fundamental_hz = [27.5, 4200]
+useful_range_hz = [30, 16000]
+hpf = { freq_hz = [30, 100], slope_db_per_oct = 12, start_hz = 50, note = "higher (80-120) in band mixes where bass covers the low end" }
+character = [
+  { name = "warmth", freq_hz = [100, 300], effect = "body" },
+  { name = "presence", freq_hz = [2000, 5000], effect = "hammer attack" },
+]
+problems = [
+  { id = "piano_mud", freq_hz = [200, 500], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [200, 450], gain_db = [-4.0, -2.0], q = [0.8, 1.5] }, confidence = "medium" },
+  { id = "piano_honk", freq_hz = [700, 1500], when = [ { feature = "band_dev_db.upper_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [700, 1400], gain_db = [-4.0, -2.0], q = [1.0, 2.0] }, confidence = "medium" },
+]
+gate_preset = "none"
+dyn_preset = "keys_comp"
+fx_preset = "keys_ambience"
+pan_pct = [-80, 80]
+level_rel_mix_lu = [-10.0, -4.0]
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[source]]
+id = "keys_synth"
+family = "keys"
+name_hints = ["keys", "kbd", "synth", "syn", "pad", "organ", "rhodes", "wurli", "ep"]
+fundamental_hz = [60, 2000]
+useful_range_hz = [40, 18000]
+hpf = { freq_hz = [60, 200], slope_db_per_oct = 18, start_hz = 100, note = "pads in dense mixes tolerate high HPF; bass synths are exempt (treat as bass_di)" }
+character = [ { name = "body", freq_hz = [150, 400], effect = "pad thickness" } ]
+problems = [
+  { id = "pad_clutter", freq_hz = [200, 500], when = [ { feature = "masking_db.low_mid", op = ">", value = 3.0 } ], action = { block = "Eq", type = "peq", freq_hz = [200, 500], gain_db = [-4.0, -2.0], q = [0.7, 1.5] }, confidence = "medium" },
+]
+gate_preset = "none"
+dyn_preset = "none"
+fx_preset = "keys_ambience"
+pan_pct = [-100, 100]
+level_rel_mix_lu = [-12.0, -5.0]
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+
+# ======================================= VOCALS ================================================================
+[[source]]
+id = "lead_vocal"
+family = "vocal"
+name_hints = ["vox", "vocal", "voc", "lead", "ld ?v", "lv", "sing", "mc"]
+fundamental_hz = [85, 1100]
+useful_range_hz = [80, 16000]
+hpf = { freq_hz = [70, 150], slope_db_per_oct = 18, start_hz = 90, note = "male ~80-100, female ~100-150; sweep up until the voice thins, then back off" }
+character = [
+  { name = "chest", freq_hz = [120, 250], effect = "warmth/body (excess = proximity boom)" },
+  { name = "intelligibility", freq_hz = [2000, 4000], effect = "consonants, presence, forwardness" },
+  { name = "air", freq_hz = [10000, 16000], effect = "breath/air (high shelf)" },
+]
+problems = [
+  { id = "vox_proximity_mud", freq_hz = [150, 400], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [180, 400], gain_db = [-5.0, -2.0], q = [1.0, 2.0] }, confidence = "high", note = "proximity effect of directional mics" },
+  { id = "vox_box", freq_hz = [400, 800], when = [ { feature = "band_dev_db.mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [400, 800], gain_db = [-4.0, -2.0], q = [1.5, 3.0] }, confidence = "medium" },
+  { id = "vox_nasal", freq_hz = [800, 1500], when = [ { feature = "band_dev_db.upper_mid", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [800, 1500], gain_db = [-4.0, -1.5], q = [1.5, 4.0] }, confidence = "medium" },
+  { id = "vox_harsh", freq_hz = [2500, 5000], when = [ { feature = "band_dev_db.presence", op = ">", value = 2.5 } ], action = { block = "Dyn", kind = "dynamic_eq", freq_hz = [2500, 4500], q = [2.0, 4.0], range_db = [3.0, 6.0] }, confidence = "medium", note = "harshness is often level-dependent (belted notes): prefer dynamic EQ over static cut" },
+  { id = "vox_sibilance", freq_hz = [5000, 10000], when = [ { feature = "sibilance_db", op = ">", value = 3.0 } ], action = { block = "Dyn", kind = "deesser", freq_hz = [5000, 8500] }, confidence = "high", note = "see dynamics.toml deess presets" },
+  { id = "vox_ring", freq_hz = [200, 6000], when = [ { feature = "feedback_risk_db", op = ">", value = 10.0 } ], action = { block = "Eq", type = "peq", freq_hz = "resonance_hz", gain_db = [-9.0, -3.0], q = [6.0, 10.0] }, confidence = "high", note = "live: ringing/feedback notch, narrowest Q, smallest cut that stops it" },
+]
+gate_preset = "vocal_expander"
+dyn_preset = "vocal_comp"
+deess_preset = "vocal_deess"
+fx_preset = "lead_vocal_space"
+pan_pct = [0, 0]
+level_rel_mix_lu = [-4.0, 0.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018", "shure_mics", "pestana2014"]
+
+[[source]]
+id = "backing_vocal"
+family = "vocal"
+name_hints = ["bv", "bvox", "bkg", "back", "harm", "choir", "bgv"]
+fundamental_hz = [85, 1100]
+useful_range_hz = [100, 16000]
+hpf = { freq_hz = [100, 200], slope_db_per_oct = 18, start_hz = 130, note = "higher than lead: BVs need less body, leaving room for the lead" }
+character = [ { name = "air", freq_hz = [8000, 14000], effect = "blend/sheen" } ]
+problems = [
+  { id = "bv_mud", freq_hz = [150, 400], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 1.0 } ], action = { block = "Eq", type = "peq", freq_hz = [200, 400], gain_db = [-6.0, -2.0], q = [0.8, 1.5] }, confidence = "high" },
+  { id = "bv_compete_lead", freq_hz = [2000, 5000], when = [ { feature = "masking_db.presence", op = ">", value = 2.0 } ], action = { block = "Eq", type = "peq", freq_hz = [2000, 4000], gain_db = [-3.0, -1.5], q = [0.8, 1.5] }, confidence = "medium", note = "leave the presence band to the lead" },
+  { id = "bv_sibilance", freq_hz = [5000, 10000], when = [ { feature = "sibilance_db", op = ">", value = 1.0 } ], action = { block = "Dyn", kind = "deesser", freq_hz = [5000, 8500] }, confidence = "high", note = "stacked sibilance adds up; de-ess harder than lead" },
+]
+gate_preset = "vocal_expander"
+dyn_preset = "bv_comp"
+deess_preset = "bv_deess"
+fx_preset = "bv_space"
+pan_pct = [-80, 80]
+level_rel_mix_lu = [-12.0, -6.0]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[source]]
+id = "speech"
+family = "speech"
+name_hints = ["speech", "mc", "host", "talk", "pastor", "presenter", "lectern", "lav", "headset"]
+fundamental_hz = [85, 255]
+useful_range_hz = [90, 12000]
+hpf = { freq_hz = [80, 150], slope_db_per_oct = 18, start_hz = 100 }
+character = [ { name = "intelligibility", freq_hz = [2000, 4000], effect = "consonant clarity" } ]
+problems = [
+  { id = "speech_mud", freq_hz = [150, 400], when = [ { feature = "band_dev_db.low_mid", op = ">", value = 1.0 } ], action = { block = "Eq", type = "peq", freq_hz = [180, 350], gain_db = [-5.0, -2.0], q = [1.0, 2.0] }, confidence = "high" },
+  { id = "speech_unclear", freq_hz = [2000, 4000], when = [ { feature = "band_dev_db.presence", op = "<", value = -3.0 } ], action = { block = "Eq", type = "peq", freq_hz = [2000, 4000], gain_db = [1.5, 4.0], q = [0.7, 1.5] }, confidence = "medium", note = "boost" },
+]
+gate_preset = "vocal_expander"
+dyn_preset = "speech_comp"
+deess_preset = "vocal_deess"
+fx_preset = "none"
+pan_pct = [0, 0]
+level_rel_mix_lu = [-2.0, 2.0]
+confidence = "high"
+sources = ["shure_mics", "owsinski2017"]
+
+# ======================================= OTHER =================================================================
+[[source]]
+id = "brass"
+family = "brass_strings"
+name_hints = ["tpt", "trumpet", "sax", "tbn", "trombone", "horn", "brass"]
+fundamental_hz = [80, 1000]
+useful_range_hz = [80, 14000]
+hpf = { freq_hz = [80, 150], slope_db_per_oct = 18, start_hz = 100 }
+character = [ { name = "bite", freq_hz = [1500, 4000], effect = "edge/brassiness" } ]
+problems = [
+  { id = "brass_harsh", freq_hz = [1500, 4000], when = [ { feature = "band_dev_db.presence", op = ">", value = 2.5 } ], action = { block = "Eq", type = "peq", freq_hz = [2000, 4000], gain_db = [-4.0, -2.0], q = [1.0, 2.0] }, confidence = "medium" },
+]
+gate_preset = "none"
+dyn_preset = "brass_comp"
+fx_preset = "keys_ambience"
+pan_pct = [-60, 60]
+level_rel_mix_lu = [-10.0, -4.0]
+confidence = "low"
+sources = ["owsinski2017", "practice"]
+
+[[source]]
+id = "playback"
+family = "playback"
+name_hints = ["pb", "playback", "track", "click", "usb", "laptop", "spotify", "bgm", "walk ?in", "stems"]
+fundamental_hz = [20, 20000]
+useful_range_hz = [20, 20000]
+hpf = { freq_hz = [20, 30], slope_db_per_oct = 12, start_hz = 20, note = "already mixed/mastered: subsonic protection only" }
+character = []
+problems = [
+  { id = "pb_too_hot", freq_hz = [20, 20000], when = [ { feature = "peak_dbfs", op = ">", value = -6.0 } ], action = { block = "Trim", gain_db = [-12.0, -3.0] }, confidence = "high", note = "mastered material arrives near 0 dBFS; trim down to channel peak target" },
+  { id = "pb_mono_compat", freq_hz = [20, 20000], when = [ { feature = "correlation", op = "<", value = 0.0 } ], action = { block = "Pan", width_pct = [50, 100] }, confidence = "medium", note = "negative correlation collapses in mono PA zones; narrow it" },
+]
+gate_preset = "none"
+dyn_preset = "none"
+fx_preset = "none"
+pan_pct = [-100, 100]
+level_rel_mix_lu = [-6.0, 0.0]
+polarity_note = "Never tonal-EQ a mastered playback to match a band reference except broad level/tilt; never route click to FOH (forbidden by remit naming)."
+confidence = "medium"
+sources = ["katz2015", "practice"]
