@@ -61,7 +61,10 @@ impl Daemon {
             if let Some(s) = self.child.try_wait().unwrap() {
                 return s;
             }
-            assert!(t0.elapsed() < Duration::from_secs(20), "daemon did not exit");
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "daemon did not exit"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -79,20 +82,19 @@ fn sigterm_during_autopilot_shuts_down_cleanly() {
         {
             break;
         }
-        assert!(t0.elapsed() < Duration::from_secs(30), "loop never ran: {st}");
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "loop never ran: {st}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
     // SAFETY: signalling the child we spawned.
-    assert_eq!(
-        unsafe { libc::kill(d.child.id() as i32, libc::SIGTERM) },
-        0
-    );
+    assert_eq!(unsafe { libc::kill(d.child.id() as i32, libc::SIGTERM) }, 0);
     let status = d.wait_exit();
     assert!(status.success(), "exit status {status:?}");
-    let st: Value = serde_json::from_str(
-        &std::fs::read_to_string(d.state.join("status.json")).unwrap(),
-    )
-    .unwrap();
+    let st: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.state.join("status.json")).unwrap())
+            .unwrap();
     assert_eq!(st["running"], false);
     assert!(!d.sock.exists(), "socket left behind");
     let log = std::fs::read_to_string(d.state.join("events.jsonl")).unwrap();
@@ -134,7 +136,10 @@ fn live_context_setting_round_trips() {
     let d = Daemon::start("ctx");
     let r = d.req(json!({"cmd": "set_live_context", "context": "match_record"}));
     assert_eq!(r["live_context"], "match_record");
-    assert_eq!(d.req(json!({"cmd": "status"}))["live_context"], "match_record");
+    assert_eq!(
+        d.req(json!({"cmd": "status"}))["live_context"],
+        "match_record"
+    );
     assert!(wing_mixd::server::request(
         &d.sock,
         r#"{"cmd":"set_live_context","context":"nope"}"#,

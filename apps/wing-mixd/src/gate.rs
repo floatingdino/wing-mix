@@ -117,7 +117,8 @@ mod tests {
         let inner = PolicyGate::with_roles(policy, &*sim, foh.clone()).unwrap();
         let mut gate = LiveRolesGate::new(inner, handle.clone(), sim.clone());
         let bus = StripId::new("bus", 5);
-        let req = WriteRequest::new("input.1/send/bus.5/level", ParamClass::SendLevel).change(-10.0, -8.0);
+        let req = WriteRequest::new("input.1/send/bus.5/level", ParamClass::SendLevel)
+            .change(-10.0, -8.0);
         let base = Value::Float(-10.0);
         let before = gate.check_write(&req, &base);
         assert_ne!(

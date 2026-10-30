@@ -63,8 +63,10 @@ fn console_rta_feeds_the_safety_monitor_and_is_restored() {
     );
 
     d.request(
-        serde_json::from_value(json!({"cmd": "connect_console", "console": "127.0.0.1", "port": port}))
-            .unwrap(),
+        serde_json::from_value(
+            json!({"cmd": "connect_console", "console": "127.0.0.1", "port": port}),
+        )
+        .unwrap(),
     )
     .unwrap();
     d.request(

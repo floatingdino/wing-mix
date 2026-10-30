@@ -35,8 +35,8 @@ use crate::analysis::{lock, Analysis, Meters, SharedMeter};
 use crate::events::EventHub;
 use crate::gate::{LiveRolesGate, RolesHandle};
 use crate::protocol::{
-    ConnectConsole, LiveContext, InputKind, LoadDescription, LoadReference, Request, SelectInput, SimOptions,
-    StartOptions, TapSel,
+    ConnectConsole, InputKind, LiveContext, LoadDescription, LoadReference, Request, SelectInput,
+    SimOptions, StartOptions, TapSel,
 };
 use crate::rta::RtaFeed;
 use crate::server::{ControlServer, Dispatch};
@@ -215,9 +215,8 @@ impl DaemonHandle {
             }
             if n >= 1 && !asked {
                 asked = true;
-                self.shared.send(Msg::Signal(
-                    crate::signals::last_name().unwrap_or("signal"),
-                ));
+                self.shared
+                    .send(Msg::Signal(crate::signals::last_name().unwrap_or("signal")));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -950,7 +949,9 @@ impl Daemon {
                 &json!({"type": "live_context_changed", "live_context": context, "applied": false}),
             );
         }
-        Ok(json!({"live_context": context, "applied": false, "note": "stored; the target transform lands with M037"}))
+        Ok(
+            json!({"live_context": context, "applied": false, "note": "stored; the target transform lands with M037"}),
+        )
     }
 
     fn start(&mut self, o: StartOptions) -> Result<Value, String> {
@@ -1110,9 +1111,11 @@ impl Daemon {
     }
 
     fn tick(&mut self) {
-        if self.session.as_ref().is_some_and(|s| {
-            s.roles_stale && s.ctl.as_ref().is_some_and(|c| !c.ctl.is_busy())
-        }) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.roles_stale && s.ctl.as_ref().is_some_and(|c| !c.ctl.is_busy()))
+        {
             if let Some(s) = self.session.as_mut() {
                 s.roles_stale = false;
             }
@@ -1381,9 +1384,8 @@ fn connect_wing(ip: &str, port: Option<u16>, scene: String) -> Result<Console, S
         discovery_port: Some(port),
         ..Default::default()
     };
-    let s = Arc::new(
-        mix_wing::WingSurface::connect(addr, &opts).map_err(|e| format!("{addr}: {e}"))?,
-    );
+    let s =
+        Arc::new(mix_wing::WingSurface::connect(addr, &opts).map_err(|e| format!("{addr}: {e}"))?);
     let info = s.info();
     Ok(Console {
         kind: "wing",
