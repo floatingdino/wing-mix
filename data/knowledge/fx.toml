@@ -1,0 +1,248 @@
+# Wing Mix knowledge base: send-FX conventions (reverb/delay/modulation per source), tempo math, FX rules.
+# Rationale and citations: docs/research/mix-knowledge.md (section "fx.toml").
+# Feature names, blocks, condition/action grammar: data/knowledge/workflow.toml.
+
+[schema]
+version = 1
+file = "fx"
+description = "Standard FOH send-FX rack (FX buses + FxSlot settings), per-source send presets (referenced by sources.toml fx_preset), tempo-derived timing, and rules adjusting depth from features."
+
+[schema.fields]
+fx_bus           = "[[fx_bus]] id, role, model_class (workflow.toml [blocks.FxSlot].model_classes), params as [lo, hi] ranges with unit suffixes; tempo-relative params use *_beats (multiples of a quarter note); return_filter = Filter/Eq actions on the FX return"
+send_preset      = "[[send_preset]] id, sends = [{ fx = <fx_bus id>, wet_rel_dry_lu = [lo, hi], tap = pre|post }]"
+wet_rel_dry_lu   = "loudness of this source's contribution through the FX return minus its dry loudness in the mix (LU). The planner converts it to a send level via the adapter (send gain + return fader + FX mix), or measures it by comparing the FX return with only this send active. -inf = no send."
+tempo            = "[tempo] formulas; bpm comes from analysis (onset tempo) or the user"
+rule             = "[[rule]] as in dynamics.toml (id, applies_to, when, when_any, adjust/action, priority, confidence, sources, note)"
+context          = "[context] modifiers by performance context (studio-like reference vs live venue)"
+
+[tempo]
+quarter_ms = "60000 / bpm"
+eighth_ms = "30000 / bpm"
+dotted_eighth_ms = "45000 / bpm"
+sixteenth_ms = "15000 / bpm"
+fallback_bpm = 100.0
+predelay_rule = "predelay_ms ~= a 1/64-1/32 note (quarter_ms / 16 .. / 8), clamped to [10, 80] ms; longer predelay separates the dry voice from the tail"
+decay_rule = "decay_s chosen so the tail falls ~60 dB in roughly 1-2 bars for ballads, ~1/2-1 bar for up-tempo material: decay_s ~= k * 4 * quarter_ms / 1000 with k in [0.5, 1.0] (up-tempo) or [1.0, 2.0] (slow), clamped by the fx_bus range"
+sources = ["owsinski2017", "izhaki2018", "senior2011"]
+
+# ======================================= STANDARD FX RACK ======================================================
+# A conventional FOH layout; the adapter maps it to free FX slots on buses (WING: reverbs/delays only in FX1-8).
+[[fx_bus]]
+id = "vocal_plate"
+role = "lead/backing vocal reverb"
+model_class = "plate"
+decay_s = [1.2, 2.5]
+predelay_ms = [20.0, 80.0]
+lo_cut_hz = [150.0, 300.0]
+hi_cut_hz = [6000.0, 10000.0]
+mix_pct = 100.0
+return_filter = [ { block = "Filter", kind = "hpf", freq_hz = [150, 300], slope_db_per_oct = 12 } ]
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[fx_bus]]
+id = "hall"
+role = "long ambience for ballads, pads, strings, choir"
+model_class = "hall"
+decay_s = [1.8, 3.0]
+predelay_ms = [20.0, 60.0]
+lo_cut_hz = [100.0, 250.0]
+hi_cut_hz = [5000.0, 9000.0]
+mix_pct = 100.0
+return_filter = [ { block = "Filter", kind = "hpf", freq_hz = [120, 250], slope_db_per_oct = 12 } ]
+confidence = "medium"
+sources = ["owsinski2017", "izhaki2018"]
+
+[[fx_bus]]
+id = "drum_room"
+role = "short room/ambience for kit glue"
+model_class = "room"
+decay_s = [0.5, 1.2]
+predelay_ms = [0.0, 15.0]
+lo_cut_hz = [100.0, 250.0]
+hi_cut_hz = [6000.0, 10000.0]
+mix_pct = 100.0
+return_filter = [ { block = "Filter", kind = "hpf", freq_hz = [120, 250], slope_db_per_oct = 12 } ]
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[fx_bus]]
+id = "snare_plate"
+role = "snare (and toms) plate"
+model_class = "plate"
+decay_s = [1.0, 1.8]
+predelay_ms = [0.0, 20.0]
+lo_cut_hz = [200.0, 400.0]
+hi_cut_hz = [6000.0, 10000.0]
+mix_pct = 100.0
+return_filter = [ { block = "Filter", kind = "hpf", freq_hz = [200, 400], slope_db_per_oct = 12 } ]
+confidence = "medium"
+sources = ["owsinski2017", "izhaki2018"]
+
+[[fx_bus]]
+id = "vocal_delay"
+role = "tempo delay for lead vocal throws and depth"
+model_class = "delay_stereo"
+time_beats = [0.75, 1.0]           # dotted-eighth (0.75 quarter) or quarter note
+feedback_pct = [15.0, 35.0]
+lo_cut_hz = [200.0, 500.0]
+hi_cut_hz = [3000.0, 6000.0]
+mix_pct = 100.0
+return_filter = [ { block = "Filter", kind = "hpf", freq_hz = [200, 500], slope_db_per_oct = 12 } ]
+confidence = "medium"
+sources = ["owsinski2017", "senior2011"]
+note = "filtered repeats sit behind the dry voice; darker repeats read as 'distance'"
+
+[[fx_bus]]
+id = "slap"
+role = "short slapback for vocals/guitars (rock, rockabilly, spoken word)"
+model_class = "delay_tape"
+time_ms = [80.0, 160.0]
+feedback_pct = [0.0, 15.0]
+lo_cut_hz = [150.0, 300.0]
+hi_cut_hz = [3000.0, 6000.0]
+mix_pct = 100.0
+confidence = "low"
+sources = ["owsinski2017", "practice"]
+
+[[fx_bus]]
+id = "doubler"
+role = "width/thickening (micro-pitch / short modulated delay)"
+model_class = "doubler"
+time_ms = [10.0, 30.0]
+mix_pct = 100.0
+confidence = "low"
+sources = ["izhaki2018", "practice"]
+
+# ======================================= SEND PRESETS ==========================================================
+# Depth conventions: closer/drier = more upfront; low-frequency sources send little or nothing to reverb.
+[[send_preset]]
+id = "lead_vocal_space"
+sends = [
+  { fx = "vocal_plate", wet_rel_dry_lu = [-18.0, -10.0], tap = "post" },
+  { fx = "vocal_delay", wet_rel_dry_lu = [-24.0, -14.0], tap = "post" },
+]
+confidence = "medium"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+note = "upfront vocal: reverb felt more than heard; raise for ballads (vocabulary: wet, spacious, lush)"
+
+[[send_preset]]
+id = "bv_space"
+sends = [ { fx = "vocal_plate", wet_rel_dry_lu = [-14.0, -8.0], tap = "post" } ]
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+note = "BVs a little wetter than the lead pushes them behind it"
+
+[[send_preset]]
+id = "snare_plate"
+sends = [
+  { fx = "snare_plate", wet_rel_dry_lu = [-16.0, -8.0], tap = "post" },
+  { fx = "drum_room", wet_rel_dry_lu = [-18.0, -10.0], tap = "post" },
+]
+confidence = "medium"
+sources = ["owsinski2017", "senior2011"]
+
+[[send_preset]]
+id = "drums_short_room"
+sends = [ { fx = "drum_room", wet_rel_dry_lu = [-22.0, -12.0], tap = "post" } ]
+confidence = "medium"
+sources = ["senior2011"]
+note = "kick: low end is cut by the return HPF, so kick sends mostly add beater ambience; often none"
+
+[[send_preset]]
+id = "guitar_ambience"
+sends = [ { fx = "drum_room", wet_rel_dry_lu = [-22.0, -14.0], tap = "post" } ]
+confidence = "low"
+sources = ["senior2011", "practice"]
+
+[[send_preset]]
+id = "acoustic_ambience"
+sends = [ { fx = "vocal_plate", wet_rel_dry_lu = [-20.0, -12.0], tap = "post" } ]
+confidence = "low"
+sources = ["owsinski2017", "practice"]
+
+[[send_preset]]
+id = "keys_ambience"
+sends = [ { fx = "hall", wet_rel_dry_lu = [-20.0, -12.0], tap = "post" } ]
+confidence = "low"
+sources = ["izhaki2018", "practice"]
+
+# Sources with fx_preset = "none": bass, bass amp, snare bottom, hihat, overheads, room, playback, speech
+# (speech: intelligibility first; overheads/room already contain ambience; playback already mixed).
+
+# ======================================= CONTEXT ===============================================================
+[context]
+live_reverberant_venue = { wet_offset_lu = [-6.0, -3.0], note = "the room adds its own reverb; FOH reverb that matches a studio reference sounds washy in a live room" }
+live_dry_venue_or_outdoor = { wet_offset_lu = [0.0, 2.0] }
+broadcast_or_recording_tap = { wet_offset_lu = [0.0, 0.0] }
+sources = ["owsinski2017", "practice"]
+
+# ======================================= RULES =================================================================
+[[rule]]
+id = "fx_too_dry"
+applies_to = ["mix"]
+when = [ { feature = "reverb_rel_dev_db", op = "<", value = -3.0 } ]
+adjust = [ { param = "wet_rel_dry_lu", by = [1.0, 3.0], order = ["lead_vocal", "snare_top", "backing_vocal", "keys_synth", "acoustic_guitar"] } ]
+priority = 3
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+note = "raise sends on the sources listed first; create the source's send_preset if no send exists"
+
+[[rule]]
+id = "fx_too_wet"
+applies_to = ["mix"]
+when = [ { feature = "reverb_rel_dev_db", op = ">", value = 3.0 } ]
+adjust = [ { param = "wet_rel_dry_lu", by = [-3.0, -1.0], order = ["keys_synth", "electric_guitar", "backing_vocal", "snare_top", "lead_vocal"] } ]
+priority = 3
+confidence = "medium"
+sources = ["senior2011"]
+
+[[rule]]
+id = "fx_reverb_mud"
+applies_to = ["mix"]
+when = [ { feature = "band_dev_db.low_mid", op = ">", value = 2.0 }, { feature = "reverb_rel_db", op = ">", value = -14.0 } ]
+adjust = [ { param = "lo_cut_hz", by = [50.0, 150.0], target = "reverb fx_bus returns" } ]
+priority = 3
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+note = "low-mid reverb tail clouds the mix; cut it on the return before touching the sources"
+
+[[rule]]
+id = "fx_sibilant_reverb"
+applies_to = ["lead_vocal", "backing_vocal"]
+when = [ { feature = "sibilance_db", op = ">", value = 2.0 } ]
+adjust = [ { param = "hi_cut_hz", to = [5000.0, 7000.0], target = "vocal_plate" } ]
+priority = 3
+confidence = "medium"
+sources = ["senior2011"]
+note = "reverb exaggerates 's' (splashes); de-ess the source first (dynamics.toml), then darken the return"
+
+[[rule]]
+id = "fx_no_low_end_sends"
+applies_to = ["bass_di", "bass_amp", "kick"]
+when = []
+adjust = [ { param = "wet_rel_dry_lu", to = [-99.0, -20.0] } ]
+priority = 4
+confidence = "high"
+sources = ["owsinski2017", "senior2011"]
+note = "reverberant low end is mud; keep kick/bass dry or behind a high return HPF"
+
+[[rule]]
+id = "fx_vocal_intelligibility"
+applies_to = ["lead_vocal", "speech"]
+when = [ { feature = "masking_db.presence", op = ">", value = 3.0 } ]
+adjust = [ { param = "predelay_ms", by = [10.0, 30.0], target = "vocal_plate" }, { param = "wet_rel_dry_lu", by = [-2.0, -1.0] } ]
+priority = 4
+confidence = "medium"
+sources = ["izhaki2018", "senior2011"]
+note = "more predelay keeps consonants clear of the tail while preserving the sense of space"
+
+[[rule]]
+id = "fx_tempo_sync"
+applies_to = ["mix"]
+when = []
+adjust = [ { param = "time_ms", to = "tempo.quarter_ms * time_beats", target = "vocal_delay" }, { param = "decay_s", to = "tempo.decay_rule", target = "reverb fx_bus" } ]
+priority = 5
+confidence = "medium"
+sources = ["owsinski2017"]
+note = "re-run when the detected tempo changes by > 3 %"

@@ -120,6 +120,7 @@ width_dev_db         = { unit = "db", doc = "side_to_mid_db minus target." }
 masking_db           = { unit = "db", per = "band", doc = "Masking of <self> by <other> in a band: other's band energy minus self's band energy where both are active in the same 400 ms blocks (Hafezi & Reiss style simplified measure); positive = self masked." }
 reverb_rel_db        = { unit = "db", doc = "FX-return loudness minus the dry mix loudness (when the FX return is metered)." }
 reverb_rel_dev_db    = { unit = "db", doc = "reverb_rel_db minus TargetProfile estimate (reference DRR proxy, see M003)." }
+wet_rel_dry_lu       = { unit = "lu", doc = "Per source: loudness of its contribution via an FX return minus its dry loudness (derived from send/return gains or measured with only that send active); fx.toml." }
 hum_db               = { unit = "db", doc = "Energy at 50/60 Hz and first 3 harmonics minus 1/3-oct neighbourhood." }
 feedback_risk_db     = { unit = "db", doc = "Live: a narrow, growing, sustained peak (> 10 dB prominence, rising) - ring/feedback candidate." }
 
