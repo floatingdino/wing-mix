@@ -8,8 +8,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -34,6 +33,8 @@ const KNOWN_DIRS: &[&str] = &[
 pub fn login_shell_path(timeout: Duration) -> Option<OsString> {
     #[cfg(unix)]
     {
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
         let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
         let mut child = Command::new(shell)
             // interactive too: version managers (nvm, pyenv) usually extend PATH in .zshrc/.bashrc only
@@ -145,8 +146,13 @@ pub fn augment_path() -> OsString {
 /// First executable `name` on `path`.
 pub fn which(name: &str, path: Option<&OsString>) -> Option<PathBuf> {
     let path = path?;
+    let exe = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
     std::env::split_paths(path)
-        .map(|d| d.join(name))
+        .map(|d| d.join(&exe))
         .find(|p| is_executable(p))
 }
 
@@ -183,6 +189,7 @@ pub fn status() -> Value {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn merged_path_keeps_order_and_adds_known_dirs() {
         let tmp = std::env::temp_dir().join(format!("wingmixd-tools-{}", std::process::id()));
@@ -203,7 +210,6 @@ mod tests {
             1
         );
         // a tool in the added dir resolves; a missing one does not
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let uv = local.join("uv");
@@ -229,7 +235,7 @@ mod tests {
     #[test]
     fn login_shell_path_is_bounded() {
         // Either a PATH or None, never a hang.
-        let t = Instant::now();
+        let t = std::time::Instant::now();
         let _ = login_shell_path(Duration::from_millis(1500));
         assert!(t.elapsed() < Duration::from_secs(3));
     }
