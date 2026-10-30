@@ -1,0 +1,62 @@
+# Backlog index
+
+Source of truth is each task file's header. `python3 tools/backlog.py --ready` lists startable tasks.
+
+## S0 — Research & foundation
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M001 | Repo scaffold: Rust workspace, Makefile, CLAUDE.md, wing-simulator git deps | - | sonnet |
+| M002 | Research: controlling WING as a client (OSC/native), meters, RTA, solo | - | opus |
+| M003 | Research: analysis & reference-matching techniques and libraries | - | opus |
+| M004 | Research: remit taxonomy + default WING remit policy | - | opus |
+| M005 | Research: mixing knowledge base as structured data | - | opus |
+
+## S1 — Surface layer
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M010 | mix-core + mix-surface: generic console model, Surface trait, Remit engine, journal | M001, M004 | opus |
+| M011 | mix-wing: WING adapter (OSC client, topology, solo, meters) | M010, M002 | opus |
+| M012 | mix-sim: offline closed-loop SimSurface + fixture generator | M010, M002 | opus |
+
+## S2 — Analysis & targets
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M020 | mix-analysis: streaming + offline feature extraction | M001, M003 | opus |
+| M021 | mix-capture: audio input selection and capture | M001 | sonnet |
+| M022 | mix-reference: reference file ingest → TargetProfile | M020 | sonnet |
+| M023 | Stem separation sidecar (optional) | M022 | sonnet |
+| M024 | Mix description → TargetProfile | M020, M030, M005 | sonnet |
+| M025 | Channel source identification | M020, M010 | opus |
+
+## S3 — Reasoning
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M030 | mix-llm: Claude Code CLI bridge | M001 | sonnet |
+| M031 | mix-engine: diagnosis (current vs target → Problems) | M020, M010, M005 | opus |
+| M032 | mix-engine: action planner with DSP effect prediction | M031, M004, M012 | opus |
+| M033 | mix-engine: closed-loop controller | M032, M040 | opus |
+
+## S4 — Actuation & safety
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M040 | mix-actuator: human-like move scheduler + solo workflow | M010 | opus |
+| M041 | Safety layer and watchdogs | M040, M004 | sonnet |
+
+## S5 — Daemon & GUI
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M050 | wing-mixd daemon + control protocol | M011, M021, M022, M033 | sonnet |
+| M051 | WingMix.app SwiftUI GUI | M050 | sonnet |
+
+## S6 — Milestones
+
+| ID | Title | Depends | Model |
+|---|---|---|---|
+| M052 | Milestone: end-to-end against wing-simulator | M050, M051, M041, M024, M025 | opus |
+| M060 | Second-surface proof: adapter guide + stub adapter | M011 | sonnet |

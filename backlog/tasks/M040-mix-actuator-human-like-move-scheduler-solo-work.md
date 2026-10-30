@@ -1,0 +1,21 @@
+---
+id: M040
+title: mix-actuator: human-like move scheduler + solo workflow
+stage: S4
+status: todo
+owner: -
+depends: [M010]
+branch: -
+model: opus
+---
+
+## Goal
+Execute Actions as human-like moves: eased ramps at per-param-kind max rates (dB/s, octaves/s), configurable step rate to avoid flooding the console, one param or a connected batch at a time, solo-inspect workflow (save solo/monitor state, solo strip/bus, dwell, adjust, restore exactly), journal every write, undo, STOP (freeze) and PANIC (revert session).
+
+## Acceptance criteria
+- [ ] Tests on FakeSurface verify ramp shapes, rate limits, batching and exact solo-state restoration
+- [ ] STOP/PANIC tests
+- [ ] Never writes a param the Remit forbids (checked again at write time)
+
+## Log
+- 2026-10-30 coordinator: created.

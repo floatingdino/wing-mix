@@ -1,0 +1,15 @@
+# Coordinator state (resume from here)
+
+Loop: on each wake, (1) read this file, (2) check in-flight branches (`git -C /Users/sam/code/wing-mix branch -a`,
+task file on each branch), (3) review + merge `review` tasks into main (`git merge --no-ff task/<ID>`, run
+`make check`, set status done on main, remove worktree), (4) unblock/answer `blocked`, (5) dispatch ready tasks
+(`python3 tools/backlog.py --ready`) up to 4 concurrent agents, Opus for design/DSP/reasoning, Sonnet for
+scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
+
+## In flight
+| Task | Agent | Model | Branch | Started |
+|---|---|---|---|---|
+
+## Decisions log
+- 2026-10-30: Rust workspace + SwiftUI app + daemon/control.sock, mirroring wing-simulator. Reuse wing-simulator
+  crates as git deps. Closed-loop testing via in-process wing-engine (mix-sim). LLM only via Claude Code CLI.

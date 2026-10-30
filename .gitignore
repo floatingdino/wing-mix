@@ -1,0 +1,7 @@
+target/
+.DS_Store
+*.wav
+*.flac
+*.mp3
+/build/
+.venv/
