@@ -358,7 +358,11 @@ fn no_solo_forbids_solo_and_listen_only() {
     let id = StripId::parse("input.1").unwrap();
     for k in [InspectionKind::Solo, InspectionKind::Listen] {
         let d = evaluate_inspection(&policy, &ctx, k, &id);
-        assert_eq!(d.class, mix_surface::remit::Verdict::Forbidden, "{k:?}: {d:?}");
+        assert_eq!(
+            d.class,
+            mix_surface::remit::Verdict::Forbidden,
+            "{k:?}: {d:?}"
+        );
     }
     assert_ne!(
         evaluate_inspection(&policy, &ctx, InspectionKind::Rta, &id).class,

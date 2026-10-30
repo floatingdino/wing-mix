@@ -655,3 +655,106 @@ fn split_moves_respect_the_per_move_limit() {
             .ends_with(&format!("({}/{})", k + 1, parts.len())));
     }
 }
+
+/// A console without solo: no inspect steps and no "solo not allowed" note (nothing was denied; it does not exist).
+#[test]
+fn no_solo_capability_means_no_inspect_steps() {
+    let kb = KnowledgeBase::embedded();
+    let s = muddy_guitar(kb);
+    let mut caps = s.surface.info().capabilities;
+    caps.solo = false;
+    s.surface.set_capabilities(caps);
+    let p = run(
+        &s,
+        &policy(),
+        &RemitSession::default(),
+        &PlanConfig::from_kb(kb),
+        kb,
+    );
+    assert!(p.moves().count() > 0, "moves are still planned");
+    assert!(p.steps().all(|st| !matches!(st, PlanStep::Inspect { .. })));
+    assert!(p.notes.iter().all(|n| !n.contains("solo")), "{:?}", p.notes);
+}
+
+/// The planner runs on a non-WING transfer model (cookbook EQ shapes) and still fixes the muddy guitar.
+#[test]
+fn plans_with_a_non_wing_eq_transfer() {
+    let kb = KnowledgeBase::embedded();
+    let s = muddy_guitar(kb);
+    let state = ConsoleState::capture(&s.surface).unwrap();
+    let pol = policy();
+    let ctx = context(&pol, &s.surface);
+    let session = RemitSession::default();
+    let input = PlanInput {
+        main: &s.main,
+        strips: &s.taps,
+        target: &s.target,
+        state: &state,
+        remit: Remit {
+            policy: &pol,
+            ctx: &ctx,
+            session: &session,
+        },
+    };
+    let t = GenericTransfer::new(48_000.0);
+    let p = plan_with(&input, kb, &PlanConfig::from_kb(kb), &t).unwrap();
+    assert!(p.after.objective < p.before.objective, "{:?}", p.before);
+    assert!(
+        p.changes()
+            .iter()
+            .any(|c| c.param.as_str().starts_with("input.4/eq/band.")
+                && c.param.leaf().ends_with("gain")),
+        "{:#?}",
+        p.moves().map(|m| &m.action.label).collect::<Vec<_>>()
+    );
+}
+
+/// EQ band shape is read per band from `eq/band.N.type` (X32-style consoles: any band can be a shelf or a cut).
+#[test]
+fn band_kinds_come_from_the_type_param() {
+    use mix_surface::model::{Strip, Topology};
+    let id = StripId::new("input", 1);
+    let mut params = vec![(
+        ParamSpec::boolean("input.1/eq/on", ParamClass::Eq),
+        Value::Bool(true),
+    )];
+    for (k, ty) in ["LCUT", "LSHV", "VEQ", "HSHV"].iter().enumerate() {
+        let k = k + 1;
+        params.push((
+            ParamSpec::enumeration(
+                format!("input.1/eq/band.{k}.type"),
+                ParamClass::EqModel,
+                &["LCUT", "LSHV", "PEQ", "VEQ", "HSHV", "HCUT"],
+            ),
+            Value::Enum((*ty).into()),
+        ));
+        for (leaf, u, v) in [
+            ("gain", Unit::Db, 3.0),
+            ("freq", Unit::Hz, 100.0 * k as f64),
+            ("q", Unit::Q, 1.0),
+        ] {
+            params.push((
+                ParamSpec::float(
+                    format!("input.1/eq/band.{k}.{leaf}"),
+                    ParamClass::Eq,
+                    u,
+                    0.1,
+                    20000.0,
+                ),
+                Value::Float(v),
+            ));
+        }
+    }
+    let topo = Topology {
+        strips: vec![Strip::new(id.clone(), StripKind::Input, "x")],
+        ..Default::default()
+    };
+    let eq = ConsoleState::from_parts(topo, params)
+        .settings(&id)
+        .eq
+        .unwrap();
+    let kinds: Vec<state::BandKind> = eq.bands.iter().map(|(_, b)| b.kind).collect();
+    use state::BandKind::*;
+    assert_eq!(kinds, vec![LowCut, LowShelf, Peq, HighShelf]);
+    assert!(eq.band(state::BandSlot::Low).is_none());
+}

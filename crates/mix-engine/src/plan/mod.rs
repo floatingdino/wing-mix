@@ -36,6 +36,7 @@
 //! accuracy vs SimSurface renders in `tests/dyn_sim.rs` (M035 log).
 
 pub mod candidates;
+mod generic_transfer;
 pub mod predict;
 pub mod state;
 pub mod transfer;
@@ -66,6 +67,7 @@ use crate::diagnosis::{
     StripTap, Subject,
 };
 pub use candidates::{Candidate, CandidateConfig, PHASES};
+pub use generic_transfer::{transfer_for_surface, GenericTransfer};
 pub use predict::{MixModel, Prediction, StripDelta};
 pub use state::{ConsoleState, StripSettings};
 pub use transfer::{TransferModel, WingTransfer};

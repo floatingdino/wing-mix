@@ -106,7 +106,7 @@ impl WingTransfer {
         WingTransfer { sample_rate, freqs }
     }
 
-    fn average(&self, mag_db: impl Fn(f64) -> f64) -> [f64; N_ERB] {
+    pub(super) fn average(&self, mag_db: impl Fn(f64) -> f64) -> [f64; N_ERB] {
         let mut out = [0.0; N_ERB];
         for (b, o) in out.iter_mut().enumerate() {
             let p: f64 = self.freqs[b * POINTS_PER_BAND..(b + 1) * POINTS_PER_BAND]
