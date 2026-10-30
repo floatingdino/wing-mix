@@ -12,8 +12,8 @@ use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
 use mix_surface::model::{Block, ParamSpec, SendInfo, SendTap, Strip, StripKind, Topology};
 use mix_surface::surface::{
-    Capabilities, Origin, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent, SurfaceInfo,
-    SurfaceResult,
+    Capabilities, Origin, SoloMode, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent,
+    SurfaceInfo, SurfaceResult,
 };
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -91,7 +91,11 @@ impl Inner {
         let Some(arg) = m.args.first().cloned() else {
             return;
         };
-        let old = self.mirror.lock().unwrap().insert(m.addr.clone(), arg.clone());
+        let old = self
+            .mirror
+            .lock()
+            .unwrap()
+            .insert(m.addr.clone(), arg.clone());
         self.cv.notify_all();
         // First sight of a value is initial sync, not a change.
         let Some(old) = old else { return };
@@ -232,7 +236,11 @@ impl X32Surface {
                 let m = inn.mirror.lock().unwrap();
                 required
                     .iter()
-                    .chain(if round == 0 { optional.iter() } else { [].iter() })
+                    .chain(if round == 0 {
+                        optional.iter()
+                    } else {
+                        [].iter()
+                    })
                     .filter(|a| !m.contains_key(*a))
                     .collect()
             };
@@ -250,7 +258,9 @@ impl X32Surface {
         }
         let m = inn.mirror.lock().unwrap();
         match required.iter().find(|a| !m.contains_key(*a)) {
-            Some(a) => Err(SurfaceError::Io(format!("sync incomplete, no value for {a}"))),
+            Some(a) => Err(SurfaceError::Io(format!(
+                "sync incomplete, no value for {a}"
+            ))),
             None => Ok(()),
         }
     }
@@ -269,7 +279,14 @@ impl X32Surface {
         }
     }
 
-    fn send_info(&self, d: &StripDef, dest: StripId, on_addr: &str, level: Option<f64>, tap: SendTap) -> Option<SendInfo> {
+    fn send_info(
+        &self,
+        d: &StripDef,
+        dest: StripId,
+        on_addr: &str,
+        level: Option<f64>,
+        tap: SendTap,
+    ) -> Option<SendInfo> {
         let on = matches!(self.inner.mirrored(on_addr)?, Arg::Int(i) if i != 0);
         let tap_after = match tap {
             SendTap::Pre => Block::Eq,
@@ -426,13 +443,21 @@ impl Surface for X32Surface {
             return Err(SurfaceError::ReadOnly(param.clone()));
         }
         let v = e.spec.coerce(&value)?;
-        let arg = e.codec.encode(&v).ok_or_else(|| SurfaceError::TypeMismatch {
-            param: param.clone(),
-            got: v.type_name(),
-        })?;
+        let arg = e
+            .codec
+            .encode(&v)
+            .ok_or_else(|| SurfaceError::TypeMismatch {
+                param: param.clone(),
+                got: v.type_name(),
+            })?;
         let stored = e.codec.decode(&arg).expect("encode output decodes");
-        self.inner.send(&Message::new(e.addr.clone(), vec![arg.clone()]))?;
-        self.inner.mirror.lock().unwrap().insert(e.addr.clone(), arg);
+        self.inner
+            .send(&Message::new(e.addr.clone(), vec![arg.clone()]))?;
+        self.inner
+            .mirror
+            .lock()
+            .unwrap()
+            .insert(e.addr.clone(), arg);
         Ok(stored)
     }
 
@@ -442,15 +467,22 @@ impl Surface for X32Surface {
         rx
     }
 
+    /// The X32 has no remote solo here (`capabilities.solo = false`), but the engine and the actuator's policy gate
+    /// call `solo_state()` unconditionally to decide whether solo is destructive, and fail closed if it errors. So:
+    /// report "non-destructive, nothing active"; `set_solo` is what refuses. (docs/adapters.md, assumption A1.)
     fn solo_state(&self) -> SurfaceResult<SoloState> {
-        Err(SurfaceError::Unsupported("solo"))
+        Ok(SoloState {
+            mode: SoloMode::NonDestructive,
+            active: Vec::new(),
+        })
     }
 
     fn set_solo(&self, _target: &SoloTarget, _on: bool) -> SurfaceResult<()> {
         Err(SurfaceError::Unsupported("solo"))
     }
 
+    /// Nothing can be soloed through this adapter, so there is nothing to clear.
     fn clear_solo(&self) -> SurfaceResult<()> {
-        Err(SurfaceError::Unsupported("solo"))
+        Ok(())
     }
 }

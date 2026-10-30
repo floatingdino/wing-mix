@@ -74,7 +74,9 @@ impl Codec {
             _ => {
                 let Arg::Float(f) = a else { return None };
                 let (steps, lo, hi) = match self {
-                    Codec::Lin { lo, hi, steps } | Codec::Log { lo, hi, steps } => (*steps, *lo, *hi),
+                    Codec::Lin { lo, hi, steps } | Codec::Log { lo, hi, steps } => {
+                        (*steps, *lo, *hi)
+                    }
                     Codec::Fader => (1024, 0.0, 1.0),
                     Codec::SendLevel => (161, 0.0, 1.0),
                     _ => (72, 0.0, 1.0),
@@ -123,7 +125,11 @@ mod tests {
     use super::*;
 
     fn db(a: f32) -> f64 {
-        Codec::Fader.decode(&Arg::Float(a)).unwrap().as_f64().unwrap()
+        Codec::Fader
+            .decode(&Arg::Float(a))
+            .unwrap()
+            .as_f64()
+            .unwrap()
     }
 
     #[test]
@@ -185,10 +191,7 @@ mod tests {
             Some(Value::Bool(false)),
             "mix/on = 1 is not muted"
         );
-        assert_eq!(
-            Codec::BoolInv.encode(&Value::Bool(true)),
-            Some(Arg::Int(0))
-        );
+        assert_eq!(Codec::BoolInv.encode(&Value::Bool(true)), Some(Arg::Int(0)));
         let e = Codec::Enum(&["A", "B"]);
         assert_eq!(e.decode(&Arg::Int(1)), Some(Value::Enum("B".into())));
         assert_eq!(e.decode(&Arg::Int(7)), None);

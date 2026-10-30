@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 mix-core = { path = "../mix-core" }
 mix-surface = { path = "../mix-surface" }
+
+[dev-dependencies]
+mix-actuator = { path = "../mix-actuator" }

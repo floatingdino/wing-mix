@@ -129,7 +129,8 @@ impl FakeX32 {
 
     pub fn start_with(opts: FakeOptions) -> FakeX32 {
         let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
-        sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
         let addr = sock.local_addr().unwrap();
         let state = Arc::new(Mutex::new(State {
             values: HashMap::new(),
@@ -138,8 +139,13 @@ impl FakeX32 {
         let stop = Arc::new(AtomicBool::new(false));
         let sets = Arc::new(AtomicUsize::new(0));
         let thread = {
-            let (sock, state, stop, sets, opts) =
-                (sock.clone(), state.clone(), stop.clone(), sets.clone(), opts.clone());
+            let (sock, state, stop, sets, opts) = (
+                sock.clone(),
+                state.clone(),
+                stop.clone(),
+                sets.clone(),
+                opts.clone(),
+            );
             std::thread::spawn(move || serve(sock, state, stop, sets, opts))
         };
         FakeX32 {

@@ -37,7 +37,10 @@ impl ConformanceDriver for Driver<'_> {
     }
 }
 
-fn wait_event(rx: &Receiver<SurfaceEvent>, f: impl Fn(&SurfaceEvent) -> bool) -> Option<SurfaceEvent> {
+fn wait_event(
+    rx: &Receiver<SurfaceEvent>,
+    f: impl Fn(&SurfaceEvent) -> bool,
+) -> Option<SurfaceEvent> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while let Ok(ev) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         if f(&ev) {
@@ -103,8 +106,18 @@ fn info_and_capabilities() {
     let i = s.info();
     assert_eq!((i.surface.as_str(), i.model.as_str()), ("x32", "X32"));
     assert_eq!(i.firmware, "4.06");
-    assert!(!i.capabilities.solo && i.capabilities.meters.is_none() && i.capabilities.rta.is_none());
-    assert!(matches!(s.solo_state(), Err(SurfaceError::Unsupported(_))));
+    assert!(
+        !i.capabilities.solo && i.capabilities.meters.is_none() && i.capabilities.rta.is_none()
+    );
+    let solo = s.solo_state().unwrap();
+    assert!(!solo.is_destructive() && solo.active.is_empty());
+    assert!(matches!(
+        s.set_solo(
+            &mix_surface::surface::SoloTarget::strip(StripId::new("input", 1)),
+            true
+        ),
+        Err(SurfaceError::Unsupported(_))
+    ));
     assert!(matches!(s.meters(), Err(SurfaceError::Unsupported(_))));
 }
 
@@ -117,7 +130,11 @@ fn writes_use_x32_addresses_and_laws() {
     let wait = |a: &str, want: Arg| {
         let t = Instant::now();
         while fake.get(a).unwrap() != want {
-            assert!(t.elapsed() < Duration::from_secs(3), "{a}: {:?}", fake.get(a));
+            assert!(
+                t.elapsed() < Duration::from_secs(3),
+                "{a}: {:?}",
+                fake.get(a)
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     };
@@ -126,15 +143,22 @@ fn writes_use_x32_addresses_and_laws() {
     // 0 dB is 0.75 on the wire, give or take one of the 1024 grid steps
     let t = Instant::now();
     loop {
-        if matches!(get("/ch/03/mix/fader"), Arg::Float(f) if (f - 0.75).abs() < 0.001 && f != 0.75) {
+        if matches!(get("/ch/03/mix/fader"), Arg::Float(f) if (f - 0.75).abs() < 0.001 && f != 0.75)
+        {
             break;
         }
-        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", get("/ch/03/mix/fader"));
+        assert!(
+            t.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            get("/ch/03/mix/fader")
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     w("input.3/fader", Value::Float(-10.0));
     std::thread::sleep(Duration::from_millis(100));
-    let Arg::Float(f) = get("/ch/03/mix/fader") else { panic!() };
+    let Arg::Float(f) = get("/ch/03/mix/fader") else {
+        panic!()
+    };
     assert!((f - 0.5).abs() < 0.001, "{f}");
     w("input.3/mute", Value::Bool(true));
     wait("/ch/03/mix/on", Arg::Int(0)); // mix/on is inverted
@@ -172,7 +196,10 @@ fn writes_use_x32_addresses_and_laws() {
         Err(SurfaceError::UnknownParam(_))
     ));
     assert!(matches!(
-        s.write(&ParamId::new("input.1/eq/band.1.type"), Value::Enum("NOPE".into())),
+        s.write(
+            &ParamId::new("input.1/eq/band.1.type"),
+            Value::Enum("NOPE".into())
+        ),
         Err(SurfaceError::InvalidOption { .. })
     ));
     assert_eq!(fake.client_sets(), sets);
@@ -185,14 +212,34 @@ fn reads_decode_console_values() {
     let rx = s.subscribe();
     assert!(fake.console_set("/ch/07/mix/fader", Arg::Float(0.5)));
     let ev = wait_event(&rx, |e| matches!(e, SurfaceEvent::ParamChanged { .. })).unwrap();
-    let SurfaceEvent::ParamChanged { param, value: Value::Float(db), origin } = ev else {
+    let SurfaceEvent::ParamChanged {
+        param,
+        value: Value::Float(db),
+        origin,
+    } = ev
+    else {
         panic!()
     };
-    assert_eq!((param.as_str(), origin), ("input.7/fader", Origin::External));
+    assert_eq!(
+        (param.as_str(), origin),
+        ("input.7/fader", Origin::External)
+    );
     assert!((db + 10.0).abs() < 0.05, "{db}");
     fake.console_set("/ch/07/mix/on", Arg::Int(0));
-    wait_event(&rx, |e| matches!(e, SurfaceEvent::ParamChanged { value: Value::Bool(true), .. })).expect("mute event");
-    assert_eq!(s.read(&ParamId::new("input.7/mute")).unwrap(), Value::Bool(true));
+    wait_event(&rx, |e| {
+        matches!(
+            e,
+            SurfaceEvent::ParamChanged {
+                value: Value::Bool(true),
+                ..
+            }
+        )
+    })
+    .expect("mute event");
+    assert_eq!(
+        s.read(&ParamId::new("input.7/mute")).unwrap(),
+        Value::Bool(true)
+    );
     assert_eq!(
         s.read(&ParamId::new("input.1/eq/band.1.type")).unwrap(),
         Value::Enum("LCUT".into())
@@ -211,7 +258,11 @@ fn xremote_is_renewed() {
     std::thread::sleep(Duration::from_millis(900));
     assert!(fake.subscribers() >= 1, "subscription lapsed");
     fake.console_set("/bus/04/mix/fader", Arg::Float(1.0));
-    assert!(wait_event(&rx, |e| matches!(e, SurfaceEvent::ParamChanged { param, .. } if param.as_str() == "bus.4/fader")).is_some());
+    assert!(wait_event(
+        &rx,
+        |e| matches!(e, SurfaceEvent::ParamChanged { param, .. } if param.as_str() == "bus.4/fader")
+    )
+    .is_some());
 }
 
 #[test]
@@ -227,9 +278,17 @@ fn topology_reflects_console() {
     assert_eq!(ch1.name, "Ch01");
     assert_eq!(t.get(&StripId::new("bus", 3)).unwrap().name, "MixBus 03");
     // default: main LR assigned, sends off
-    let to_main = ch1.sends.iter().find(|x| x.dest == StripId::new("main", 1)).unwrap();
+    let to_main = ch1
+        .sends
+        .iter()
+        .find(|x| x.dest == StripId::new("main", 1))
+        .unwrap();
     assert!(to_main.on);
-    assert!(ch1.sends.iter().filter(|x| x.dest.kind_name() == "bus").all(|x| !x.on));
+    assert!(ch1
+        .sends
+        .iter()
+        .filter(|x| x.dest.kind_name() == "bus")
+        .all(|x| !x.on));
 
     // an engineer turns up an aux send, sets its tap to PRE and names the bus with a tag
     fake.console_set("/ch/01/mix/02/on", Arg::Int(1));
@@ -256,13 +315,23 @@ fn topology_reflects_console() {
     assert!(snd.on && snd.tap == SendTap::Pre);
     assert!(snd.level_db.abs() < 0.1, "{}", snd.level_db);
     let deadline = Instant::now() + Duration::from_secs(3);
-    while s.topology().unwrap().get(&StripId::new("bus", 2)).unwrap().tags.is_empty() {
+    while s
+        .topology()
+        .unwrap()
+        .get(&StripId::new("bus", 2))
+        .unwrap()
+        .tags
+        .is_empty()
+    {
         assert!(Instant::now() < deadline, "name change not mirrored");
         std::thread::sleep(Duration::from_millis(10));
     }
     let b2 = s.topology().unwrap();
     let b2 = b2.get(&StripId::new("bus", 2)).unwrap();
-    assert_eq!((b2.name.as_str(), b2.tags.clone()), ("Drums #AI", vec!["AI".to_string()]));
+    assert_eq!(
+        (b2.name.as_str(), b2.tags.clone()),
+        ("Drums #AI", vec!["AI".to_string()])
+    );
 }
 
 #[test]

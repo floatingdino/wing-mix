@@ -25,6 +25,7 @@ backlog/COORDINATOR.md, human actions: docs/HUMAN-ACTIONS.md). Sister repo: /Use
 - `crates/mix-surface`: generic console model, Surface trait, Remit policy, journal
 - `crates/mix-wing`: WING adapter (native client with auto-reconnect via wing-proto, meters/RTA)
 - `crates/mix-wing-map`: the one WING tree <-> generic ParamId/class mapping + value conversion (no network deps; used by mix-wing and mix-sim)
+- `crates/mix-x32`: minimal X32/M32 OSC adapter + in-process fake X32 (proof that mix-surface is console-agnostic; docs/adapters.md)
 - `crates/mix-sim`: SimSurface (in-process wing-sim console: render taps, meters), synthetic song + good/degraded scenes with ground truth (`scenes.rs`), real multitrack loader
 - `crates/mix-analysis`: feature extraction (loudness, spectra, dynamics, stereo, masking)
 - `crates/mix-capture`: audio input enumeration/capture, file source, SPSC ring

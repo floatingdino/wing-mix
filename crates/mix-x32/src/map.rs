@@ -66,7 +66,13 @@ pub fn strip_defs() -> Vec<StripDef> {
             eq_bands: 4,
             has_pan: true,
             is_input: true,
-            chain: vec![Block::In, Block::Filter, Block::Eq, Block::Fader, Block::Pan],
+            chain: vec![
+                Block::In,
+                Block::Filter,
+                Block::Eq,
+                Block::Fader,
+                Block::Pan,
+            ],
         });
     }
     for n in 1..=N_BUSES {

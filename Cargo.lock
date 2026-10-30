@@ -841,6 +841,7 @@ dependencies = [
 name = "mix-x32"
 version = "0.1.0"
 dependencies = [
+ "mix-actuator",
  "mix-core",
  "mix-surface",
 ]
