@@ -425,3 +425,43 @@ fn thread_runner_executes_and_stops() {
     assert!(a.is_stopped());
     assert_eq!(a.journal().entries().len(), 1);
 }
+
+/// M052: a PANIC (or any ramp) over more params than the write burst (`write_burst` = 10) used to wait forever for
+/// more tokens than the bucket can hold. It must complete, still within the average write budget.
+#[test]
+fn panic_over_more_params_than_the_write_burst_completes() {
+    let mut r = Rig::new(ActuatorConfig::default());
+    let gain0 = r.readf("input.1/eq/band.1.gain");
+    for ch in 1..=4 {
+        r.a.submit(mv("fader", &format!("input.{ch}/fader"), -3.0));
+        r.a.submit(mv("pan", &format!("input.{ch}/pan"), 20.0));
+        r.a.submit(mv(
+            "cut",
+            &format!("input.{ch}/eq/band.1.gain"),
+            gain0 - 2.0,
+        ));
+    }
+    r.run_idle(30.0);
+    assert_eq!(r.readf("input.4/pan"), 20.0);
+    let n = r.a.write_log().len();
+    let id = r.a.panic();
+    r.run_idle(20.0);
+    assert!(
+        r.done(id),
+        "PANIC over 12 params never finished: {:#?}",
+        r.log
+    );
+    for ch in 1..=4 {
+        assert_eq!(r.readf(&format!("input.{ch}/eq/band.1.gain")), gain0);
+        assert_eq!(r.readf(&format!("input.{ch}/fader")), 0.0);
+        assert_eq!(r.readf(&format!("input.{ch}/pan")), 0.0);
+    }
+    // the average write budget still holds over the PANIC (100 writes/s + the burst)
+    let w: Vec<_> = r.a.write_log().iter().skip(n).collect();
+    let span = w.last().unwrap().at_s - w[0].at_s;
+    assert!(
+        w.len() as f64 <= 100.0 * span + 15.0,
+        "{} writes in {span:.2} s",
+        w.len()
+    );
+}

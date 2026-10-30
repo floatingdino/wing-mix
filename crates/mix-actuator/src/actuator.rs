@@ -1003,8 +1003,11 @@ impl Actuator {
                 Step::Running
             };
         }
-        // Global write budget: the batch moves together or waits (the per-write rate clamp absorbs the stall).
-        if self.tokens + 1e-9 < pending.len() as f64 {
+        // Global write budget: the batch moves together or waits (the per-write rate clamp absorbs the stall). A
+        // batch wider than the bucket (a PANIC/undo over more params than `write_burst`) waits for a full bucket and
+        // then borrows the rest (tokens go negative, so the average rate still holds); waiting for more tokens than
+        // the bucket can hold would stall it forever (M052).
+        if self.tokens + 1e-9 < (pending.len() as f64).min(self.capacity()) {
             return Step::Running;
         }
         // Remit re-check of every write, before any of this tick's writes go out.
