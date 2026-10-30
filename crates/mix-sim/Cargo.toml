@@ -6,7 +6,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mix-core = { path = "../mix-core" }
+mix-surface = { path = "../mix-surface" }
+mix-fixtures = { path = "../mix-fixtures" }
 wing-model.workspace = true
-wing-dsp.workspace = true
-wing-blocks.workspace = true
 wing-engine.workspace = true
+wing-sim.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "render"
+harness = false

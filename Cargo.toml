@@ -33,6 +33,8 @@ wing-model = { git = "https://github.com/floatingdino/wing-simulator", rev = "95
 wing-dsp = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 wing-blocks = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 wing-engine = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+# The daemon's library (`wing_sim::audio::{prepare, Console}`): mix-sim drives the same console in-process.
+wing-sim = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -52,6 +54,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # wing-dsp = { path = "../wing-simulator/crates/wing-dsp" }
 # wing-blocks = { path = "../wing-simulator/crates/wing-blocks" }
 # wing-engine = { path = "../wing-simulator/crates/wing-engine" }
+# wing-sim = { path = "../wing-simulator/apps/wing-sim" }
 
 # Offline closed-loop tests render the real wing-simulator DSP; unoptimised it is far too slow.
 [profile.dev.package.wing-blocks]
@@ -59,6 +62,11 @@ opt-level = 2
 [profile.dev.package.wing-dsp]
 opt-level = 2
 [profile.dev.package.wing-engine]
+opt-level = 2
+[profile.dev.package.wing-sim]
+opt-level = 2
+# mix-sim's synthetic multitrack generator and render loops run over seconds of audio in tests.
+[profile.dev.package.mix-sim]
 opt-level = 2
 
 # Analysis tests run FFTs and BS.1770 filters over tens of seconds of audio; unoptimised they are too slow.
