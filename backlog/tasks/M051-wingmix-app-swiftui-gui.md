@@ -2,7 +2,7 @@
 id: M051
 title: WingMix.app SwiftUI GUI
 stage: S5
-status: review
+status: done
 owner: agent-M051
 depends: [M050]
 branch: task/M051
@@ -39,3 +39,4 @@ SwiftUI app (pattern: ../wing-simulator/apps/WingSimMenu): drop a reference file
   - Proposed follow-ups: (1) use `subscribe` event stream instead of polling for load progress/events; (2) show
     `safety.rta_feed`; (3) real-window screenshots once screen-recording permission exists; (4) Undo targets only the
     last move (daemon `undo`), no per-move undo.
+- 2026-10-31 coordinator: merged; make check + make app pass; screenshots reviewed. done. Follow-ups → M055 (show strip names not ids, event stream, per-move undo, real screenshots once Screen Recording is granted).

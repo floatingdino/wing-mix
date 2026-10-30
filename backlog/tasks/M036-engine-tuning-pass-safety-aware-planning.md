@@ -21,6 +21,7 @@ From M033's closed-loop runs:
    the real fixture sections while still tripping on M041's feedback test signals. Re-enable it in the loop harness.
 5. Realistic starting scenes: `flat_scene` with faders at 0 dB leaves no boost headroom; add a "rough start"
    scene (faders around −10 dB, flat EQ) and use it for real-fixture runs.
+6. Plan hygiene seen in the GUI (docs/user/live.png): the same param appears in two separate moves (input.13 fader +2.9 and +2.5; input.7 −1.4 and −3.0) — merge moves on one param; move titles and explanation amounts disagree (title +2.9 dB, text +1.6 dB) — make them consistent.
 Report before/after on seed 7 and the real-fixture song sections (distance vs FOH baseline).
 
 ## Acceptance criteria
