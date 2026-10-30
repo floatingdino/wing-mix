@@ -310,3 +310,99 @@ fn daemon_suggest_autopilot_panic_against_sim() {
     let log = std::fs::read_to_string(d.sock.with_file_name("events.jsonl")).unwrap();
     assert!(log.lines().any(|l| l.contains("\"batch_kept\"")));
 }
+
+fn problem_keys(snap: &Value) -> Vec<(String, i64)> {
+    let mut v: Vec<(String, i64)> = snap["problems"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|p| {
+                    (
+                        p["id"].as_str().unwrap_or("").to_string(),
+                        (p["severity"].as_f64().unwrap_or(0.0) * 100.0) as i64,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// M054: the live context is applied to the loaded target (on load and on change), the status/snapshot say so, and
+/// a switch re-plans: the PLR/width targets and the problem list change.
+#[test]
+fn daemon_live_context_switch_changes_target_and_problems() {
+    let dir = tmp_dir().join("ctx");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mt, reference) = write_fixture(&dir);
+    let d = Daemon::start(&dir);
+
+    // Not applicable until a target exists.
+    let r = d.req(json!({"cmd": "set_live_context", "context": "match_record"}));
+    assert_eq!(r["applied"], false);
+    d.req(json!({"cmd": "set_live_context", "context": "live"}));
+
+    d.req(json!({
+        "cmd": "connect_console", "console": "sim",
+        "sim": {"multitrack": mt, "names": TRACKS, "scene": "degraded", "speed": 0}
+    }));
+    d.req(json!({"cmd": "select_input", "source": "sim"}));
+    // Default context (live) is applied on load.
+    d.req(json!({"cmd": "load_reference", "path": reference, "wait": true}));
+    let st = d.req(json!({"cmd": "status"}));
+    assert_eq!(st["live_context"], "live");
+    assert_eq!(st["live_context_applied"], true);
+    let snap = d.req(json!({"cmd": "snapshot"}));
+    assert_eq!(snap["live_context_applied"], true);
+    let live = snap["target"]["context"].clone();
+    assert_eq!(live["context"], "live");
+    assert!(live["deltas"].as_u64().unwrap() >= 1, "{live}");
+
+    d.req(json!({"cmd": "set_mode", "mode": "suggest"}));
+    d.req(json!({"cmd": "start", "window_s": SECONDS, "time_scale": SECONDS / 20.0}));
+    let (_, _) = d.wait_event(0, Duration::from_secs(120), |e| e["type"] == "suggested");
+    let live_problems = problem_keys(&d.req(json!({"cmd": "snapshot"})));
+    assert!(!live_problems.is_empty());
+
+    // Switch: the target is re-derived from the raw profile, applied:true, the controller re-plans.
+    let from = d.seen();
+    let r = d.req(json!({"cmd": "set_live_context", "context": "match_record"}));
+    assert_eq!(r["applied"], true);
+    assert_eq!(r["target"]["context"], "match_record");
+    d.wait_event(from, Duration::from_secs(10), |e| {
+        e["type"] == "live_context_changed" && e["applied"] == true
+    });
+    let snap = d.req(json!({"cmd": "snapshot"}));
+    let rec = snap["target"]["context"].clone();
+    assert_eq!(rec["context"], "match_record");
+    assert_eq!(rec["deltas"], 1, "marker only: {rec}");
+    // Live raises PLR to its floor and narrows width relative to the record.
+    assert!(
+        live["plr_db"].as_f64().unwrap() >= rec["plr_db"].as_f64().unwrap(),
+        "{live} {rec}"
+    );
+    assert!(
+        live["plr_db"] != rec["plr_db"] || live["band_width_p50_db"] != rec["band_width_p50_db"],
+        "live context changed nothing: {live}"
+    );
+    // The new controller diagnoses against the new target.
+    let t0 = Instant::now();
+    let mut changed = false;
+    while t0.elapsed() < Duration::from_secs(120) {
+        let s = d.req(json!({"cmd": "snapshot"}));
+        let keys = problem_keys(&s);
+        if !keys.is_empty() && keys != live_problems {
+            changed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(changed, "problem list did not change after the switch");
+
+    // And back: re-applied from the raw profile (exact revert).
+    let r = d.req(json!({"cmd": "set_live_context", "context": "live"}));
+    assert_eq!(r["target"]["plr_db"], live["plr_db"]);
+    assert_eq!(r["target"]["band_width_p50_db"], live["band_width_p50_db"]);
+    d.req(json!({"cmd": "quit"}));
+}

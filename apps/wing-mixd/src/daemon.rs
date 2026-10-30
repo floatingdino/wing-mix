@@ -288,7 +288,10 @@ struct Input {
 
 #[derive(Clone)]
 struct Target {
+    /// What the controller steers towards: `raw` with the live context applied.
     profile: TargetProfile,
+    /// As loaded (reference / description), before any context; the context is re-derived from this.
+    raw: TargetProfile,
     kind: &'static str,
     label: String,
     info: Value,
@@ -750,7 +753,7 @@ impl Daemon {
                 self.target
                     .as_ref()
                     .ok_or("base `current`: no target loaded")?
-                    .profile
+                    .raw
                     .clone(),
             ),
             Some(path) => Some(read_profile(Path::new(path))?),
@@ -832,8 +835,11 @@ impl Daemon {
         let result = match res {
             Ok((profile, kind, label, info)) => {
                 self.target_gen += 1;
+                let mut applied = profile.clone();
+                mix_describe::apply_context(&mut applied, self.live_context.mix_context());
                 self.target = Some(Target {
-                    profile,
+                    profile: applied,
+                    raw: profile,
                     kind,
                     label: label.clone(),
                     info: info.clone(),
@@ -936,22 +942,36 @@ impl Daemon {
         }
     }
 
-    /// The live-context target setting (M037: live / broadcast_video / match_record).
-    // TODO(M037): when the live-context transform lands (task/M037), derive the target from the raw reference
-    // profile under `self.live_context` here and in `poll_loading`, rebuild the controller, and record the
-    // context in `applied_deltas`. Until then the setting is stored, reported and echoed in the target info only.
+    /// The live-context target setting (M037/M054): `mix_describe::apply_context` over the loaded target (the
+    /// raw reference/description profile, so switching is an exact revert), the controller re-plans on the new
+    /// target. Applied again on every new reference/description load (`poll_loading`).
     fn set_live_context(&mut self, context: LiveContext) -> Result<Value, String> {
         let changed = self.live_context != context;
         self.live_context = context;
+        let applied = self.target.is_some();
         if changed {
+            if let Some(t) = &mut self.target {
+                let mut p = t.raw.clone();
+                mix_describe::apply_context(&mut p, context.mix_context());
+                t.profile = p;
+                self.target_gen += 1;
+                t.gen = self.target_gen;
+                if self.session.as_ref().is_some_and(|s| s.ctl.is_some()) {
+                    if let Err(e) = self.build_ctl() {
+                        self.last_error = Some(e);
+                    }
+                }
+            }
             self.emit(
                 "daemon",
-                &json!({"type": "live_context_changed", "live_context": context, "applied": false}),
+                &json!({"type": "live_context_changed", "live_context": context, "applied": applied}),
             );
         }
-        Ok(
-            json!({"live_context": context, "applied": false, "note": "stored; the target transform lands with M037"}),
-        )
+        Ok(json!({
+            "live_context": context,
+            "applied": applied,
+            "target": self.target.as_ref().map(|t| context_summary(&t.profile)),
+        }))
     }
 
     fn start(&mut self, o: StartOptions) -> Result<Value, String> {
@@ -1197,8 +1217,9 @@ impl Daemon {
             "at_s": now,
             "mode": self.mode,
             "live_context": self.live_context,
+            "live_context_applied": self.target.is_some(),
             "console": self.console.as_ref().map(|c| json!({"kind": c.kind, "name": c.name})),
-            "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label, "info": t.info})),
+            "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label, "info": t.info, "context": context_summary(&t.profile)})),
         });
         let live = self.input.as_ref().and_then(|i| {
             let m = lock(&i.analysis.meters);
@@ -1329,6 +1350,7 @@ impl Daemon {
                 .map(|l| json!({"what": l.what, "stage": l.stage, "progress": l.progress}))
                 .unwrap_or(Value::Null),
             live_context: self.live_context,
+            live_context_applied: self.target.is_some(),
             mode: serde_json::to_value(self.mode)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
@@ -1493,6 +1515,20 @@ fn connect_sim(o: SimOptions, scene: String) -> Result<Console, String> {
             loop_frames,
             speed: o.speed.unwrap_or(1.0).max(0.0),
         }),
+    })
+}
+
+/// What the live context did to a target: the context in effect (from `applied_deltas`; `match_record` = none
+/// recorded) and the dimensions it moves.
+fn context_summary(p: &TargetProfile) -> Value {
+    json!({
+        "context": mix_describe::context_of(p).unwrap_or(mix_describe::MixContext::MatchRecord),
+        "applied": true,
+        "plr_db": p.loudness.plr_db,
+        "psr_p50_db": p.loudness.psr_db.p50,
+        "lra_lu": p.loudness.lra_lu,
+        "band_width_p50_db": p.stereo.band_width_db.iter().map(|s| s.p50).collect::<Vec<_>>(),
+        "deltas": p.applied_deltas.iter().filter(|d| d.term.starts_with(mix_describe::context::TERM_PREFIX)).count(),
     })
 }
 

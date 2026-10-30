@@ -133,6 +133,17 @@ pub enum LiveContext {
     MatchRecord,
 }
 
+impl LiveContext {
+    /// The matching `mix_describe` context.
+    pub fn mix_context(self) -> mix_describe::MixContext {
+        match self {
+            LiveContext::Live => mix_describe::MixContext::Live,
+            LiveContext::BroadcastVideo => mix_describe::MixContext::BroadcastVideo,
+            LiveContext::MatchRecord => mix_describe::MixContext::MatchRecord,
+        }
+    }
+}
+
 /// `connect_console`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
