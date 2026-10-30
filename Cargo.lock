@@ -742,6 +742,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mix-stems"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hound",
+ "libc",
+ "mix-analysis",
+ "mix-core",
+ "mix-reference",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mix-surface"
 version = "0.1.0"
 dependencies = [

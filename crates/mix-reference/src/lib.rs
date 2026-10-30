@@ -81,6 +81,8 @@ pub struct StemInput<'a> {
     pub sections: &'a [SectionRef],
     pub focus: Option<&'a SectionRef>,
     pub params: AnalysisParams,
+    /// The mix's own offline analysis (stem statistics are taken over the same windows).
+    pub analysis: &'a OfflineAnalysis,
 }
 
 /// Options for [`build_profile`] / [`profile_file`].
@@ -229,6 +231,7 @@ pub fn build_profile(
                 sections: &ing.sections,
                 focus,
                 params: ing.analysis.params,
+                analysis: &ing.analysis,
             })
             .map_err(ReferenceError::Stems)?;
     }

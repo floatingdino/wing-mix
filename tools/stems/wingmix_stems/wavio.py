@@ -16,6 +16,8 @@ def read_wav(path):
         body = data[pos + 8 : pos + 8 + size]
         if cid == b"fmt ":
             fmt = struct.unpack("<HHIIHH", body[:16])
+            if fmt[0] == 0xFFFE and len(body) >= 26:  # WAVE_FORMAT_EXTENSIBLE: real tag is the sub-format's
+                fmt = (struct.unpack("<H", body[24:26])[0],) + fmt[1:]
         elif cid == b"data":
             pcm = body
         pos += 8 + size + (size & 1)
