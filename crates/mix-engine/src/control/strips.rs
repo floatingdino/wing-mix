@@ -429,9 +429,10 @@ pub fn priors(
             let tot: f64 = share.iter().sum();
             let mut f = main.clone();
             f.tap = e.strip.as_str().to_string();
-            for b in 0..N_ERB {
-                f.spectrum.erb_mid_rel_db[b] = db(share[b] / tot * main_rel_p) as f32;
-            }
+            f.spectrum.erb_mid_rel_db = share
+                .iter()
+                .map(|x| db(x / tot * main_rel_p) as f32)
+                .collect();
             f.spectrum.erb_side_rel_db.clear();
             f.stereo = None;
             shift_level(&mut f, (r + scale) as f32);
@@ -734,7 +735,13 @@ mod tests {
         let mut f = main.clone();
         shift_level(&mut f, db(0.75) as f32);
         let tap = StripTap::new(StripId::new("input", 9), "VOX", f, kb());
-        let pr = priors(&main, &[tap.clone()], &[el(2, Some("kick"))], kb(), 0.1);
+        let pr = priors(
+            &main,
+            std::slice::from_ref(&tap),
+            &[el(2, Some("kick"))],
+            kb(),
+            0.1,
+        );
         let l = window_loudness(&pr[0].features) - ml;
         assert!((l as f64 - db(0.25)).abs() < 0.05, "{l}");
         // measured strips already over the main: the floor share
