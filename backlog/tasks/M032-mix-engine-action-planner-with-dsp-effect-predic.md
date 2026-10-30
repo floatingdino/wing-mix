@@ -2,10 +2,10 @@
 id: M032
 title: mix-engine: action planner with DSP effect prediction
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M032
 depends: [M031, M004, M012]
-branch: -
+branch: task/M032
 model: opus
 ---
 
@@ -21,3 +21,8 @@ Coordinator note (from M015): knowledge values are generic; the WING adapter/pla
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M032: claimed. Plan: `mix_engine::plan` — console state snapshot, WING transfer model (wing-blocks
+  StdEq/FilterBlock magnitude, dynamics static curve, engine pan law), Features predictor (strip deltas folded into
+  the measured main by power), candidate generator per Problem (kb rules/presets/masking strategies), remit check per
+  candidate, greedy scorer using `diagnose()` on the predicted state, phase-ordered plan with solo-inspect steps.
+  Validation in `crates/mix-engine/tests/plan_sim.rs` on mix-sim's reference/degraded fixture.
