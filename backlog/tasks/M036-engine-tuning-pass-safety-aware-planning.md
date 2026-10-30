@@ -2,10 +2,10 @@
 id: M036
 title: Engine tuning pass: safety-aware planning, prediction accuracy, missed faults, feedback guard on music
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M036
 depends: [M034, M035]
-branch: -
+branch: task/M036
 model: opus
 ---
 
@@ -34,3 +34,7 @@ Report before/after on seed 7 and the real-fixture song sections (distance vs FO
 
 ## Log
 - 2026-10-31 coordinator: created from M033 follow-ups.
+- 2026-10-31 agent-M036: claimed. Plan: (1) PlanConfig carries safety limits (per-move/session boost, fader
+  ceiling, session baseline) and the planner clamps/splits; (2) vocal EQ prediction error investigation;
+  (3) seed-7 missed faults; (4) feedback guard tuning in mix-actuator/src/safety.rs only; (5) mix-sim rough-start
+  scene; (6) plan hygiene (merge same-param moves, consistent titles/explanations); (7) strip dynamics check.
