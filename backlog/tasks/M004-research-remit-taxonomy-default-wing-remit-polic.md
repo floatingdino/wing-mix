@@ -2,10 +2,10 @@
 id: M004
 title: Research: remit taxonomy + default WING remit policy
 stage: S0
-status: todo
-owner: -
+status: in_progress
+owner: agent-M004 (opus)
 depends: []
-branch: -
+branch: task/M004
 model: opus
 ---
 
@@ -19,3 +19,7 @@ Classify the full WING parameter tree (from ../wing-simulator data/schema and wi
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M004: claimed. Sources surveyed: wing-simulator data/schema/wing-tree.json (tree + variants),
+  docs/research/{wing-edit-schema,signal-flow}.md, fixtures/PUBLIC.snap (16 buses: 4 FX, 3 GRP, 8 IEM PRE + COMMS;
+  IEM buses patched to LCL/AES50 outs; FOH groups re-input via aux "B. LINK" into IEMs; talkback A -> B8..B15).
+  Next: write docs/research/remit.md, data/remit/wing-default.toml, data/remit/tests/*.toml.
