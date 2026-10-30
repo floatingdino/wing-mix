@@ -9,6 +9,7 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 ## In flight
 | Task | Agent | Model | Branch | Started |
 |---|---|---|---|---|
+| M066 | background subagent (session-local) | sonnet | task/M066 | 2026-10-31 |
 | M062 | background subagent (session-local) | opus | task/M062 | 2026-10-31 |
 
 ## Decisions log
@@ -21,3 +22,4 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 - 2026-10-30: M060 (second surface) deferred until the core loop (M032/M033/M050) lands.
 - 2026-10-30: rule: chain merge → `make check && git push` (never push on a failing check; M019 was pushed with a flaky failure once).
 - 2026-10-31: decision — stereo pairs may spread to full L/R within the remit envelope (mono keeps ±50); implemented in M039.
+- 2026-10-31: rule: after each push check `gh run list -L 1` on the next tick; CI was red for 55 runs unnoticed (M066).
