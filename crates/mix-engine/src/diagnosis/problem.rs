@@ -161,7 +161,7 @@ pub struct Evidence {
     /// `measured − target` (for intents: the remaining requested change, sign = direction of the fix reversed,
     /// i.e. a requested +2 dB that is not yet applied reads −2).
     pub deviation: f32,
-    /// `max(0, |deviation| − tolerance)`.
+    /// `max(0, |deviation| − tolerance)`, or the distance outside the target interval ([`Evidence::interval`]).
     pub excess: f32,
 }
 
@@ -182,6 +182,33 @@ impl Evidence {
             unit: unit.into(),
             deviation,
             excess: (deviation.abs() - tol).max(0.0),
+        }
+    }
+
+    /// Evidence against a target *distribution* (`p10/p50/p90` of the reference's short-term windows): the
+    /// deviation is from the median, but only the part outside `[min(p10, p50 − tol), max(p90, p50 + tol)]`
+    /// counts as excess. A live long-term/session aggregate lands anywhere inside the reference's window spread
+    /// (sparse sources pull the energy mean away from the median, the spread is often skewed), so a symmetric
+    /// `|m − p50| − half_spread` raises false positives on a matched mix (M034). `tolerance` is the severity
+    /// scale `max(tol, (p90 − p10) / 4)`: a band whose level varies a lot between windows (intermittent parts)
+    /// is a less certain comparison for an energy mean, which sits at or past p90 of such a distribution.
+    pub fn interval(
+        feature: impl Into<String>,
+        unit: &str,
+        measured: f32,
+        target: mix_core::features::Stat,
+        tol: f32,
+    ) -> Self {
+        let lo = target.p10.min(target.p50 - tol);
+        let hi = target.p90.max(target.p50 + tol);
+        Evidence {
+            feature: feature.into(),
+            measured: Some(measured),
+            target: target.p50,
+            tolerance: tol.max((target.p90 - target.p10) / 4.0),
+            unit: unit.into(),
+            deviation: measured - target.p50,
+            excess: (lo - measured).max(measured - hi).max(0.0),
         }
     }
 

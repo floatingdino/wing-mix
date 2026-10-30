@@ -6,26 +6,37 @@
 //! (power sum) and compared with the stem target (`level_rel_mix_db`, `erb_rel_db`); other typed strips are compared
 //! with the knowledge base's generic `level_rel_mix_lu` range (low confidence).
 //!
-//! Masking (analysis.md §3.3, eq.toml `[masking]`): mix-analysis' ERB masking on the active strips; a pair
-//! (masked i, masker j) in a named band is a problem when the masker-to-signal ratio over i's important ERB bands
-//! exceeds the target by more than `masking.threshold_db`. The target is the reference stems' MSR for the same stem
-//! pair when stems exist, else 0 dB and only when i outranks j in `priority_order` (the lower-priority source is
-//! expected to yield).
+//! Calibration (M034: a matched mix must be quiet). Stem targets are distributions over the reference's short-term
+//! windows while the live tap is one long/session aggregate, so stem level and tonal use [`Evidence::interval`]
+//! (only the part outside `[min(p10, p50 − tol), max(p90, p50 + tol)]` is excess); a power-summed multi-strip stem
+//! gets `DiagnosisConfig::stem_sum_tolerance_lu` (the reference stem is a coherent sum). The sources.toml
+//! `band_dev_db` of a strip is its stem's signed distance outside `[p10, p90]`, and only for strips carrying at
+//! least 25 % of the stem in that band.
+//!
+//! Masking (analysis.md §3.3, eq.toml `[masking]`): mix-analysis' ERB masking; a (masked, masker) pair in a named
+//! band is a problem when the masker-to-signal ratio over the masked side's important ERB bands is audible
+//! (`> MaskingParams::msr_threshold_db`) and exceeds its target by more than `masking.threshold_db`. Strips in two
+//! stems with targets are judged stem against stem (live stems vs the reference stem pair, upper envelope of the
+//! median and the p10/p90 curves), reported on each stem's dominant strip; strips in one stem only where that stem
+//! is clearly off target in the band; strips without a stem target against 0 dB when the masked source outranks the
+//! masker in `priority_order`.
 //!
 //! Sibilance ([L], no 20 ms block statistics in `Features`): `sibilance_db ≈ P(5–10 kHz) − P(1–4 kHz) + crest(air)`
-//! from the long-term ERB spectrum and the air band's crest factor; compared with the same quantity of the vocal
-//! stem target when present (deviation), else with the source's sources.toml sibilance threshold (low confidence).
+//! from the long-term ERB spectrum and the air band's crest factor; with a vocal stem target the summed vocal strips
+//! are compared with the stem's estimate (tolerance widened by the stem's window spread), else each vocal strip with
+//! its source's sources.toml sibilance threshold (low confidence).
 
 use std::collections::BTreeMap;
 
 use mix_analysis::masking;
 use mix_core::bands::N_ERB;
-use mix_core::features::Features;
+use mix_core::features::{Features, Stat};
 use mix_core::profile::{StemKind, StemProfile};
 use mix_knowledge::{Confidence, NumOrRange, Param};
 
+use super::problem::Contributor;
 use super::problem::{BandRef, Evidence, ProblemKind, Scope, Subject};
-use super::stem_masking::{reference_pairs, stem_family, stem_of};
+use super::stem_masking::{reference_pairs, stem_family, stem_of, STORE_MSR_DB};
 use super::{
     conditions_hold, mean_at, power_sum_db, quality_factor, window_loudness, Bag, Ctx, Draft,
     StripTap,
@@ -33,6 +44,10 @@ use super::{
 
 /// Sources that stay centred (masking strategy `pan_apart` feature_basis).
 const KEEP_CENTRED: &[&str] = &["lead_vocal", "kick", "snare_top", "bass_di", "bass_amp"];
+
+/// A strip inherits its stem's band deviation (sources.toml `band_dev_db`) only when it carries at least this
+/// share of the stem's power in that band.
+const MIN_STEM_SHARE: f32 = 0.25;
 
 /// Is a tap active enough to judge (eq.toml `min_overlap_pct`)?
 pub(crate) fn is_active(cx: &Ctx<'_>, f: &Features) -> bool {
@@ -127,9 +142,18 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
 
     levels(cx, &srcs, &groups);
     let stem_dev = stem_tonal(cx, &srcs, &groups);
-    let mask_bag = masking_pairs(cx, &srcs);
-    let sib_bag = sibilance(cx, &srcs);
-    source_problems(cx, &srcs, &stem_dev, &mask_bag, &sib_bag);
+    let mask_bag = masking_pairs(cx, &srcs, &groups, &stem_dev);
+    let sib_bag = sibilance(cx, &srcs, &groups);
+    source_problems(cx, &srcs, &groups, &stem_dev, &mask_bag, &sib_bag);
+}
+
+/// `t` shifted by an intent delta.
+fn shifted(t: Stat, d: f32) -> Stat {
+    Stat {
+        p10: t.p10 + d,
+        p50: t.p50 + d,
+        p90: t.p90 + d,
+    }
 }
 
 fn stem_profile<'c>(cx: &'c Ctx<'_>, k: StemKind) -> Option<&'c StemProfile> {
@@ -156,13 +180,15 @@ fn levels(cx: &mut Ctx<'_>, srcs: &[Src<'_>], groups: &BTreeMap<StemKind, Vec<us
         let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();
         let (shift, paths) = cx.intent_delta(&sref, "level_dev_lu");
         let t = sp.level_rel_mix_db;
-        let e = Evidence::new(
-            "level_dev_lu",
-            "lu",
-            rel,
-            t.p50 + shift,
-            kb_tol.max(t.half_spread()),
-        );
+        // Several strips are power-summed; the reference stem is their coherent sum (bleed, overheads), so a
+        // multi-strip stem gets `stem_sum_tolerance_lu` on top.
+        let tol = kb_tol
+            + if idx.len() > 1 {
+                cx.cfg.stem_sum_tolerance_lu
+            } else {
+                0.0
+            };
+        let e = Evidence::interval("level_dev_lu", "lu", rel, shifted(t, shift), tol);
         let subject = Subject::Stem {
             stem: k,
             strips: idx.iter().map(|&i| srcs[i].tap.strip.clone()).collect(),
@@ -222,12 +248,17 @@ fn levels(cx: &mut Ctx<'_>, srcs: &[Src<'_>], groups: &BTreeMap<StemKind, Vec<us
     }
 }
 
-/// Stem tonal balance; returns `stem → band name → deviation` (sources.toml `band_dev_db` per stem).
+/// Per stem and band: (signed distance outside the target's window interval `[p10, p90]`, excess beyond the
+/// tolerance interval of the tonal check).
+type StemDev = BTreeMap<StemKind, BTreeMap<String, (f32, f32)>>;
+
+/// Stem tonal balance against the stem's target interval ([`Evidence::interval`]); returns the per-band
+/// deviations and signed excesses (sources.toml `band_dev_db` per stem uses the excess).
 fn stem_tonal(
     cx: &mut Ctx<'_>,
     srcs: &[Src<'_>],
     groups: &BTreeMap<StemKind, Vec<usize>>,
-) -> BTreeMap<StemKind, BTreeMap<String, f32>> {
+) -> StemDev {
     let mut out = BTreeMap::new();
     let stems_w = cx.input.target.weights.stems;
     for (&k, idx) in groups {
@@ -247,7 +278,8 @@ fn stem_tonal(
             })
             .collect();
         let tgt: Vec<f32> = sp.erb_rel_db.iter().map(|s| s.p50).collect();
-        let spread: Vec<f32> = sp.erb_rel_db.iter().map(|s| s.half_spread()).collect();
+        let t10: Vec<f32> = sp.erb_rel_db.iter().map(|s| s.p10).collect();
+        let t90: Vec<f32> = sp.erb_rel_db.iter().map(|s| s.p90).collect();
         let top = tgt.iter().cloned().fold(f32::MIN, f32::max);
         let floor = top - cx.cfg.tonal_floor_db;
         let subject = Subject::Stem {
@@ -262,9 +294,17 @@ fn stem_tonal(
                 continue;
             }
             // Separated stems bleed: widen the knowledge-base tolerance by 25 %.
-            let tol = (b.tol * 1.25).max(mean_at(&spread, &b.erb));
-            let e = Evidence::new(format!("band_dev_db.{}", b.name), "db", m, g, tol);
-            devs.insert(b.name.clone(), e.deviation);
+            let tol = b.tol * 1.25;
+            let stat = Stat {
+                p10: mean_at(&t10, &b.erb),
+                p50: g,
+                p90: mean_at(&t90, &b.erb),
+            };
+            let e = Evidence::interval(format!("band_dev_db.{}", b.name), "db", m, stat, tol);
+            // sources.toml thresholds act as the tolerance of `band_dev_db`: report the distance outside the
+            // window interval itself (no kb tolerance).
+            let out_db = (stat.p10 - m).max(m - stat.p90).max(0.0);
+            devs.insert(b.name.clone(), (out_db.copysign(e.deviation), e.excess));
             let peak = *b
                 .erb
                 .iter()
@@ -306,8 +346,23 @@ fn stem_tonal(
     out
 }
 
-/// Masking pairs; returns per-strip-index `masking_db.<band>` (largest live MSR over maskers).
-fn masking_pairs(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) -> Vec<Bag> {
+/// Masking; returns per-strip-index `masking_db.<band>` (largest live strip-pair MSR over maskers) for the
+/// knowledge-base conditions.
+///
+/// - Strips in two different stems that have targets: judged **stem against stem** (live strips summed per stem
+///   vs the reference stem pair), so the comparison is like with like; a problem names the masked stem's
+///   dominant strip in the band and the masker stem's dominant strip (all masker strips as contributors).
+/// - Strips in the same stem: the reference cannot tell their balance apart, so the kb priority check (masked
+///   outranks masker, target 0 dB) only runs when that stem is off its tonal target in the band.
+/// - Strips without a stem target: kb priority check (no reference).
+///
+/// Every check also needs the live MSR above `cfg.masking.msr_threshold_db` (audibly masked).
+fn masking_pairs(
+    cx: &mut Ctx<'_>,
+    srcs: &[Src<'_>],
+    groups: &BTreeMap<StemKind, Vec<usize>>,
+    stem_dev: &StemDev,
+) -> Vec<Bag> {
     let mut bags = vec![Bag::new(); srcs.len()];
     if srcs.len() < 2 {
         return bags;
@@ -317,33 +372,14 @@ fn masking_pairs(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) -> Vec<Bag> {
         .map(|s| std::array::from_fn(|b| 10f32.powf(s.erb_abs[b] / 10.0)))
         .collect();
     let m = masking(&powers, cx.cfg.masking);
-    let refs = cx
-        .input
-        .target
-        .stems
-        .as_ref()
-        .map(reference_pairs)
-        .unwrap_or_default();
+    let audible = cx.cfg.masking.msr_threshold_db;
     let thr = cx.kb.eq.masking.threshold_db as f32;
-    let prio = cx.kb.eq.masking.priority_order.clone();
-    for (i, si) in srcs.iter().enumerate() {
-        for (j, sj) in srcs.iter().enumerate() {
+    for (i, bag) in bags.iter_mut().enumerate() {
+        for j in 0..srcs.len() {
             if i == j {
                 continue;
             }
-            let reference = match (si.stem, sj.stem) {
-                (Some(a), Some(b)) if a != b => refs
-                    .iter()
-                    .find(|p| p.masked == a && p.masker == b)
-                    .map(|p| p.erb_msr_db.clone()),
-                _ => None,
-            };
-            let (a, b) = (si.tap.source.as_deref(), sj.tap.source.as_deref());
-            let i_wins = match (a, b) {
-                (Some(a), Some(b)) => cx.kb.masking_winner(a, b) == Some(a),
-                _ => false,
-            };
-            for band in cx.bands.clone() {
+            for band in &cx.bands {
                 let imp: Vec<usize> = band
                     .erb
                     .iter()
@@ -354,72 +390,285 @@ fn masking_pairs(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) -> Vec<Bag> {
                     continue;
                 }
                 let msr = mean_at(&m.pair_msr_db[i][j], &imp);
-                let key = format!("masking_db.{}", band.name);
-                let slot = bags[i].entry(key.clone()).or_insert(f64::MIN);
+                let slot = bag
+                    .entry(format!("masking_db.{}", band.name))
+                    .or_insert(f64::MIN);
                 *slot = slot.max(msr as f64);
-                if reference.is_none() && !i_wins {
+            }
+        }
+    }
+
+    // Stem against stem.
+    let refs = reference_envelope(cx);
+    let kinds: Vec<StemKind> = groups.keys().copied().collect();
+    if kinds.len() >= 2 && !refs.is_empty() {
+        let stem_pw: Vec<[f32; N_ERB]> = kinds
+            .iter()
+            .map(|k| std::array::from_fn(|b| groups[k].iter().map(|&i| powers[i][b]).sum()))
+            .collect();
+        let ms = masking(&stem_pw, cx.cfg.masking);
+        for (a, &ka) in kinds.iter().enumerate() {
+            for (b, &kb_) in kinds.iter().enumerate() {
+                if a == b {
                     continue;
                 }
-                let base = reference.as_ref().map_or(0.0, |r| mean_at(r, &imp));
-                let scopes = si.scopes(cx);
-                let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();
-                let (shift, paths) = cx.intent_delta(&sref, &key);
-                let mut e = Evidence::new(key.clone(), "db", msr, base + shift, thr);
-                if e.deviation < 0.0 {
-                    e.excess = 0.0;
+                let Some(reference) = refs.get(&(ka, kb_)) else {
+                    continue;
+                };
+                for band in cx.bands.clone() {
+                    let imp: Vec<usize> = band
+                        .erb
+                        .iter()
+                        .copied()
+                        .filter(|&e| ms.important[a][e])
+                        .collect();
+                    if imp.is_empty() {
+                        continue;
+                    }
+                    let msr = mean_at(&ms.pair_msr_db[a][b], &imp);
+                    // a power-summed multi-strip masked stem reads low (see `stem_sum_tolerance_lu`)
+                    let base = mean_at(reference, &imp)
+                        + if groups[&ka].len() > 1 {
+                            cx.cfg.stem_sum_tolerance_lu
+                        } else {
+                            0.0
+                        };
+                    if msr <= audible {
+                        continue;
+                    }
+                    let dominant = |k: StemKind| -> usize {
+                        *groups[&k]
+                            .iter()
+                            .max_by(|&&x, &&y| {
+                                let px: f32 = imp.iter().map(|&e| powers[x][e]).sum();
+                                let py: f32 = imp.iter().map(|&e| powers[y][e]).sum();
+                                px.total_cmp(&py)
+                            })
+                            .unwrap()
+                    };
+                    let (i, j) = (dominant(ka), dominant(kb_));
+                    let total: f32 = groups[&kb_]
+                        .iter()
+                        .map(|&x| imp.iter().map(|&e| powers[x][e]).sum::<f32>())
+                        .sum();
+                    let mut contributors: Vec<Contributor> = groups[&kb_]
+                        .iter()
+                        .map(|&x| Contributor {
+                            strip: srcs[x].tap.strip.clone(),
+                            source: srcs[x].tap.source.clone(),
+                            share: imp.iter().map(|&e| powers[x][e]).sum::<f32>()
+                                / total.max(1e-30),
+                        })
+                        .collect();
+                    contributors.sort_by(|x, y| y.share.total_cmp(&x.share));
+                    let peak = *imp
+                        .iter()
+                        .max_by(|&&x, &&y| {
+                            ms.pair_msr_db[a][b][x].total_cmp(&ms.pair_msr_db[a][b][y])
+                        })
+                        .unwrap_or(&imp[0]);
+                    let what = format!(
+                        "{kb_:?} stem (mostly {}) masks the {ka:?} stem (mostly {})",
+                        srcs[j].name(),
+                        srcs[i].name()
+                    );
+                    push_masking(
+                        cx,
+                        srcs,
+                        (i, j),
+                        &band,
+                        (msr, base),
+                        cx.centres[peak],
+                        0.75,
+                        contributors,
+                        what,
+                    );
                 }
-                let terms = cx.intent_terms(&paths);
-                cx.consumed_intents.extend(paths);
-                if e.excess <= 0.0 {
+            }
+        }
+    }
+
+    // Strip against strip, priority order (no reference for the pair).
+    for (i, si) in srcs.iter().enumerate() {
+        for (j, sj) in srcs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let cross_stem = matches!((si.stem, sj.stem), (Some(a), Some(b)) if a != b);
+            if cross_stem && !refs.is_empty() {
+                continue;
+            }
+            let (a, b) = (si.tap.source.as_deref(), sj.tap.source.as_deref());
+            let i_wins = match (a, b) {
+                (Some(a), Some(b)) => cx.kb.masking_winner(a, b) == Some(a),
+                _ => false,
+            };
+            if !i_wins {
+                continue;
+            }
+            for band in cx.bands.clone() {
+                if let (Some(x), Some(y)) = (si.stem, sj.stem) {
+                    // same stem with a target: the reference fixes the stem's internal balance, so only where
+                    // that stem is clearly off target (more than the masking threshold outside its interval)
+                    if x == y
+                        && stem_dev
+                            .get(&x)
+                            .and_then(|d| d.get(&band.name))
+                            .is_none_or(|&(_, ex)| ex < thr)
+                    {
+                        continue;
+                    }
+                }
+                let imp: Vec<usize> = band
+                    .erb
+                    .iter()
+                    .copied()
+                    .filter(|&e| m.important[i][e])
+                    .collect();
+                if imp.is_empty() {
+                    continue;
+                }
+                let msr = mean_at(&m.pair_msr_db[i][j], &imp);
+                if msr <= audible {
                     continue;
                 }
                 let peak = *imp
                     .iter()
                     .max_by(|&&x, &&y| m.pair_msr_db[i][j][x].total_cmp(&m.pair_msr_db[i][j][y]))
                     .unwrap_or(&imp[0]);
-                let pos = a
-                    .and_then(|a| prio.iter().position(|p| p == a))
-                    .unwrap_or(prio.len());
-                let w = 1.0 + 0.5 * (prio.len() - pos) as f32 / prio.len().max(1) as f32;
-                let (ids, blocks) = strategies(cx, msr as f64, &band, a, b);
-                let mut bag = bags[i].clone();
-                bag.insert(key.clone(), msr as f64);
-                let extra = cx.rules_for(&si.subject(), &key, msr as f64, &bag);
-                let explanation = format!(
-                    "{} masks {} in {} by {:.1} dB (target {:.1} dB, threshold {:.1} dB)",
-                    sj.name(),
-                    si.name(),
-                    band.name,
-                    msr,
-                    e.target,
-                    thr
-                );
-                let scope = Scope {
-                    subject: si.subject(),
-                    other: Some(sj.subject()),
-                    band: Some(BandRef {
-                        name: band.name.clone(),
-                        lo_hz: band.lo,
-                        hi_hz: band.hi,
-                        peak_hz: cx.centres[peak],
-                    }),
-                };
-                let conf = if reference.is_some() { 0.75 } else { 0.55 }
-                    * quality_factor(&si.tap.features).min(quality_factor(&sj.tap.features));
-                cx.push(
-                    Draft::new(ProblemKind::Masking, scope, e)
-                        .weight(w)
-                        .confidence(conf)
-                        .rules((ids, blocks))
-                        .rules(extra)
-                        .blocks(&["Eq"])
-                        .terms(terms)
-                        .explain(explanation),
+                let what = format!("{} masks {}", sj.name(), si.name());
+                let contributors = vec![Contributor {
+                    strip: sj.tap.strip.clone(),
+                    source: sj.tap.source.clone(),
+                    share: 1.0,
+                }];
+                push_masking(
+                    cx,
+                    srcs,
+                    (i, j),
+                    &band,
+                    (msr, 0.0),
+                    cx.centres[peak],
+                    0.55,
+                    contributors,
+                    what,
                 );
             }
         }
     }
     bags
+}
+
+/// One masking problem: masked strip `i`, masker strip `j`, live MSR vs `base` (dB).
+#[allow(clippy::too_many_arguments)]
+fn push_masking(
+    cx: &mut Ctx<'_>,
+    srcs: &[Src<'_>],
+    (i, j): (usize, usize),
+    band: &super::NamedBand,
+    (msr, base): (f32, f32),
+    peak_hz: f32,
+    conf: f32,
+    contributors: Vec<Contributor>,
+    what: String,
+) {
+    let (si, sj) = (&srcs[i], &srcs[j]);
+    let thr = cx.kb.eq.masking.threshold_db as f32;
+    let key = format!("masking_db.{}", band.name);
+    let scopes = si.scopes(cx);
+    let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();
+    let (shift, paths) = cx.intent_delta(&sref, &key);
+    let mut e = Evidence::new(key.clone(), "db", msr, base + shift, thr);
+    if e.deviation < 0.0 {
+        e.excess = 0.0;
+    }
+    let terms = cx.intent_terms(&paths);
+    cx.consumed_intents.extend(paths);
+    if e.excess <= 0.0 {
+        return;
+    }
+    let (a, b) = (si.tap.source.as_deref(), sj.tap.source.as_deref());
+    let prio = &cx.kb.eq.masking.priority_order;
+    let pos = a
+        .and_then(|a| prio.iter().position(|p| p == a))
+        .unwrap_or(prio.len());
+    let w = 1.0 + 0.5 * (prio.len() - pos) as f32 / prio.len().max(1) as f32;
+    let (ids, blocks) = strategies(cx, msr as f64, band, a, b);
+    let mut bag = Bag::new();
+    bag.insert(key.clone(), msr as f64);
+    let extra = cx.rules_for(&si.subject(), &key, msr as f64, &bag);
+    let explanation = format!(
+        "{what} in {} by {:.1} dB (target {:.1} dB, threshold {:.1} dB)",
+        band.name, msr, e.target, thr
+    );
+    let scope = Scope {
+        subject: si.subject(),
+        other: Some(sj.subject()),
+        band: Some(BandRef {
+            name: band.name.clone(),
+            lo_hz: band.lo,
+            hi_hz: band.hi,
+            peak_hz,
+        }),
+    };
+    let conf = conf * quality_factor(&si.tap.features).min(quality_factor(&sj.tap.features));
+    cx.push(
+        Draft::new(ProblemKind::Masking, scope, e)
+            .weight(w)
+            .confidence(conf)
+            .rules((ids, blocks))
+            .rules(extra)
+            .blocks(&["Eq"])
+            .terms(terms)
+            .contributors(contributors)
+            .explain(explanation),
+    );
+}
+
+/// Upper envelope of the reference stem masking per ordered stem pair (masked, masker): the larger of the
+/// stored/median pair MSR and the MSR of the masker's p90 curve on the masked stem's p10 curve (both at their
+/// median level), so a live aggregate anywhere inside the stems' window spread is not flagged. Pairs the
+/// reference does not store were below `STORE_MSR_DB` there.
+fn reference_envelope(cx: &Ctx<'_>) -> BTreeMap<(StemKind, StemKind), Vec<f32>> {
+    let mut out = BTreeMap::new();
+    let Some(st) = cx.input.target.stems.as_ref() else {
+        return out;
+    };
+    let kinds: Vec<StemKind> = st
+        .stems
+        .iter()
+        .filter(|(_, p)| p.erb_rel_db.len() == N_ERB)
+        .map(|(k, _)| *k)
+        .collect();
+    let stored = reference_pairs(st);
+    let curve = |k: StemKind, q: fn(&Stat) -> f32| -> [f32; N_ERB] {
+        let p = &st.stems[&k];
+        let l = p.level_rel_mix_db.p50;
+        std::array::from_fn(|b| 10f32.powf((q(&p.erb_rel_db[b]) + l) / 10.0))
+    };
+    for &a in &kinds {
+        for &b in &kinds {
+            if a == b {
+                continue;
+            }
+            let env = masking(&[curve(a, |s| s.p10), curve(b, |s| s.p90)], cx.cfg.masking);
+            let med = stored
+                .iter()
+                .find(|p| p.masked == a && p.masker == b)
+                .map(|p| p.erb_msr_db.clone())
+                .unwrap_or_else(|| vec![STORE_MSR_DB; N_ERB]);
+            let v: Vec<f32> = (0..N_ERB)
+                .map(|e| {
+                    med.get(e)
+                        .copied()
+                        .unwrap_or(STORE_MSR_DB)
+                        .max(env.pair_msr_db[0][1][e])
+                })
+                .collect();
+            out.insert((a, b), v);
+        }
+    }
+    out
 }
 
 /// Masking strategies (eq.toml) whose conditions hold, in order, with their blocks.
@@ -464,82 +713,176 @@ fn sibilance_of(cx: &Ctx<'_>, rel: &[f32], crest_air: f32) -> f32 {
     power_sum_db(rel, &idx(5000.0, 10000.0)) - power_sum_db(rel, &idx(1000.0, 4000.0)) + crest_air
 }
 
-/// Sibilance of vocal-family strips; returns per-strip-index `sibilance_db` bag entries.
-fn sibilance(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) -> Vec<Option<f64>> {
+/// Sibilance. With a vocal stem target: the live vocal strips summed (spectrum by power, air crest weighted by
+/// air power) against the stem's estimate, tolerance widened by the stem's 1–10 kHz window spread, reported on the
+/// vocal strip with the most 5–10 kHz energy. Otherwise each vocal-family strip against its sources.toml
+/// threshold (low confidence). Returns per-strip-index `sibilance_db` bag entries.
+fn sibilance(
+    cx: &mut Ctx<'_>,
+    srcs: &[Src<'_>],
+    groups: &BTreeMap<StemKind, Vec<usize>>,
+) -> Vec<Option<f64>> {
     let mut out = vec![None; srcs.len()];
-    let vocal_stem = stem_profile(cx, StemKind::Vocals).cloned();
+    let vocal_stem = stem_profile(cx, StemKind::Vocals)
+        .filter(|v| v.erb_rel_db.len() == N_ERB)
+        .cloned();
+    let is_vocal = |s: &Src<'_>| {
+        s.tap
+            .source
+            .as_deref()
+            .and_then(|x| cx.kb.source(x))
+            .is_some_and(|src| src.family.as_str() == "vocal")
+    };
+    let band_idx = |lo: f32, hi: f32| -> Vec<usize> {
+        (0..N_ERB)
+            .filter(|&b| cx.centres[b] >= lo && cx.centres[b] < hi)
+            .collect()
+    };
+    let sib_band = band_idx(5000.0, 10000.0);
+    if let (Some(vs), Some(idx)) = (&vocal_stem, groups.get(&StemKind::Vocals)) {
+        let idx: Vec<usize> = idx
+            .iter()
+            .copied()
+            .filter(|&i| is_vocal(&srcs[i]))
+            .collect();
+        if !idx.is_empty() {
+            let all: Vec<usize> = (0..idx.len()).collect();
+            let lv: Vec<f32> = idx.iter().map(|&i| srcs[i].level).collect();
+            let stem_l = power_sum_db(&lv, &all);
+            let rel: Vec<f32> = (0..N_ERB)
+                .map(|b| {
+                    let v: Vec<f32> = idx.iter().map(|&i| srcs[i].erb_abs[b]).collect();
+                    power_sum_db(&v, &all) - stem_l
+                })
+                .collect();
+            let air_pw: Vec<f32> = idx
+                .iter()
+                .map(|&i| {
+                    sib_band
+                        .iter()
+                        .map(|&b| 10f32.powf(srcs[i].erb_abs[b] / 10.0))
+                        .sum::<f32>()
+                })
+                .collect();
+            let tot: f32 = air_pw.iter().sum::<f32>().max(1e-30);
+            let crest: f32 = idx
+                .iter()
+                .zip(&air_pw)
+                .map(|(&i, w)| srcs[i].tap.features.dynamics.crest_db[5] * w / tot)
+                .sum();
+            let sib = sibilance_of(cx, &rel, crest);
+            let k = idx[air_pw
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map_or(0, |x| x.0)];
+            let tgt: Vec<f32> = vs.erb_rel_db.iter().map(|x| x.p50).collect();
+            let t = sibilance_of(cx, &tgt, vs.crest_db[5].p50);
+            let spread: Vec<f32> = vs.erb_rel_db.iter().map(|x| x.half_spread()).collect();
+            let tol = sib_threshold(cx, &srcs[k])
+                .abs()
+                .max(1.0)
+                .max(mean_at(&spread, &band_idx(1000.0, 10000.0)))
+                .max(vs.crest_db[5].half_spread());
+            let conf = 0.5 * cx.target_conf;
+            for &i in &idx {
+                out[i] = Some((sib - t) as f64);
+            }
+            let what = if idx.len() > 1 {
+                format!("vocals (mostly {})", srcs[k].name())
+            } else {
+                srcs[k].name().to_string()
+            };
+            push_sibilance(cx, &srcs[k], sib, t, tol, conf, (sib - t) as f64, what);
+            // vocal strips outside the stem (none with the default mapping) are judged alone below
+        }
+    }
     for (i, s) in srcs.iter().enumerate() {
-        let Some(src) = s.tap.source.as_deref().and_then(|x| cx.kb.source(x)) else {
-            continue;
-        };
-        if src.family.as_str() != "vocal" {
+        if !is_vocal(s) || out[i].is_some() {
             continue;
         }
         let f = &s.tap.features;
         let sib = sibilance_of(cx, &f.spectrum.erb_mid_rel_db, f.dynamics.crest_db[5]);
-        let scopes = s.scopes(cx);
-        let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();
-        let (shift, paths) = cx.intent_delta(&sref, "sibilance_db");
-        let thr = src
-            .problems
-            .iter()
-            .flat_map(|p| p.when.iter())
-            .find(|c| c.feature == "sibilance_db")
-            .and_then(|c| match c.value {
-                NumOrRange::Num(v) => Some(v as f32),
-                _ => None,
-            })
-            .unwrap_or(3.0);
-        let (mut e, conf, bag_v) = match (&vocal_stem, s.stem) {
-            (Some(vs), Some(StemKind::Vocals)) if vs.erb_rel_db.len() == N_ERB => {
-                let tgt: Vec<f32> = vs.erb_rel_db.iter().map(|x| x.p50).collect();
-                let t = sibilance_of(cx, &tgt, vs.crest_db[5].p50);
-                let e = Evidence::new("sibilance_db", "db", sib, t + shift, thr.abs().max(1.0));
-                let d = e.deviation as f64;
-                (e, 0.5 * cx.target_conf, d)
-            }
-            _ => (
-                Evidence::new("sibilance_db", "db", sib, shift, thr.abs().max(1.0)),
-                0.3,
-                sib as f64,
-            ),
-        };
-        if e.deviation < 0.0 {
-            e.excess = 0.0;
-        }
-        out[i] = Some(bag_v);
-        let terms = cx.intent_terms(&paths);
-        cx.consumed_intents.extend(paths);
-        let mut bag = Bag::new();
-        bag.insert("sibilance_db".into(), bag_v);
-        let rules = cx.rules_for(&s.subject(), "sibilance_db", bag_v, &bag);
-        let explanation = format!(
-            "{} sibilance estimate {:.1} dB vs {:.1} dB (+{:.1} dB allowed)",
-            s.name(),
+        let thr = sib_threshold(cx, s);
+        out[i] = Some(sib as f64);
+        push_sibilance(
+            cx,
+            s,
             sib,
-            e.target,
-            e.tolerance
-        );
-        cx.push(
-            Draft::new(
-                ProblemKind::Sibilance,
-                Scope::of(s.subject()).with_band(BandRef {
-                    name: "brilliance".into(),
-                    lo_hz: 5000.0,
-                    hi_hz: 10000.0,
-                    peak_hz: 7000.0,
-                }),
-                e,
-            )
-            .weight(1.0)
-            .confidence(conf * quality_factor(f))
-            .rules(rules)
-            .blocks(&["Dyn"])
-            .terms(terms)
-            .explain(explanation),
+            0.0,
+            thr.abs().max(1.0),
+            0.3,
+            sib as f64,
+            s.name().to_string(),
         );
     }
     out
+}
+
+/// sources.toml `sibilance_db` threshold of a strip's source (default 3 dB).
+fn sib_threshold(cx: &Ctx<'_>, s: &Src<'_>) -> f32 {
+    s.tap
+        .source
+        .as_deref()
+        .and_then(|x| cx.kb.source(x))
+        .and_then(|src| {
+            src.problems
+                .iter()
+                .flat_map(|p| p.when.iter())
+                .find(|c| c.feature == "sibilance_db")
+                .and_then(|c| match c.value {
+                    NumOrRange::Num(v) => Some(v as f32),
+                    _ => None,
+                })
+        })
+        .unwrap_or(3.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_sibilance(
+    cx: &mut Ctx<'_>,
+    s: &Src<'_>,
+    sib: f32,
+    target: f32,
+    tol: f32,
+    conf: f32,
+    bag_v: f64,
+    what: String,
+) {
+    let scopes = s.scopes(cx);
+    let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();
+    let (shift, paths) = cx.intent_delta(&sref, "sibilance_db");
+    let mut e = Evidence::new("sibilance_db", "db", sib, target + shift, tol);
+    if e.deviation < 0.0 {
+        e.excess = 0.0;
+    }
+    let terms = cx.intent_terms(&paths);
+    cx.consumed_intents.extend(paths);
+    let mut bag = Bag::new();
+    bag.insert("sibilance_db".into(), bag_v);
+    let rules = cx.rules_for(&s.subject(), "sibilance_db", bag_v, &bag);
+    let explanation = format!(
+        "{what} sibilance estimate {:.1} dB vs {:.1} dB (+{:.1} dB allowed)",
+        sib, e.target, e.tolerance
+    );
+    cx.push(
+        Draft::new(
+            ProblemKind::Sibilance,
+            Scope::of(s.subject()).with_band(BandRef {
+                name: "brilliance".into(),
+                lo_hz: 5000.0,
+                hi_hz: 10000.0,
+                peak_hz: 7000.0,
+            }),
+            e,
+        )
+        .weight(1.0)
+        .confidence(conf * quality_factor(&s.tap.features))
+        .rules(rules)
+        .blocks(&["Dyn"])
+        .terms(terms)
+        .explain(explanation),
+    );
 }
 
 /// sources.toml `problems` of each typed strip. Problems conditioned on sibilance/masking are covered by the
@@ -547,7 +890,8 @@ fn sibilance(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) -> Vec<Option<f64>> {
 fn source_problems(
     cx: &mut Ctx<'_>,
     srcs: &[Src<'_>],
-    stem_dev: &BTreeMap<StemKind, BTreeMap<String, f32>>,
+    groups: &BTreeMap<StemKind, Vec<usize>>,
+    stem_dev: &StemDev,
     mask_bags: &[Bag],
     sib: &[Option<f64>],
 ) {
@@ -566,10 +910,27 @@ fn source_problems(
                 (power_sum_db(rel, &b.erb) - total) as f64,
             );
         }
-        let from_stem = s.stem.and_then(|k| stem_dev.get(&k));
-        if let Some(devs) = from_stem {
-            for (band, d) in devs {
-                bag.insert(format!("band_dev_db.{band}"), *d as f64);
+        // A stem's deviation is relative to its target interval (the excess beyond it) and only describes the
+        // strips that carry a real share of the stem in that band.
+        let mut shares: BTreeMap<String, f32> = BTreeMap::new();
+        if let Some(k) = s.stem {
+            if let (Some(devs), Some(members)) = (stem_dev.get(&k), groups.get(&k)) {
+                for (band, &(out_db, _)) in devs {
+                    let Some(nb) = cx.bands.iter().find(|b| &b.name == band) else {
+                        continue;
+                    };
+                    let pw = |x: usize| -> f32 {
+                        nb.erb
+                            .iter()
+                            .map(|&e| 10f32.powf(srcs[x].erb_abs[e] / 10.0))
+                            .sum()
+                    };
+                    let total: f32 = members.iter().map(|&x| pw(x)).sum();
+                    if total > 0.0 && pw(i) / total >= MIN_STEM_SHARE {
+                        bag.insert(format!("band_dev_db.{band}"), out_db as f64);
+                        shares.insert(band.clone(), pw(i) / total);
+                    }
+                }
             }
         }
         bag.insert("crest_db".into(), f.loudness.crest_db as f64);
@@ -656,8 +1017,19 @@ fn source_problems(
                 hi_hz: p.freq_hz.hi() as f32,
                 peak_hz: peak,
             });
+            let share = c
+                .feature
+                .strip_prefix("band_dev_db.")
+                .and_then(|b| shares.get(b))
+                .copied()
+                .unwrap_or(1.0);
             cx.push(
                 Draft::new(ProblemKind::SourceProblem, scope, e)
+                    .contributors(vec![Contributor {
+                        strip: s.tap.strip.clone(),
+                        source: s.tap.source.clone(),
+                        share,
+                    }])
                     .weight(0.8)
                     .confidence(conf)
                     .rules((

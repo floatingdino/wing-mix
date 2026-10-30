@@ -101,7 +101,7 @@ fn muddy_guitar(kb: &KnowledgeBase) -> Setup {
             ParamChange::new("input.3/fader", -6.0),
             ParamChange::new("input.4/eq/band.1.freq", 400.0),
             ParamChange::new("input.4/eq/band.1.q", 1.0),
-            ParamChange::new("input.4/eq/band.1.gain", 6.0),
+            ParamChange::new("input.4/eq/band.1.gain", 9.0),
         ],
     )
 }

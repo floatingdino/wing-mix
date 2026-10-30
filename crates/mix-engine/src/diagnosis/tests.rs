@@ -290,7 +290,9 @@ fn stem_level_and_tonal_deltas() {
     assert!((pr.evidence.deviation + 4.0).abs() < 0.01);
     assert_eq!(pr.suggested_blocks[0], "Fader");
 
-    // Vocal low-mid excess: stem tonal problem + the sources.toml proximity-mud problem.
+    // Vocal low-mid excess: stem tonal problem with the sources.toml proximity-mud problem folded in (M034: the
+    // source problem is triggered by the same stem band deviation, so it is merged into the stem problem, its
+    // rule id and strip carried along for the planner).
     let mut strips = synth::strips_matching(&p, long(), kb());
     shift_band(
         &mut strips[voc].features.spectrum.erb_mid_rel_db,
@@ -299,20 +301,22 @@ fn stem_level_and_tonal_deltas() {
         6.0,
     );
     let d = run(&main, &p, &strips);
-    let all = ids(&d);
     assert!(
-        all.contains(&"tonal:stem:Vocals@low_mid:band_dev_db"),
+        d.problems
+            .iter()
+            .all(|p| p.kind != ProblemKind::SourceProblem),
         "\n{}",
         dump(&d)
     );
     let mud = d
         .problems
         .iter()
-        .find(|p| p.kind == ProblemKind::SourceProblem)
-        .expect("source problem");
+        .find(|p| p.id == "tonal:stem:Vocals@low_mid:band_dev_db")
+        .unwrap_or_else(|| panic!("\n{}", dump(&d)));
     assert!(mud
         .rules
         .contains(&"lead_vocal.vox_proximity_mud".to_string()));
+    assert_eq!(mud.contributors[0].strip, strips[voc].strip);
     assert_eq!(mud.suggested_blocks, vec!["Eq".to_string()]);
 }
 

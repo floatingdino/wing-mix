@@ -14,11 +14,14 @@
 //!   check's target instead.
 //! - [`stem_masking`]: pairwise reference stem masking for `StemTargets.masking` (M023 leaves it empty).
 //!
-//! Tolerances: `max(knowledge-base tolerance, target half-spread (p90 − p10)/2)`; the knowledge base supplies
+//! Tolerances: `max(knowledge-base tolerance, target half-spread (p90 − p10)/2)` for mix checks; stem checks use the
+//! target interval ([`Evidence::interval`], see [`sources`]); the knowledge base supplies
 //! `targets.reference_matching` and rule thresholds (dyn_too_dynamic, mix_bus_too_dynamic, dyn_lost_punch, ...).
 //! Severity = `excess / tolerance` × MatchWeights dimension weight × kind weight; problems are ranked by
 //! severity × confidence (ties by id). [`Diagnosis::distance`] is a continuous RMS of `deviation / tolerance` over
-//! every mix-level check (inside tolerance too) for the controller's keep/revert decision (M033).
+//! every mix-level check (inside tolerance too) for the controller's keep/revert decision (M033). Overlapping
+//! problems are merged (masking of one pair across bands; sources.toml problems triggered by a stem band deviation
+//! fold into that stem's tonal problem), see `merge_overlaps`.
 //!
 //! Seams for later tasks: the planner (M032) reads `Problem::{scope, evidence, suggested_blocks, rules,
 //! contributors}`; the controller (M033) feeds [`DiagnosisInput::intent_progress`] (how much of each open-loop
@@ -154,6 +157,9 @@ pub struct DiagnosisConfig {
     pub max_problems: Option<usize>,
     /// Tolerance of open-loop intents (dB/LU; ratio features use a tenth of it).
     pub intent_tolerance: f32,
+    /// Extra level tolerance (LU) of a stem summed from several strip taps: the live sum is a power sum, the
+    /// reference stem a coherent one (bleed between drum mics adds up), ~1.5 LU apart on mix-sim's drums (M034).
+    pub stem_sum_tolerance_lu: f32,
 }
 
 impl Default for DiagnosisConfig {
@@ -166,6 +172,7 @@ impl Default for DiagnosisConfig {
             min_score: 0.0,
             max_problems: None,
             intent_tolerance: 0.5,
+            stem_sum_tolerance_lu: 1.0,
         }
     }
 }
@@ -354,6 +361,7 @@ impl<'a> Ctx<'a> {
         self.problems
             .sort_by(|a, b| a.id.cmp(&b.id).then(b.score().total_cmp(&a.score())));
         self.problems.dedup_by(|a, b| a.id == b.id);
+        merge_overlaps(&mut self.problems);
         self.problems
             .sort_by(|a, b| b.score().total_cmp(&a.score()).then(a.id.cmp(&b.id)));
         if let Some(n) = cfg.max_problems {
@@ -541,6 +549,72 @@ impl Draft {
         self.explanation = e;
         self
     }
+}
+
+/// Merges problems that describe the same fault twice (M034):
+/// - masking of the same (masked, masker) pair in several bands → the highest-scoring band, the others named in
+///   the explanation;
+/// - a sources.toml problem triggered by its stem's band deviation (`band_dev_db.<band>`) → folded into that
+///   stem's tonal problem in the same band (rule ids appended, the strip added as contributor; the planner turns
+///   a folded `<source>.<problem>` rule back into that source's action on the contributor).
+fn merge_overlaps(problems: &mut Vec<Problem>) {
+    problems.sort_by(|a, b| b.score().total_cmp(&a.score()).then(a.id.cmp(&b.id)));
+    let mut out: Vec<Problem> = Vec::with_capacity(problems.len());
+    for p in problems.drain(..) {
+        if p.kind == ProblemKind::Masking {
+            if let Some(q) = out.iter_mut().find(|q| {
+                q.kind == ProblemKind::Masking
+                    && q.scope.subject == p.scope.subject
+                    && q.scope.other == p.scope.other
+            }) {
+                if let Some(b) = &p.scope.band {
+                    q.explanation.push_str(&format!(
+                        "; also in {} ({:+.1} dB)",
+                        b.name, p.evidence.deviation
+                    ));
+                }
+                continue;
+            }
+        }
+        out.push(p);
+    }
+    let mut keep = vec![true; out.len()];
+    for i in 0..out.len() {
+        let p = &out[i];
+        let (ProblemKind::SourceProblem, Subject::Strip { strip, .. }) = (p.kind, &p.scope.subject)
+        else {
+            continue;
+        };
+        let Some(band) = p.evidence.feature.strip_prefix("band_dev_db.") else {
+            continue;
+        };
+        let target = out.iter().position(|q| {
+            matches!(q.kind, ProblemKind::Tonal | ProblemKind::Harshness)
+                && matches!(&q.scope.subject, Subject::Stem { strips, .. } if strips.contains(strip))
+                && q.scope.band.as_ref().is_some_and(|b| b.name == band)
+        });
+        if let Some(t) = target {
+            let (rules, expl) = (p.rules.clone(), p.explanation.clone());
+            let contributors = p.contributors.clone();
+            let q = &mut out[t];
+            for r in rules {
+                if !q.rules.contains(&r) {
+                    q.rules.push(r);
+                }
+            }
+            for c in contributors {
+                if !q.contributors.iter().any(|x| x.strip == c.strip) {
+                    q.contributors.push(c);
+                }
+            }
+            q.contributors.sort_by(|a, b| b.share.total_cmp(&a.share));
+            q.explanation.push_str(&format!("; {expl}"));
+            keep[i] = false;
+        }
+    }
+    let mut k = keep.into_iter();
+    out.retain(|_| k.next().unwrap());
+    *problems = out;
 }
 
 fn problem_id(kind: ProblemKind, scope: &Scope, feature: &str) -> String {

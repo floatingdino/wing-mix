@@ -595,7 +595,10 @@ impl Gen<'_> {
         let excess = p.evidence.excess as f64;
         match p.kind {
             ProblemKind::Level => self.level(p, dev, &mut out),
-            ProblemKind::Tonal | ProblemKind::Harshness => self.tonal(p, dev, excess, &mut out),
+            ProblemKind::Tonal | ProblemKind::Harshness => {
+                self.tonal(p, dev, excess, &mut out);
+                self.folded_source_problems(p, &mut out);
+            }
             ProblemKind::Tilt => self.tilt(p, dev, &mut out),
             ProblemKind::Width => self.width(p, dev, &mut out),
             ProblemKind::LowEndMono => {
@@ -960,6 +963,25 @@ impl Gen<'_> {
         }
     }
 
+    /// sources.toml problems diagnosis folded into a stem tonal problem (M034 merge: rule `<source>.<problem>`
+    /// plus the strip as contributor): the source's own action on that strip.
+    fn folded_source_problems(&self, p: &Problem, out: &mut Vec<Candidate>) {
+        if !matches!(p.scope.subject, Subject::Stem { .. }) {
+            return;
+        }
+        for c in &p.contributors {
+            if c.source.is_none() {
+                continue;
+            }
+            let mut sub = p.clone();
+            sub.scope.subject = Subject::Strip {
+                strip: c.strip.clone(),
+                source: c.source.clone(),
+            };
+            self.source_problem(&sub, out);
+        }
+    }
+
     fn source_problem(&self, p: &Problem, out: &mut Vec<Candidate>) {
         let Subject::Strip {
             strip,
@@ -971,11 +993,12 @@ impl Gen<'_> {
         let Some(source) = self.kb.source(src) else {
             return;
         };
-        for sp in source
-            .problems
-            .iter()
-            .filter(|sp| p.rules.contains(&sp.id) || p.id.contains(&sp.id))
-        {
+        for sp in source.problems.iter().filter(|sp| {
+            p.rules.contains(&sp.id)
+                || p.id.contains(&sp.id)
+                || (!matches!(p.kind, ProblemKind::SourceProblem)
+                    && p.rules.contains(&format!("{}.{}", source.id, sp.id)))
+        }) {
             let a = &sp.action;
             let why = format!(
                 "sources.toml {}/{}{}",
