@@ -33,6 +33,10 @@ use crate::diagnosis::{Problem, ProblemKind, Subject};
 /// Smallest share of a tonal problem's band a strip must carry for its fader to be offered instead of EQ.
 const MIN_FADER_SHARE: f64 = 0.3;
 
+/// Smallest predicted mean gain reduction (dB) of a compressor switched on (M036: one that would not act does
+/// not answer a compression opportunity).
+const MIN_COMP_GR_DB: f64 = 0.5;
+
 /// Workflow phases (workflow.toml `[[phase]]` ids, in order).
 pub const PHASES: [&str; 9] = [
     "gain_staging",
@@ -524,8 +528,13 @@ impl Gen<'_> {
                 // loudness-match makeup (dynamics.toml rule makeup_after_change) from the effect model's
                 // prediction of the strip (M036: the proxy's gain reduction; the static curve under-reads it),
                 // static curve as the fallback
+                // the level the compressor takes off (predicted); a compressor that would not act is no move
+                let gr_pred = self.makeup_for(s, &changes).unwrap_or(-gr);
+                if gr_pred < MIN_COMP_GR_DB {
+                    continue;
+                }
                 let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
-                    self.makeup_for(s, &changes).unwrap_or(-gr).clamp(0.0, 12.0)
+                    gr_pred.clamp(0.0, 12.0)
                 } else {
                     0.0
                 };

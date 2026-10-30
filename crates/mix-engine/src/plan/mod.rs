@@ -828,6 +828,16 @@ fn rest_of(p: &ParamId) -> &str {
 /// Label of a move from its actual changes (merged or clamped moves): `input.13 fader +2.9 dB`,
 /// `input.5 pan +0 -> -70`, `input.6 EQ band.4 -3.0 dB at 14142 Hz`, else `param from -> to`.
 pub fn describe_changes(changes: &[ParamChange], state: &ConsoleState) -> String {
+    describe_changes_in(changes, changes, state)
+}
+
+/// [`describe_changes`] where an EQ band's frequency is looked up in `context` (the whole move a part belongs to)
+/// before the console state.
+fn describe_changes_in(
+    changes: &[ParamChange],
+    context: &[ParamChange],
+    state: &ConsoleState,
+) -> String {
     let num = |c: &ParamChange| -> Option<(f64, f64)> {
         Some((c.from.as_ref()?.as_f64()?, c.to.as_f64()?))
     };
@@ -860,7 +870,7 @@ pub fn describe_changes(changes: &[ParamChange], state: &ConsoleState) -> String
                     "{}.freq",
                     c.param.as_str().trim_end_matches(".gain")
                 ));
-                let freq = changes
+                let freq = context
                     .iter()
                     .find(|x| x.param == fid)
                     .and_then(|x| x.to.as_f64())
@@ -1007,8 +1017,13 @@ fn split_moves(
         for k in 1..=n {
             let mut part = m.clone();
             for (i, c) in part.action.changes.iter_mut().enumerate() {
+                // only the limited gains are spread over the parts; frequency, Q, switches go with the first
+                let limited = input
+                    .state
+                    .spec(&c.param)
+                    .is_some_and(|sp| sc.move_limit_db(sp, false).is_some());
                 let to = match (c.from.as_ref().and_then(Value::as_f64), c.to.as_f64()) {
-                    (Some(a), Some(b)) if matches!(c.to, Value::Float(_)) && k < n => {
+                    (Some(a), Some(b)) if limited && matches!(c.to, Value::Float(_)) && k < n => {
                         let x = a + (b - a) * k as f64 / n as f64;
                         input
                             .state
@@ -1021,7 +1036,7 @@ fn split_moves(
                 prev[i] = to.clone();
                 c.to = to;
             }
-            // non-numeric changes (switches) go with the first part
+            // changes already complete (switches, frequencies) are not repeated
             if k > 1 {
                 part.action
                     .changes
@@ -1029,7 +1044,7 @@ fn split_moves(
             }
             part.action.label = format!(
                 "{} ({k}/{n})",
-                describe_changes(&part.action.changes, input.state)
+                describe_changes_in(&part.action.changes, &m.action.changes, input.state)
             );
             part.cost = m.cost / n as f64;
             out.push((ph, part));

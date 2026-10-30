@@ -185,6 +185,39 @@ fn all_moves() -> Vec<(&'static str, Vec<ParamChange>, bool)> {
         ),
         ("vox comp on", vec![ch("input.13/dyn/on", Bool(true))], true),
         (
+            // M036: the planner's vocal_comp preset candidate (AUTO off, preset times, model-based makeup)
+            "vox comp preset",
+            vec![
+                ch("input.13/dyn/threshold", Float(-17.0)),
+                ch("input.13/dyn/ratio", Float(3.5)),
+                ch("input.13/dyn/attack", Float(8.5)),
+                ch("input.13/dyn/release", Float(125.0)),
+                ch("input.13/dyn/auto", Bool(false)),
+                ch("input.13/dyn/makeup", Float(4.4)),
+                ch("input.13/dyn/on", Bool(true)),
+            ],
+            true,
+        ),
+        (
+            // M036 (M033's ~10x optimistic vocal EQ boosts): presence/brilliance boosts on the buried vocal
+            "vox EQ 6 kHz +1.5",
+            vec![
+                ch("input.13/eq/band.4.freq", Float(6148.0)),
+                ch("input.13/eq/band.4.q", Float(0.7)),
+                ch("input.13/eq/band.4.gain", Float(1.5)),
+            ],
+            false,
+        ),
+        (
+            "vox EQ 3 kHz +3",
+            vec![
+                ch("input.13/eq/band.3.freq", Float(3000.0)),
+                ch("input.13/eq/band.3.q", Float(0.7)),
+                ch("input.13/eq/band.3.gain", Float(3.0)),
+            ],
+            false,
+        ),
+        (
             "hat 8 kHz -6",
             vec![
                 ch("input.3/eq/band.4.freq", Float(8000.0)),

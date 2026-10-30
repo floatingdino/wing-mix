@@ -638,6 +638,22 @@ impl<'a> MixModel<'a> {
                 dd.dyn_attack_db = st.attack_ratio_db - old_st.attack_ratio_db;
                 dd.dyn_all_db = st.rms_all_db - old_st.rms_all_db;
                 dd.dyn_active = st.active - old_st.active;
+                // M036: with an RMS-detector compressor the proxy over-reads the peaks that pass the attack (its
+                // events start sharper than sung phrases; dyn_sim vocal rows +0.4..+1.6 dB) and the static curve
+                // under-reads them; their mean halves the error there (peak detectors keep the proxy: kick rows)
+                let rms_comp =
+                    |s: &StripSettings| s.dynamics.is_some_and(|d| d.on && !d.peak_detector);
+                if rms_comp(old) || rms_comp(new) {
+                    let stt = &o.stats;
+                    let pk = stt.peak_db - 3.0;
+                    let a = |s: &StripSettings, sh: f64, gsh: f64| {
+                        20.0 * (dyn_amp_peak(t, s, pk + sh) * gate_amp(t, s, pk + gsh))
+                            .max(1e-9)
+                            .log10()
+                    };
+                    let stat_pk = a(new, shift, gate_shift) - a(old, 0.0, 0.0);
+                    dd.dyn_peak_db = 0.5 * (dd.dyn_peak_db + stat_pk);
+                }
             } else if has_dyn(old) || has_dyn(new) {
                 let amp = |s: &StripSettings, l: f64, sh: f64, gsh: f64| {
                     dyn_amp(t, s, l + sh) * gate_amp(t, s, l + gsh)
@@ -957,7 +973,13 @@ impl<'a> MixModel<'a> {
             }
             if sh.delta.dyn_range_db != 0.0 {
                 let w = sh.band_new.iter().sum::<f64>() / new_b.iter().sum::<f64>().max(1e-300);
-                d_lra += w.min(1.0) * sh.delta.dyn_range_db;
+                // M036: a strip's range change reaches the mix range in proportion to how much of that range the
+                // mix shows (a 3 LU vocal under a 0.9 LU mix moves it by ~0.3 of its own change, not all of it)
+                let scale = match (f.loudness.lra_lu, sf.loudness.lra_lu) {
+                    (Some(m), Some(s)) if s > 0.5 => (m as f64 / s as f64).clamp(0.0, 1.0),
+                    _ => 1.0,
+                };
+                d_lra += w.min(1.0) * scale * sh.delta.dyn_range_db;
             }
         }
         let d_tp = if pk_old > 0.0 {
