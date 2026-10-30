@@ -52,6 +52,10 @@ pub enum Request {
     SetMode {
         mode: Mode,
     },
+    /// Live-context target setting (M037): `live` (default), `broadcast_video`, `match_record`.
+    SetLiveContext {
+        context: LiveContext,
+    },
     /// Start (or restart after `stop`) the closed loop.
     Start(StartOptions),
     /// End the loop: the controller stops ticking and the actuator freezes; undo/PANIC still work.
@@ -115,6 +119,18 @@ impl Request {
             .and_then(|v| v.get("cmd").and_then(Value::as_str).map(str::to_owned))
             .unwrap_or_default()
     }
+}
+
+/// How strictly the target follows the reference's mastering-chain dimensions (M037).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveContext {
+    /// A console mix played through a PA: relax PLR/width/sub/air, keep balance strict (default).
+    #[default]
+    Live,
+    BroadcastVideo,
+    /// Chase the reference as it is.
+    MatchRecord,
 }
 
 /// `connect_console`.

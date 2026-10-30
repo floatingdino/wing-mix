@@ -57,8 +57,9 @@ nothing else happens.
 | `load_reference` | `path` (audio file, or a TargetProfile `.json`), `section` (index), `stems` (bool), `wait` (bool) | `{"loading":true}` at once, or with `wait` the loaded target `{"kind":"reference","label","info"}` |
 | `load_description` | `text`, `base` (`current` or a profile `.json`), `genre`, `llm` (bool), `model`, `wait` | as above, `info` lists the applied terms, conflicts, unrecognised phrases |
 | `list_roles` | | `{"key","strips":[{"strip","name","detected","effective","confidence","evidence","confirmed","needs_confirmation"}]}` |
-| `confirm_roles` | `roles` (`{"bus.5":"monitor"}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none), `scene` | `{"key","confirmed","applies":"now"\|"next_session"}` |
+| `confirm_roles` | `roles` (`{"bus.5":"monitor"}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none), `scene` | `{"key","confirmed","applies":"now"}`. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
 | `set_mode` | `mode`: `observe` / `suggest` / `autopilot` | |
+| `set_live_context` | `context`: `live` (default) / `broadcast_video` / `match_record` | `{"live_context","applied":false,"note"}`: the live-context target setting (M037). **Seam:** stored, shown in `status`/`snapshot` (`live_context`) and announced as a `live_context_changed` daemon event; the target transform itself lands with M037 (`applied` turns `true` then). |
 | `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `target_objective`, `inspect`, `feedback_guard` | `{"running":true,"mode"}`; needs a console, an input and a target |
 | `stop` | | ends the loop: controller stops, actuator freezes (session kept: `undo`/`PANIC` still work; `start` resumes) |
 | `STOP` (`emergency_stop`) | | freezes every move now; the loop pauses until `resume` |
@@ -127,12 +128,12 @@ of main-tap audio analysed), `unix`, and the event's own fields.
   skipped}`, `rta_restored`, `safety {trip, reverted}`, `link_lost`, `link_restored {drifted}`, `stopped`, `ready`.
 - `daemon`: `started`, `console_connected`, `console_disconnected`, `input_selected`, `load_started`,
   `load_progress {what, stage, progress}`, `target_loaded`, `load_failed`, `roles_confirmed`, `session_started`,
-  `session_stopped`, `session_ended`, `emergency_stop`, `panic`, `stopped`, `heartbeat` (subscribers only).
+  `session_stopped`, `session_ended`, `emergency_stop`, `signal {signal}`, `live_context_changed {live_context, applied}`, `panic`, `stopped`, `heartbeat` (subscribers only).
 
 ## Snapshot
 
 ```text
-at_s, mode, console {kind,name}, target {kind,label,info}
+at_s, mode, live_context, console {kind,name}, target {kind,label,info}
 loudness   {momentary_lufs, short_term_lufs, true_peak_dbtp, crest_db, tilt_db_per_oct, width_db, correlation}
 spectrum   {erb_hz[40], current_erb_rel_db, target_erb_rel_db (p50), target_erb_lo_db (p10), target_erb_hi_db (p90),
             tolerance_db, third_oct_hz[31], current_third_oct_db, target_third_oct_rel_db}
@@ -144,7 +145,8 @@ plan       moves of the current plan not yet run (MoveSummary: label, strip, pha
 pending    moves waiting for a confirmation key
 moves      every batch run: {seq, at_s, summary, outcome kept|reverted|inconclusive|failed, before, after, note}
 log        the last 60 actuator events (no progress)
-safety     {status {feedback_latched, feedback_suspect, ceiling_hold, stalled}, trips [{at_s, trip, reverted}]}
+safety     {status {feedback_latched, feedback_suspect, ceiling_hold, stalled}, trips [{at_s, trip, reverted}],
+            rta_feed {frames, source}|null}
 touched    [{param, baseline, current}]  every param the session changed (the PANIC target)
 ```
 
@@ -154,8 +156,8 @@ The current spectrum is the short-term (3 s) main analysis, refreshed every 0.5 
 
 `status.json` and `status`: `running`, `pid`, `version`, `updated_unix`, `uptime_s`, `state_dir`,
 `console {kind,name,key,scene}`, `input {kind,description,sample_rate,taps,dropped_frames,clock_s,stream_errors}`,
-`target {kind,label}`, `loading {what,stage,progress}`, `mode`, `session {running,stopped,holding,objective,distance,
-batches,pending,touched}`, `safety {status,trips}`, `subscribers`, `last_error`. Absent parts are `null`.
+`target {kind,label}`, `loading {what,stage,progress}`, `mode`, `live_context`, `session {running,stopped,holding,objective,distance,
+batches,pending,touched}`, `safety {status,trips,rta_feed}`, `subscribers`, `last_error`. Absent parts are `null`.
 
 ## Threads
 
@@ -178,9 +180,26 @@ source (cpal callback | FileSource player | sim renderer) --SPSC ring--> analysi
 
 `list_roles` runs the remit's role detection (`detect_topology` with the policy vocabulary) on the console and
 shows the confirmations stored for `<console key>|<scene>` (sim: `sim`; WING: `wing:<model>:<name>`; scene from
-`connect_console` or `confirm_roles`). Confirmed roles are given to the remit gate and the controller when a
-session starts; `confirm_roles` applies at once when no session has written anything yet, otherwise from the next
-session (`disconnect_console` + connect, or a new daemon).
+`connect_console` or `confirm_roles`). Confirmed roles are given to the remit gate and the controller when a session starts. `confirm_roles` also applies
+**mid-session** (M053): the actuator's gate is a `LiveRolesGate` that rebuilds its remit context (keeping the session
+confirmations) from the new roles before its next decision, so writes to a bus just confirmed as `monitor` are refused
+at once, and the controller is rebuilt between batches so new plans use them (the actuator session, journal and
+baseline are kept; the controller's move history restarts, as after a target change).
+
+## Console RTA feed
+
+With a WING connected and the feedback guard on (default for a WING), a session claims the console RTA
+(`WingSurface::claim_rta`, main bus post) and feeds every new meter frame's 120 bands to
+`SafetyMonitor::feed_spectrum` under the label `rta:<strip>` (`rta_feed {frames, source}` in `status`/`snapshot`).
+The previous `rtasrc`/`rtatap` come back exactly when the session ends (`stop` keeps it, `disconnect_console`, `quit`
+or a signal release it). An inspection that re-points the RTA is restored to ours afterwards; frames are labelled by
+the strip then listened to, so detector histories never mix. The sim has no RTA: no feed.
+
+## Signals
+
+`SIGINT`/`SIGTERM` shut the daemon down like `quit`: a `signal` event, the actuator is STOPped (restoring any
+inspection solo/RTA), the RTA claim released, the final `status.json` (`running:false`) written and `control.sock`
+removed; exit code 0. A second signal exits immediately (130).
 
 ## CLI
 
@@ -196,6 +215,10 @@ wing-mix-cli run --console 192.168.1.20 --input WING --channels 1,2 --solo-chann
 `ctl '{"cmd":"set_mode","mode":"observe"}'`); `ctl subscribe` prints its event stream.
 
 ## Tests
+
+`tests/daemon_signals.rs` (SIGTERM during autopilot, SIGINT idle, mid-session role confirmation, live-context
+setting), `tests/rta_feed.rs` (headless wing-sim via mix-testsim: RTA claimed, frames fed, restored; skips without
+the wing-sim binary), `gate.rs` unit test (a bus confirmed as monitor mid-session is refused on the next write).
 
 `cargo test -p wing-mixd`: protocol parsing, tap layouts, the socket server (round trip, stale socket, AddrInUse,
 stream), event hub, status/roles persistence, the analysis thread, and `tests/daemon_sim.rs`: the `wing-mixd`

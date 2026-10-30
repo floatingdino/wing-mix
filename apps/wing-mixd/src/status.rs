@@ -67,9 +67,13 @@ pub struct DaemonStatus {
     /// Background reference/description load: `{"what":..,"stage":..,"progress":0..1}` or null.
     pub loading: Value,
     pub mode: String,
+    /// Live-context target setting (`live`, `broadcast_video`, `match_record`).
+    #[serde(default)]
+    pub live_context: crate::protocol::LiveContext,
     /// `{"running":..,"stopped":..,"holding":..,"objective":..,"distance":..,"batches":..,"pending":..}` or null.
     pub session: Value,
-    /// Safety monitor holds (`feedback_latched`, `feedback_suspect`, `ceiling_hold`, `stalled`) and trip count.
+    /// Safety monitor holds (`feedback_latched`, `feedback_suspect`, `ceiling_hold`, `stalled`), trip count and
+    /// `rta_feed {frames, source}` (console RTA -> feedback detector; null without a WING).
     pub safety: Value,
     pub subscribers: usize,
     pub last_error: Option<String>,
