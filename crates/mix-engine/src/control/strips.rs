@@ -670,6 +670,7 @@ mod tests {
                     StripKind::Input,
                     "VOX",
                 )],
+                context: Vec::new(),
             },
             Vec::new(),
         )
