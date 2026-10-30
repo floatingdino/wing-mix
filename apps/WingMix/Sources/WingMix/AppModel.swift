@@ -71,6 +71,8 @@ final class AppModel {
     var wingIP = ""
     var simScene = "degraded"
     var simMultitrack = ""
+    /// Strip names given to the embedded sim (demo/screenshots); empty = the sim's own.
+    var simNames: [String] = []
     var inputSource: InputSource = .sim
     var selectedDevice = ""
     var taps: [TapSpec] = [.defaultMain]
@@ -345,6 +347,7 @@ final class AppModel {
         if selectedConsole == "sim" {
             var sim: [String: JSONValue] = ["scene": .string(simScene), "speed": 1]
             if !simMultitrack.isEmpty { sim["multitrack"] = .string(simMultitrack) }
+            if !simNames.isEmpty { sim["names"] = .array(simNames.map { .string($0) }) }
             args = ["console": "sim", "sim": .object(sim)]
         } else {
             args = ["console": .string(selectedConsole == "ip" ? wingIP : selectedConsole)]
@@ -396,6 +399,8 @@ final class AppModel {
     /// start a suggest session, so each screen can be captured against real data.
     func runDemo(dir: String) async {
         simMultitrack = dir + "/multitrack.wav"
+        simNames = ["KICK", "SNARE", "HAT", "TOM", "OH L", "OH R", "BASS", "KEYS L", "KEYS R", "GTR", "PAD", "LEAD",
+                    "VOX", "BV 1", "BV 2", "SHAKER"]
         selectedConsole = "sim"
         await connectConsole()
         inputSource = .sim
