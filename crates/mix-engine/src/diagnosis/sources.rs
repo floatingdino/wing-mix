@@ -6,15 +6,25 @@
 //! (power sum) and compared with the stem target (`level_rel_mix_db`, `erb_rel_db`); other typed strips are compared
 //! with the knowledge base's generic `level_rel_mix_lu` range (low confidence).
 //!
-//! Masking (analysis.md §3.3, eq.toml `[masking]`): mix-analysis' ERB masking on the active strips; a pair
-//! (masked i, masker j) in a named band is a problem when the masker-to-signal ratio over i's important ERB bands
-//! exceeds the target by more than `masking.threshold_db`. The target is the reference stems' MSR for the same stem
-//! pair when stems exist, else 0 dB and only when i outranks j in `priority_order` (the lower-priority source is
-//! expected to yield).
+//! Calibration (M034: a matched mix must be quiet). Stem targets are distributions over the reference's short-term
+//! windows while the live tap is one long/session aggregate, so stem level and tonal use [`Evidence::interval`]
+//! (only the part outside `[min(p10, p50 − tol), max(p90, p50 + tol)]` is excess); a power-summed multi-strip stem
+//! gets `DiagnosisConfig::stem_sum_tolerance_lu` (the reference stem is a coherent sum). The sources.toml
+//! `band_dev_db` of a strip is its stem's signed distance outside `[p10, p90]`, and only for strips carrying at
+//! least 25 % of the stem in that band.
+//!
+//! Masking (analysis.md §3.3, eq.toml `[masking]`): mix-analysis' ERB masking; a (masked, masker) pair in a named
+//! band is a problem when the masker-to-signal ratio over the masked side's important ERB bands is audible
+//! (`> MaskingParams::msr_threshold_db`) and exceeds its target by more than `masking.threshold_db`. Strips in two
+//! stems with targets are judged stem against stem (live stems vs the reference stem pair, upper envelope of the
+//! median and the p10/p90 curves), reported on each stem's dominant strip; strips in one stem only where that stem
+//! is clearly off target in the band; strips without a stem target against 0 dB when the masked source outranks the
+//! masker in `priority_order`.
 //!
 //! Sibilance ([L], no 20 ms block statistics in `Features`): `sibilance_db ≈ P(5–10 kHz) − P(1–4 kHz) + crest(air)`
-//! from the long-term ERB spectrum and the air band's crest factor; compared with the same quantity of the vocal
-//! stem target when present (deviation), else with the source's sources.toml sibilance threshold (low confidence).
+//! from the long-term ERB spectrum and the air band's crest factor; with a vocal stem target the summed vocal strips
+//! are compared with the stem's estimate (tolerance widened by the stem's window spread), else each vocal strip with
+//! its source's sources.toml sibilance threshold (low confidence).
 
 use std::collections::BTreeMap;
 
@@ -34,9 +44,6 @@ use super::{
 
 /// Sources that stay centred (masking strategy `pan_apart` feature_basis).
 const KEEP_CENTRED: &[&str] = &["lead_vocal", "kick", "snare_top", "bass_di", "bass_amp"];
-
-/// Share of a target band's p10..p90 spread added above p90 for live energy means (stem tonal).
-const ENERGY_MEAN_ALLOWANCE: f32 = 0.25;
 
 /// A strip inherits its stem's band deviation (sources.toml `band_dev_db`) only when it carries at least this
 /// share of the stem's power in that band.
@@ -288,14 +295,10 @@ fn stem_tonal(
             }
             // Separated stems bleed: widen the knowledge-base tolerance by 25 %.
             let tol = b.tol * 1.25;
-            let (p10, p90) = (mean_at(&t10, &b.erb), mean_at(&t90, &b.erb));
-            // The live value is an energy mean over the window: with a wide window distribution (a band that
-            // comes and goes) it sits above the dB median, up to past p90 (Jensen), so the upper edge gets a
-            // share of the spread.
             let stat = Stat {
-                p10,
+                p10: mean_at(&t10, &b.erb),
                 p50: g,
-                p90: p90 + ENERGY_MEAN_ALLOWANCE * (p90 - p10).max(0.0),
+                p90: mean_at(&t90, &b.erb),
             };
             let e = Evidence::interval(format!("band_dev_db.{}", b.name), "db", m, stat, tol);
             // sources.toml thresholds act as the tolerance of `band_dev_db`: report the distance outside the
@@ -371,7 +374,7 @@ fn masking_pairs(
     let m = masking(&powers, cx.cfg.masking);
     let audible = cx.cfg.masking.msr_threshold_db;
     let thr = cx.kb.eq.masking.threshold_db as f32;
-    for i in 0..srcs.len() {
+    for (i, bag) in bags.iter_mut().enumerate() {
         for j in 0..srcs.len() {
             if i == j {
                 continue;
@@ -387,7 +390,7 @@ fn masking_pairs(
                     continue;
                 }
                 let msr = mean_at(&m.pair_msr_db[i][j], &imp);
-                let slot = bags[i]
+                let slot = bag
                     .entry(format!("masking_db.{}", band.name))
                     .or_insert(f64::MIN);
                 *slot = slot.max(msr as f64);

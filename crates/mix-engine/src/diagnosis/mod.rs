@@ -14,11 +14,14 @@
 //!   check's target instead.
 //! - [`stem_masking`]: pairwise reference stem masking for `StemTargets.masking` (M023 leaves it empty).
 //!
-//! Tolerances: `max(knowledge-base tolerance, target half-spread (p90 − p10)/2)`; the knowledge base supplies
+//! Tolerances: `max(knowledge-base tolerance, target half-spread (p90 − p10)/2)` for mix checks; stem checks use the
+//! target interval ([`Evidence::interval`], see [`sources`]); the knowledge base supplies
 //! `targets.reference_matching` and rule thresholds (dyn_too_dynamic, mix_bus_too_dynamic, dyn_lost_punch, ...).
 //! Severity = `excess / tolerance` × MatchWeights dimension weight × kind weight; problems are ranked by
 //! severity × confidence (ties by id). [`Diagnosis::distance`] is a continuous RMS of `deviation / tolerance` over
-//! every mix-level check (inside tolerance too) for the controller's keep/revert decision (M033).
+//! every mix-level check (inside tolerance too) for the controller's keep/revert decision (M033). Overlapping
+//! problems are merged (masking of one pair across bands; sources.toml problems triggered by a stem band deviation
+//! fold into that stem's tonal problem), see `merge_overlaps`.
 //!
 //! Seams for later tasks: the planner (M032) reads `Problem::{scope, evidence, suggested_blocks, rules,
 //! contributors}`; the controller (M033) feeds [`DiagnosisInput::intent_progress`] (how much of each open-loop
