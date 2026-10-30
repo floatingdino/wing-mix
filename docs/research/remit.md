@@ -282,11 +282,19 @@ The evidence strings are shown in the GUI.
 | `active_senders` | input/aux sends into the bus that are on and above `active_send_floor_db`; in subgroup mode, `on` alone counts |
 | `pre_fraction`, `group_fraction` | share of active sends that are pre-fader, or in subgroup mode |
 | `feeds_main` | `direct` (main send on), `indirect` (through bus->bus sends to a bus that reaches main), `none` |
+| `main_route` | for `indirect`: the shortest route's hops (`bus.6 "DRUMS FOH" -> bus.7 "BAND BUS" -> main.1`), shown as evidence (M065) |
 | `outputs` | kinds of outputs the bus is patched to: `physical` (analog, AES50/stagebox, card, AES/EBU), `computer` (USB/DAW), `recorder` |
 | `talkback_dest` | a talkback path is assigned to the bus |
 | `fx_insert` | `time` (reverb/delay/modulation/pitch model inserted), `other`, `none` |
 | `feeds_matrix` | an active send to a matrix |
 | `re_input_to_monitor` | the bus output is re-input on a strip that sends to a monitor/comms bus (second pass) |
+
+Evidence comes from the whole routing graph (M065): `Topology::all()` = the surface's controllable strips plus its
+**routing context** (`Topology::context`: strips it does not expose for control but whose sends, inserts, FX slots,
+outputs and re-inputs exist, e.g. the embedded sim's aux inputs, matrices, FX slots and channels beyond the loaded
+tracks). Both the WING adapter and the embedded sim build it with the same `mix_wing_map::topology::build`; before
+M065 the embedded sim had a reduced topology without bus->bus sends or inserts, so FX buses and groups reaching main
+only through other buses were locked as `unknown`. Routes need active sends (on, above the floor); loops are harmless.
 
 ### 6.2 Bus scorer
 
