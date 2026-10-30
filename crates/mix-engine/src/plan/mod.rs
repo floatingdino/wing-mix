@@ -129,7 +129,7 @@ impl PlanConfig {
     pub fn from_kb(kb: &KnowledgeBase) -> Self {
         PlanConfig {
             max_moves: 24,
-            max_problems: 12,
+            max_problems: 16,
             max_heuristic: 4,
             cost_weight: 0.01,
             min_score: 0.002,
@@ -139,6 +139,7 @@ impl PlanConfig {
             candidates: CandidateConfig::from_kb(kb),
             diagnosis: DiagnosisConfig {
                 gate_opportunities: true,
+                comp_opportunities: true,
                 ..DiagnosisConfig::default()
             },
             safety: Some(SafetyConfig::default()),
@@ -322,12 +323,26 @@ fn is_gate_problem(p: &Problem) -> bool {
         && p.suggested_blocks.first().map(String::as_str) == Some("Gate")
 }
 
+/// A compression opportunity (diagnosis `comp_opportunities`, M036): no measurement, kb expectation `gr_db`.
+pub fn is_comp_opportunity(p: &Problem) -> bool {
+    p.kind == ProblemKind::TooDynamic
+        && p.evidence.feature == "gr_db"
+        && p.evidence.measured.is_none()
+}
+
 /// Dynamics problems a console block answers (M035), counted in the objective: sibilance (the diagnosis
 /// re-measures it on predicted/measured features) and gate problems while the strip's gate/expander is off (the
 /// gate's bleed reduction is not a target-referenced feature; with `state` unknown the problem counts).
 fn dynamics_opportunity(p: &Problem, state: Option<&ConsoleState>) -> bool {
     match p.kind {
         ProblemKind::Sibilance => true,
+        // M036 compression opportunities: while the strip's compressor is off
+        ProblemKind::TooDynamic if is_comp_opportunity(p) => {
+            let Subject::Strip { strip, .. } = &p.scope.subject else {
+                return true;
+            };
+            state.is_none_or(|st| !st.settings(strip).dynamics.is_some_and(|d| d.on))
+        }
         _ if is_gate_problem(p) => {
             let Subject::Strip { strip, .. } = &p.scope.subject else {
                 return true;
@@ -338,6 +353,11 @@ fn dynamics_opportunity(p: &Problem, state: Option<&ConsoleState>) -> bool {
     }
 }
 
+/// Weight of masking problems relative to `target_weight` (M036), each counted up to a score of 1: masking is a
+/// knowledge-base judgement between sources (calibrated quiet on a matched mix, M034), so it steers between
+/// otherwise equal moves without outweighing the target deviations.
+const MASKING_SHARE: f64 = 0.2;
+
 fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
     let load: f32 = d
         .problems
@@ -345,8 +365,14 @@ fn score_of(d: &Diagnosis, w: f64, state: Option<&ConsoleState>) -> PlanScore {
         .filter(|p| target_referenced(p) || dynamics_opportunity(p, state))
         .map(|p| p.score())
         .sum();
+    let masking: f64 = d
+        .problems
+        .iter()
+        .filter(|p| p.kind == ProblemKind::Masking)
+        .map(|p| (p.score() as f64).min(1.0))
+        .sum();
     PlanScore {
-        objective: d.distance as f64 + w * load as f64,
+        objective: d.distance as f64 + w * load as f64 + w * MASKING_SHARE * masking,
         distance: d.distance,
         problems: d.problems.len(),
         target_load: load,
@@ -682,6 +708,24 @@ pub fn plan_with(
             let s2 = score_of(&d2, w, Some(&st2));
             let benefit = cur.objective - s2.objective;
             let net = benefit - cfg.cost_weight * k.cand.cost;
+            if std::env::var("M036_DEBUG").is_ok_and(|v| k.cand.problem.contains(&v)) {
+                eprintln!(
+                    "DBG {} benefit {benefit:.4} cost {:.3} net {net:.4} dist {:.3}->{:.3}",
+                    k.cand.label, k.cand.cost, cur.distance, s2.distance
+                );
+                for q in &d2.problems {
+                    let old = diag.problems.iter().find(|x| x.id == q.id);
+                    let (a, b) = (old.map_or(0.0, |x| x.score()), q.score());
+                    if (a - b).abs() > 0.02 {
+                        eprintln!(
+                            "   {} {a:.3} -> {b:.3} dev {:?} -> {}",
+                            q.id,
+                            old.map(|x| x.evidence.deviation),
+                            q.evidence.deviation
+                        );
+                    }
+                }
+            }
 
             if net <= cfg.min_score {
                 if benefit <= 0.0 {
@@ -749,7 +793,7 @@ pub fn plan_with(
             let p2 = model.predict(&st);
             let d2 = run(&p2)?;
             let s2 = score_of(&d2, w, Some(&st));
-            annotate(m, &pred, &diag, &cur, &p2, &d2, &s2);
+            annotate(m, &st, &pred, &diag, &cur, &p2, &d2, &s2);
             pred = p2;
             diag = d2;
             cur = s2;
@@ -1000,8 +1044,10 @@ fn round4(x: f64) -> f64 {
 }
 
 /// Fill a move's predicted effect and explanation from the predictions before (`p1`, `d1`, `s1`) and after it.
+#[allow(clippy::too_many_arguments)]
 fn annotate(
     m: &mut PlannedMove,
+    st: &ConsoleState,
     p1: &Prediction,
     d1: &Diagnosis,
     s1: &PlanScore,
@@ -1019,6 +1065,8 @@ fn annotate(
             .problems
             .iter()
             .find(|q| q.id == p.id)
+            // an opportunity the console state now answers (gate/compressor switched on) is gone
+            .filter(|q| !dynamics_opportunity(q, None) || dynamics_opportunity(q, Some(st)))
             .map(|q| q.evidence.deviation),
         tolerance: p.evidence.tolerance,
     });

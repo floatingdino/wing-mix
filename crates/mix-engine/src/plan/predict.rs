@@ -188,6 +188,8 @@ pub struct StripDelta {
     pub deess_crest_db: f64,
     /// Main contribution per unit of active-frame power after the change (see `StripObs::main_k`).
     pub main_k: f64,
+    /// L/R power balance change of the strip's tap from a pan change (dB, positive = towards left; M036).
+    pub balance_db: f64,
 }
 
 impl StripDelta {
@@ -204,6 +206,7 @@ impl StripDelta {
             dyn_active: 0.0,
             deess_crest_db: 0.0,
             main_k: 1.0,
+            balance_db: 0.0,
         }
     }
 }
@@ -672,8 +675,12 @@ impl<'a> MixModel<'a> {
         let dyn_mean = dd.dyn_mean_db;
         let k_new = (o.main_k * p(dd.dyn_all_db - dd.dyn_mean_db)).clamp(0.0, 1.0);
 
-        let (m_old, s_old, _, _) = self.pan_factors(o.kind, old);
-        let (m_new, s_new, _, _) = self.pan_factors(o.kind, new);
+        let (m_old, s_old, gl0, gr0) = self.pan_factors(o.kind, old);
+        let (m_new, s_new, gl1, gr1) = self.pan_factors(o.kind, new);
+        if (gl0 - gl1).abs() > 1e-12 || (gr0 - gr1).abs() > 1e-12 {
+            let bal = |l: f64, r: f64| 20.0 * (l.max(1e-6) / r.max(1e-6)).log10();
+            dd.balance_db = bal(gl1, gr1) - bal(gl0, gr0);
+        }
         let mut mid = [0.0; N_ERB];
         let mut side = [0.0; N_ERB];
         let mut mid_db = [0.0; N_ERB];
@@ -877,6 +884,7 @@ impl<'a> MixModel<'a> {
         f.spectrum.tilt_db_per_oct += self.slope(&dm) as f32;
         if let Some(st) = f.stereo.as_mut() {
             stereo_update(st, &o.mid, &o.side, mid, side, &self.broad, &self.low);
+            st.balance_db += d.balance_db as f32;
         }
         t
     }
@@ -1047,6 +1055,13 @@ impl<'a> MixModel<'a> {
     }
 
     /// The observation of `strip`, if tapped.
+    /// Predicted K-weighted level change (LU) of `strip` at `settings`, relative to the measured settings
+    /// (dynamics through the proxy where fitted). `None` for a strip without a tap.
+    pub fn strip_level_db(&self, strip: &StripId, settings: &StripSettings) -> Option<f64> {
+        let o = self.obs(strip)?;
+        Some(self.cached_delta(o, settings.clone()).0.level_db)
+    }
+
     pub fn obs(&self, strip: &StripId) -> Option<&StripObs> {
         self.strips.iter().find(|o| &o.tap.strip == strip)
     }

@@ -30,6 +30,9 @@ use super::state::{BandKind, BandSlot, ConsoleState, DynSlot, StripSettings, DEE
 use crate::diagnosis::stem_masking::stem_of;
 use crate::diagnosis::{Problem, ProblemKind, Subject};
 
+/// Smallest share of a tonal problem's band a strip must carry for its fader to be offered instead of EQ.
+const MIN_FADER_SHARE: f64 = 0.3;
+
 /// Workflow phases (workflow.toml `[[phase]]` ids, in order).
 pub const PHASES: [&str; 9] = [
     "gain_staging",
@@ -108,6 +111,18 @@ fn centre_band(lo: f32, hi: f32) -> Vec<usize> {
     (0..N_ERB).filter(|&b| c[b] >= lo && c[b] < hi).collect()
 }
 
+/// Insert a makeup change before the `on` switch (the makeup param was already at the wanted value's
+/// neighbour and `change` skipped it).
+fn push_makeup(g: &Gen<'_>, s: &StripId, changes: &mut Vec<ParamChange>, makeup: f64) {
+    if let Some(c) = g.change(pid(s, "dyn/makeup"), fv(makeup)) {
+        let at = changes
+            .iter()
+            .position(|c| c.param.leaf() == "on")
+            .unwrap_or(changes.len());
+        changes.insert(at, c);
+    }
+}
+
 /// Q in the middle of an eq.toml q class.
 fn q_of(kb: &KnowledgeBase, class: &str) -> f64 {
     kb.eq.q_class.get(class).map_or(1.0, |q| q.q.geo_mid())
@@ -145,6 +160,15 @@ impl Gen<'_> {
             from: cur.cloned(),
             to: v,
         })
+    }
+
+    /// Makeup (dB) that keeps strip `s` at its current predicted loudness after `changes`.
+    fn makeup_for(&self, s: &StripId, changes: &[ParamChange]) -> Option<f64> {
+        let cur = self.model.strip_level_db(s, &self.settings(s))?;
+        let mut st = self.state.clone();
+        st.apply(changes);
+        let new = self.model.strip_level_db(s, &st.settings(s))?;
+        Some(cur - new)
     }
 
     fn kind(&self, s: &StripId) -> StripKind {
@@ -476,11 +500,6 @@ impl Gen<'_> {
                     auto: false,
                 };
                 let gr = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&probe, l) / 20.0));
-                let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
-                    -gr
-                } else {
-                    0.0
-                };
                 let mut changes = Vec::new();
                 let mut push = |id: &str, v: Value| {
                     if let Some(c) = self.change(pid(s, id), v) {
@@ -497,10 +516,26 @@ impl Gen<'_> {
                 if let Some(det) = &pr.detector {
                     push("dyn/detector", Value::Enum(det.to_uppercase()));
                 }
-                push("dyn/makeup", fv(makeup));
+                push("dyn/makeup", fv(0.0));
                 push("dyn/on", Value::Bool(true));
                 if !changes.iter().any(|c| c.param.leaf() == "on") {
                     continue;
+                }
+                // loudness-match makeup (dynamics.toml rule makeup_after_change) from the effect model's
+                // prediction of the strip (M036: the proxy's gain reduction; the static curve under-reads it),
+                // static curve as the fallback
+                let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
+                    self.makeup_for(s, &changes).unwrap_or(-gr).clamp(0.0, 12.0)
+                } else {
+                    0.0
+                };
+                if let Some(c) = changes.iter_mut().find(|c| c.param.leaf() == "makeup") {
+                    c.to = self
+                        .state
+                        .coerce(&c.param, fv(makeup))
+                        .unwrap_or(fv(makeup));
+                } else if makeup.abs() > 0.05 {
+                    push_makeup(self, s, &mut changes, makeup);
                 }
                 let n = changes.len();
                 out.push(Candidate {
@@ -1053,14 +1088,17 @@ impl Gen<'_> {
             if dev > 0.0 && band.hi_hz <= 300.0 {
                 out.extend(self.lowcut(s, p, &why));
             }
-            // balance alternative: the strip's fader (changes more than the band)
-            out.extend(self.fader(
-                s,
-                need.clamp(-3.0, 3.0),
-                p,
-                &format!("{why} (level instead of EQ)"),
-                1.5,
-            ));
+            // balance alternative: the strip's fader (changes more than the band), only for a strip that carries a
+            // real share of the band (M036: a 17 % contributor's fader moves the rest of its spectrum far more)
+            if *share >= MIN_FADER_SHARE {
+                out.extend(self.fader(
+                    s,
+                    need.clamp(-3.0, 3.0),
+                    p,
+                    &format!("{why} (level instead of EQ)"),
+                    1.5,
+                ));
+            }
         }
     }
 
@@ -1111,15 +1149,26 @@ impl Gen<'_> {
     }
 
     fn width(&self, p: &Problem, dev: f64, out: &mut Vec<Candidate>) {
-        let narrower = dev < 0.0;
-        let why = if narrower {
+        // a strip placement problem (diagnosis `pan_pct`, M036) always asks for the pair to be spread
+        let placement = p.evidence.feature == "pan_pct";
+        let narrower = dev < 0.0 || placement;
+        let why = if placement {
+            "stereo pair panned in: place it where sources.toml spreads the pair"
+        } else if narrower {
             "mix narrower than target: spread sources that sources.toml places wide"
         } else {
             "mix wider than target: pull wide sources in"
         };
         let mut seen = BTreeSet::new();
+        let only = match &p.scope.subject {
+            Subject::Strip { strip, .. } => Some(strip.clone()),
+            _ => None,
+        };
         for o in &self.model.strips {
             let s = &o.tap.strip;
+            if only.as_ref().is_some_and(|x| x != s) {
+                continue;
+            }
             let Some(cur) = o.settings.pan else { continue };
             let Some(src) = (self.source_of)(s).and_then(|id| self.kb.source(&id).cloned()) else {
                 continue;
