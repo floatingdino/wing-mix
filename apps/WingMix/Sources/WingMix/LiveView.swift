@@ -45,6 +45,7 @@ struct LiveView: View {
         HStack(spacing: 14) {
             Text("Live").font(.largeTitle.bold())
             Spacer()
+            Text(contextLine).font(.caption).foregroundStyle(.secondary)
             if let o = model.status?.session?.objective {
                 Text(String(format: "distance to target %.2f", o)).monospacedDigit().foregroundStyle(.secondary)
             }
@@ -62,6 +63,15 @@ struct LiveView: View {
         }
     }
 
+    var contextLine: String {
+        let c = model.liveContext.title
+        switch snap?.liveContextApplied ?? model.liveContextApplied {
+        case true: return "target context: \(c), applied"
+        case false: return "target context: \(c), applied once a target is loaded"
+        default: return "target context: \(c)"
+        }
+    }
+
     var startHelp: String {
         if !model.isConnectedToConsole { return "Connect a console first (Listen)" }
         if model.status?.input == nil { return "Select an input first (Listen)" }
@@ -74,7 +84,7 @@ struct LiveView: View {
         let holding = snap?.session?.holding
         let trips = snap?.safety?.trips ?? []
         if st?.feedbackLatched == true || st?.ceilingHold == true || st?.stalled == true || st?.feedbackSuspect == true
-            || holding != nil || !trips.isEmpty || model.stopped
+            || holding != nil || !trips.isEmpty || model.stopped || snap?.session != nil
         {
             Box {
                 VStack(alignment: .leading, spacing: 6) {
@@ -92,14 +102,26 @@ struct LiveView: View {
                             Button("Resume") { Task { await model.resume() } }
                         }
                     }
+                    Text(rtaLine).font(.callout).foregroundStyle(.secondary)
                     ForEach(Array(trips.enumerated()), id: \.offset) { _, t in
-                        Text(String(format: "trip at %.1f s: ", t.atS ?? 0) + (t.trip?.display ?? "?"))
+                        Text(String(format: "trip at %.1f s: ", t.atS ?? 0) + model.names.humanize(t.trip?.display ?? "?"))
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 }
                 .padding(4)
             }
         }
+    }
+
+    /// The console RTA feed the feedback guard listens to (`safety.rta_feed`).
+    var rtaLine: String {
+        let guardOn = snap?.session?.feedbackGuard == true
+        if let f = snap?.safety?.rtaFeed {
+            let src = f.source.map { model.names.humanize($0.replacingOccurrences(of: "rta:", with: "")) }
+            return "Feedback guard on. Console RTA feed: \(f.frames ?? 0) frames" + (src.map { ", listening to \($0)" } ?? "")
+        }
+        return guardOn ? "Feedback guard on, no console RTA feed (listening to the analysed input only)."
+            : "Feedback guard off."
     }
 
     func badge(_ s: String) -> some View {
@@ -115,8 +137,8 @@ struct LiveView: View {
                 ForEach(snap?.pending ?? []) { p in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(p.summary?.label ?? p.key).font(.body.bold())
-                            Text("needs: \(p.key)").font(.caption).foregroundStyle(.secondary)
+                            Text(model.names.humanize(p.summary?.label ?? p.key)).font(.body.bold())
+                            Text("needs: \(model.names.humanize(p.key))").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Confirm") { Task { await model.confirm(key: p.key) } }
@@ -135,10 +157,10 @@ struct LiveView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Bar(value: (p.severity ?? 0) / 2, tint: .orange).frame(width: 46)
-                            Text(p.explanation ?? p.id).font(.callout).lineLimit(2)
+                            Text(model.names.humanize(p.explanation ?? p.id)).font(.callout).lineLimit(2)
                         }
                         if let c = p.contributors, !c.isEmpty {
-                            Text("mostly " + c.prefix(3).map { "\($0.strip) \(Int(($0.share ?? 0) * 100))%" }.joined(separator: ", "))
+                            Text("mostly " + c.prefix(3).map { "\(model.names.label($0.strip)) \(Int(($0.share ?? 0) * 100))%" }.joined(separator: ", "))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -155,12 +177,12 @@ struct LiveView: View {
                 ForEach((snap?.plan ?? []).prefix(8)) { m in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
-                            Text(m.label).font(.callout.bold())
+                            Text(model.names.humanize(m.label)).font(.callout.bold())
                             Spacer()
                             if let g = m.predictedGain { Text(String(format: "-%.3f", g)).monospacedDigit().font(.caption).foregroundStyle(.green) }
                         }
-                        if let e = m.explanation { Text(e.split(separator: "[").first.map(String.init) ?? e).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-                        if let n = m.needsConfirmation, !n.isEmpty { Text("needs confirmation: \(n.joined(separator: ", "))").font(.caption).foregroundStyle(.orange) }
+                        if let e = m.explanation { Text(model.names.humanize(e.split(separator: "[").first.map(String.init) ?? e)).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                        if let n = m.needsConfirmation, !n.isEmpty { Text("needs confirmation: \(model.names.humanize(n.joined(separator: ", ")))").font(.caption).foregroundStyle(.orange) }
                     }
                 }
             }
@@ -177,26 +199,35 @@ struct LiveView: View {
                     Text("\(snap?.touched.count ?? 0) params changed").font(.caption).foregroundStyle(.secondary)
                     Button("Undo last") { Task { await model.undo() } }
                         .disabled(snap?.touched.isEmpty ?? true)
+                        .help("Ramp the most recent move back (the daemon undoes the newest move only)")
                 }
                 if snap?.moves.isEmpty ?? true { Text("No moves made yet.").foregroundStyle(.secondary) }
                 ForEach((snap?.moves ?? []).reversed().prefix(10)) { m in
                     HStack(alignment: .top) {
                         Image(systemName: icon(m.outcome)).foregroundStyle(color(m.outcome))
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(m.summary?.label ?? "batch \(m.seq)").font(.callout)
+                            Text(model.names.humanize(m.summary?.label ?? "batch \(m.seq)")).font(.callout)
                             if let b = m.before, let a = m.after {
                                 Text(String(format: "objective %.3f -> %.3f", b, a)).font(.caption).foregroundStyle(.secondary)
                             }
-                            if let n = m.note, !n.isEmpty { Text(n).font(.caption).foregroundStyle(.secondary) }
+                            if let n = m.note, !n.isEmpty { Text(model.names.humanize(n)).font(.caption).foregroundStyle(.secondary) }
                         }
                         Spacer()
                         Text(m.outcome ?? "").font(.caption).foregroundStyle(.secondary)
+                        if m.seq == lastKeptSeq, !(snap?.touched.isEmpty ?? true) {
+                            Button("Undo") { Task { await model.undo() } }
+                                .controlSize(.small)
+                                .help("Ramp this move back. Older moves become undoable once newer ones are undone.")
+                        }
                     }
                 }
             }
             .padding(6).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    /// The newest kept move: the one the daemon's `undo` (a stack) would ramp back.
+    var lastKeptSeq: Int? { snap?.moves.last(where: { $0.outcome == "kept" })?.seq }
 
     func icon(_ o: String?) -> String {
         switch o { case "kept": "checkmark.circle.fill"; case "reverted": "arrow.uturn.backward.circle.fill"

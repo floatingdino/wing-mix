@@ -368,6 +368,7 @@ fn err(e: impl std::fmt::Display) -> String {
 
 impl Daemon {
     fn new(cfg: Config, policy: Policy, shared: Arc<Shared>, rx: Receiver<Msg>) -> Self {
+        let live_context = crate::status::Settings::load(&cfg.state_dir).live_context;
         Daemon {
             roles: RoleStore::load(&cfg.state_dir),
             cfg,
@@ -379,7 +380,7 @@ impl Daemon {
             quit: false,
             last_error: None,
             mode: Mode::Observe,
-            live_context: LiveContext::default(),
+            live_context,
             console: None,
             input: None,
             target: None,
@@ -522,6 +523,7 @@ impl Daemon {
                 self.with_session(|s| Ok(json!({"job": s.actuator.submit(Job::Undo)})))
             }
             Request::Snapshot => Ok(self.snapshot()),
+            Request::Strips => self.strips(),
             Request::Params { ids } => self.params(&ids),
             Request::Subscribe => Err("subscribe is only available on a socket connection".into()),
             Request::Quit => {
@@ -950,6 +952,12 @@ impl Daemon {
         self.live_context = context;
         let applied = self.target.is_some();
         if changed {
+            let st = crate::status::Settings {
+                live_context: context,
+            };
+            if let Err(e) = st.save(&self.cfg.state_dir) {
+                self.last_error = Some(format!("settings: {e}"));
+            }
             if let Some(t) = &mut self.target {
                 let mut p = t.raw.clone();
                 mix_describe::apply_context(&mut p, context.mix_context());
@@ -1210,6 +1218,19 @@ impl Daemon {
 
     // ---------------------------------------------------------------------------------------------------------
     // Snapshot and status
+
+    /// Strip names for front ends (`snapshot` entries only carry ids). The model has no strip colours.
+    fn strips(&self) -> Result<Value, String> {
+        let c = self.console.as_ref().ok_or("no console")?;
+        let topo = c.surface.topology().map_err(err)?;
+        let strips: Vec<Value> = topo
+            .strips
+            .iter()
+            .filter(|s| !s.name.trim().is_empty())
+            .map(|s| json!({"id": s.id, "kind": s.kind, "name": s.name}))
+            .collect();
+        Ok(json!({"strips": strips}))
+    }
 
     fn snapshot(&self) -> Value {
         let now = self.now();

@@ -2,10 +2,10 @@
 id: M055
 title: WingMix GUI polish: strip names, event stream, per-move undo, live states
 stage: S5
-status: todo
-owner: -
+status: review
+owner: agent-M055
 depends: [M051]
-branch: -
+branch: task/M055
 model: sonnet
 ---
 
@@ -18,9 +18,23 @@ per-move undo in the move log; show safety.rta_feed and live_context_applied; sc
 (HUMAN-ACTIONS) — keep the renderer path.
 
 ## Acceptance criteria
-- [ ] Names shown in problems/plan/moves; Swift tests cover the mapping
-- [ ] Event-stream client with reconnect; polling only as fallback
-- [ ] New screenshots for autopilot/confirmation/safety states in docs/user/
+- [x] Names shown in problems/plan/moves; Swift tests cover the mapping
+- [x] Event-stream client with reconnect; polling only as fallback
+- [x] New screenshots for autopilot/confirmation/safety states in docs/user/
 
 ## Log
 - 2026-10-31 coordinator: created.
+- 2026-10-31 agent-M055: done, status -> review.
+  - Daemon (additive): `strips` command (id/kind/name; the strip model has no colours, so names only),
+    `settings.json` persisting live_context (restored at start); docs/control-protocol.md updated; tests in
+    apps/wing-mixd/tests/daemon_sim.rs + status.rs.
+  - App: StripNames (label `VOX 1 (ch 13)`, `humanize` for ids/param paths in free text) used for problems, plan,
+    pending, moves, trips; EventStream (subscribe, reconnect with back-off, 7 s silence = dead) drives coalesced
+    refreshes, polling only while disconnected (plus 1 s meter refresh on Live, meters are not events); safety box
+    shows rta_feed and feedback guard; live_context_applied shown on Live; demo/screenshot states; per-row Undo on
+    the newest kept move.
+  - Files: apps/WingMix/Sources/**, Tests, docs/user/{live-autopilot,live-confirmation,live-safety,live-stopped}.png,
+    docs/user/README.md, wing-mixd files above.
+  - Test: `make check`, `make app` (22 Swift tests incl. real daemon, stream, strips).
+  - Proposed follow-ups: true per-move undo needs actuator support (history is a stack; `undo` pops the newest);
+    strip colours need a surface-model field; real-window screenshots need Screen Recording permission.

@@ -18,6 +18,7 @@ temp dir). It is never the WingSimulator state dir.
 |---|---|
 | `status.json` | [`DaemonStatus`](#status) JSON, rewritten atomically (temp file + rename) once a second and once more with `"running": false` on exit. Readers check `pid` and `updated_unix` for liveness. |
 | `control.sock` | Unix stream socket (Windows: a loopback TCP address in the file). A stale socket is replaced at start; a live one makes the second daemon exit (`AddrInUse`). Removed on exit. Unix socket paths are limited to ~104 bytes, so keep `--state-dir` short. |
+| `settings.json` | Persisted daemon settings: `{"live_context":"live"}` (M055); loaded at start, rewritten when `set_live_context` changes it. |
 | `roles.json` | User-confirmed strip roles per console + scene (`{"consoles":{"sim\|default":{"bus.5":"monitor"}}}`). |
 | `events.jsonl` | Every event line (below), appended; rotated to `events.1.jsonl` past 8 MB. The audit trail of moves. |
 | `profiles/` | Reference profile cache (blake3 of the file + analysis versions). |
@@ -59,7 +60,7 @@ nothing else happens.
 | `list_roles` | | `{"key","strips":[{"strip","name","detected","effective","confidence","evidence","confirmed","needs_confirmation"}]}` |
 | `confirm_roles` | `roles` (`{"bus.5":"monitor"}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none), `scene` | `{"key","confirmed","applies":"now"}`. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
 | `set_mode` | `mode`: `observe` / `suggest` / `autopilot` | |
-| `set_live_context` | `context`: `live` (default) / `broadcast_video` / `match_record` | `{"live_context","applied","target"}` (M037/M054). `mix_describe::apply_context` is applied to the loaded target (reference or description) on every load and on every change, always from the raw profile (switching is an exact revert); a running controller is rebuilt and re-plans. `applied` is `true` once a target is loaded (`false` before: the setting is stored and applied on the next load); `target` is the context summary below (null without a target). Announced as a `live_context_changed {live_context, applied}` daemon event on change. Effects are recorded in the target's `applied_deltas` as `context:<name>` (so problems list it in `terms`). |
+| `set_live_context` | `context`: `live` (default; persisted in `settings.json` and restored at the next daemon start) / `broadcast_video` / `match_record` | `{"live_context","applied","target"}` (M037/M054). `mix_describe::apply_context` is applied to the loaded target (reference or description) on every load and on every change, always from the raw profile (switching is an exact revert); a running controller is rebuilt and re-plans. `applied` is `true` once a target is loaded (`false` before: the setting is stored and applied on the next load); `target` is the context summary below (null without a target). Announced as a `live_context_changed {live_context, applied}` daemon event on change. Effects are recorded in the target's `applied_deltas` as `context:<name>` (so problems list it in `terms`). |
 | `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `target_objective`, `inspect`, `feedback_guard` | `{"running":true,"mode"}`; needs a console, an input and a target |
 | `stop` | | ends the loop: controller stops, actuator freezes (session kept: `undo`/`PANIC` still work; `start` resumes) |
 | `STOP` (`emergency_stop`) | | freezes every move now; the loop pauses until `resume` |
@@ -69,6 +70,7 @@ nothing else happens.
 | `pending` | | `{"pending":[{"key","summary"}]}` |
 | `undo` | | `{"job":id}`: ramps the last completed move back |
 | `snapshot` | | live state, below |
+| `strips` | | `{"strips":[{"id":"input.13","kind":"input","name":"VOX 1"}]}` for every named strip of the connected console (M055; the strip model has no colours). Front ends map the ids in `snapshot` (problem contributors, plan/move `strip`, param ids) to names. Errors without a console. |
 | `params` | `ids` (`["input.13/fader"]`) | `{"input.13/fader":{"type":"float","value":-10.0}}` |
 | `subscribe` | | turns the connection into an event stream |
 | `quit` | | the daemon writes its final status and exits |
