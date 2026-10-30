@@ -2,10 +2,10 @@
 id: M050
 title: wing-mixd daemon + control protocol
 stage: S5
-status: todo
-owner: -
+status: in_progress
+owner: agent-M050
 depends: [M011, M021, M022, M033]
-branch: -
+branch: task/M050
 model: sonnet
 ---
 
@@ -22,3 +22,9 @@ Coordinator note (from M041): wire SafetyMonitor feeds (feed_mains/feed_features
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-31 agent-M050: claimed (.worktrees/M050). Design: apps/wing-mixd = lib + bin. Threads: source (cpal
+  callback / file player / embedded-sim renderer) -> mix-capture SPSC ring (all tap channels interleaved) ->
+  analysis thread (StreamingAnalysers per tap behind a Mutex, SafetyMonitor feeds, audio clock) -> engine thread
+  (requests, Controller::tick with a shared MixMeter, events) ; actuator on mix-actuator's runner (ActuatorHandle;
+  STOP/PANIC bypass the engine queue). control.sock newline JSON (one reply line per request; `subscribe` turns
+  the connection into an event stream), status.json atomic. Roles persisted in <state>/roles.json per console+scene.
