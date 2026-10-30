@@ -2,10 +2,10 @@
 id: M051
 title: WingMix.app SwiftUI GUI
 stage: S5
-status: todo
-owner: -
+status: in_progress
+owner: agent-M051
 depends: [M050]
-branch: -
+branch: task/M051
 model: sonnet
 ---
 
@@ -19,3 +19,4 @@ SwiftUI app (pattern: ../wing-simulator/apps/WingSimMenu): drop a reference file
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-31 agent-M051: claimed (.worktrees/M051). apps/WingMix SwiftPM (WingMixCore + WingMix), make app, example make_fixture. Core+tests+smoke done; next: screenshots in docs/user/.
