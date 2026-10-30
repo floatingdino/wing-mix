@@ -30,13 +30,20 @@ const KNOWN_DIRS: &[&str] = &[
     ".bun/bin",
 ];
 
-/// `PATH` of the user's login shell (`$SHELL -l -c 'printf %s "$PATH"'`), bounded by `timeout`; None on any failure.
+/// `PATH` of the user's login shell (`$SHELL -l -i -c 'printf ... "$PATH"'`), bounded by `timeout`; None on any failure.
 pub fn login_shell_path(timeout: Duration) -> Option<OsString> {
     #[cfg(unix)]
     {
         let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
         let mut child = Command::new(shell)
-            .args(["-l", "-c", "printf %s \"$PATH\""])
+            // interactive too: version managers (nvm, pyenv) usually extend PATH in .zshrc/.bashrc only
+            .args([
+                "-l",
+                "-i",
+                "-c",
+                "printf '__WMX_PATH__%s__WMX_END__' \"$PATH\"",
+            ])
+            .env("TERM", "dumb")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -57,14 +64,22 @@ pub fn login_shell_path(timeout: Duration) -> Option<OsString> {
         }
         let mut out = String::new();
         std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-        let out = out.trim();
-        (!out.is_empty()).then(|| out.into())
+        extract_marked(&out).map(Into::into)
     }
     #[cfg(not(unix))]
     {
         let _ = timeout;
         None
     }
+}
+
+/// The PATH between the markers (rc files may print banners around it).
+#[cfg_attr(not(unix), allow(dead_code))]
+fn extract_marked(out: &str) -> Option<String> {
+    let start = out.find("__WMX_PATH__")? + "__WMX_PATH__".len();
+    let end = start + out[start..].find("__WMX_END__")?;
+    let p = out[start..end].trim();
+    (!p.is_empty()).then(|| p.to_string())
 }
 
 /// `current` followed by every directory of `extra` and of [`KNOWN_DIRS`] (that exists) not already present.
@@ -96,6 +111,20 @@ pub fn merged_path(
         };
         if d.is_dir() {
             push(d);
+        }
+    }
+    // npm-installed CLIs (claude) under any nvm node version, newest first
+    if let Some(h) = home {
+        if let Ok(rd) = std::fs::read_dir(h.join(".nvm/versions/node")) {
+            let mut vs: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path().join("bin"))
+                .filter(|p| p.is_dir())
+                .collect();
+            vs.sort();
+            for d in vs.into_iter().rev() {
+                push(d);
+            }
         }
     }
     std::env::join_paths(dirs).unwrap_or_default()
@@ -184,6 +213,16 @@ mod tests {
             assert_eq!(which("no-such-tool-m065", Some(&m)), None);
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn marked_path_ignores_banners() {
+        assert_eq!(
+            extract_marked("hello\n__WMX_PATH__/a:/b__WMX_END__bye").as_deref(),
+            Some("/a:/b")
+        );
+        assert_eq!(extract_marked("no markers"), None);
+        assert_eq!(extract_marked("__WMX_PATH____WMX_END__"), None);
     }
 
     #[cfg(unix)]
