@@ -2,7 +2,7 @@
 id: M041
 title: Safety layer and watchdogs
 stage: S4
-status: review
+status: done
 owner: agent-M041
 depends: [M040, M004]
 branch: task/M041
@@ -36,3 +36,4 @@ Coordinator note (from M004): capture the session-start baseline of every touche
   Proposed follow-ups: (1) wire feed_mains/feed_features/RTA in wing-mixd (M050) and surface Safety/LinkLost events in the
   GUI; (2) tune thresholds on real recordings (M060); (3) Journal is still unbounded; (4) discrete fade of the path is not
   implemented (refused unless inaudible); (5) tap awareness for inspect callback (M021/M033) still open.
+- 2026-10-30 coordinator: merged, make check passes. done. Feeds wiring → M050; threshold tuning on real recordings → M052.

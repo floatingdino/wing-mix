@@ -14,6 +14,8 @@ Daemon binary: state dir, status.json, control.sock (newline JSON; same conventi
 
 Coordinator note (from M004): persist user-confirmed strip roles (monitor/FOH/comms) per console+scene so detection isn't re-asked each session.
 
+Coordinator note (from M041): wire SafetyMonitor feeds (feed_mains/feed_features/feed_spectrum) from live analysis and Actuator::set_safety in the daemon; surface safety holds/trips in status + GUI events.
+
 ## Acceptance criteria
 - [ ] Protocol documented in docs/control-protocol.md
 - [ ] Integration test drives daemon end-to-end against SimSurface
