@@ -153,8 +153,10 @@ pub fn mixdown_cached(fx: &Fixture, cache_dir: &Path) -> Result<Vec<f32>, SongEr
     if let Ok(bytes) = std::fs::read(&path) {
         if bytes.len() / 4 + ALIGN_RATE as usize >= expect {
             return Ok(bytes
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect());
         }
     }

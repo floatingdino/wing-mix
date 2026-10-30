@@ -99,7 +99,7 @@ pub fn mixdown_where(
 ) -> Result<Vec<f32>, FixtureError> {
     let sr = fx.sample_rate();
     let factor = (sr / ALIGN_RATE) as usize;
-    if factor == 0 || sr % ALIGN_RATE != 0 {
+    if factor == 0 || !sr.is_multiple_of(ALIGN_RATE) {
         return Err(FixtureError::Range(format!(
             "sample rate {sr} is not a multiple of {ALIGN_RATE}"
         )));
@@ -298,6 +298,9 @@ impl Alignment {
     }
 }
 
+/// Accumulated DTW cell: (total cost, path length, start column).
+type DtwCell = (f32, u32, u32);
+
 /// Subsequence DTW over the last row only: (total cost, path length, start column) per end column.
 fn sdtw_last_row(q: &[ChromaFrame], d: &[ChromaFrame]) -> Vec<(f32, u32, u32)> {
     let m = d.len();
@@ -411,7 +414,7 @@ pub fn align_window(
         return None;
     }
     let db = &multitrack[lo..hi];
-    let per_key: Vec<(usize, Vec<(f32, u32, u32)>)> = std::thread::scope(|s| {
+    let per_key: Vec<(usize, Vec<DtwCell>)> = std::thread::scope(|s| {
         let hs: Vec<_> = shifts
             .iter()
             .map(|&k| {
