@@ -96,6 +96,11 @@ vocal and low end first, strips implicated by mix-level problems or planned move
 solo bus and restores the solo exactly (rate-limited, never during a section change or while the engineer solos);
 strips not yet measured, or on a console that cannot solo, stand in as knowledge-base estimates that only allow
 fader balance judged on the measured main.
+The console's meters (M067, `control::meters`) refine those estimates over each measurement window: level while
+playing relative to the main, activity, gain reduction (spectra stay priors), so level and kit-balance checks run on
+them at reduced confidence. The session change budget (M067, `control::budget`) limits the net deviation of the
+tool's own changes from where the engineer left the mix (makeup free, group/pair moves counted once, reverted moves
+free) and paces it per minute; it is not a travel total.
 
 ## Closed-loop verification without hardware
 `mix-sim` drives the real wing-simulator DSP offline (multitrack fixtures + scene → render), so the full loop
