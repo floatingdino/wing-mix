@@ -60,6 +60,8 @@ fn wing_sim_write_read_back_and_solo_round_trip() {
     assert_eq!(fresh.read(&p).unwrap(), Value::Float(-4.3));
     let p = ParamId::new("bus.2/meta/name");
     s.write(&p, Value::Text("WEDGE 2".into())).unwrap();
+    // writes are not acknowledged: a round trip orders it before the other connection's get
+    s.client().barrier(Duration::from_secs(2)).unwrap();
     assert_eq!(
         other.refresh(std::slice::from_ref(&p)).unwrap()[0],
         Value::Text("WEDGE 2".into())
@@ -314,4 +316,206 @@ fn wing_sim_stays_disconnected_without_reconnect_policy() {
         Duration::from_secs(1)
     ));
     assert_eq!(s.topology().unwrap_err(), SurfaceError::Disconnected);
+}
+
+/// Drain events for `window`, returning the `ParamChanged` of `param` as (origin, value).
+fn collect_param(
+    rx: &std::sync::mpsc::Receiver<mix_surface::SurfaceEvent>,
+    param: &ParamId,
+    window: Duration,
+) -> Vec<(mix_surface::surface::Origin, Value)> {
+    let end = std::time::Instant::now() + window;
+    let mut out = Vec::new();
+    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+        if let Ok(mix_surface::SurfaceEvent::ParamChanged {
+            param: p,
+            value,
+            origin,
+        }) = rx.recv_timeout(left)
+        {
+            if &p == param {
+                out.push((origin, value));
+            }
+        }
+    }
+    out
+}
+
+/// Acceptance (M019): with two clients, B's write is exactly one External event on A; A's own write produces no
+/// External event (and exactly one Local one).
+#[test]
+fn wing_sim_origin_of_own_and_other_clients_writes() {
+    use mix_surface::surface::Origin;
+    let Some(d) = daemon_or_skip("wing_sim_origin_of_own_and_other_clients_writes") else {
+        return;
+    };
+    let a = d.connect();
+    let b = d.connect();
+    let rx = a.subscribe();
+    for (name, v1, v2) in [
+        ("input.5/eq/band.2.gain", -4.3, 2.5),
+        ("input.5/fader", -6.0, -3.0),
+        ("input.5/source/in", 7.0, 9.0),
+        ("source.a.5/g", 12.0, 20.0),
+    ] {
+        let p = ParamId::new(name);
+        let mk = |x: f64| {
+            if name.ends_with("source/in") {
+                Value::Int(x as i64)
+            } else {
+                Value::Float(x)
+            }
+        };
+        b.write(&p, mk(v1)).unwrap();
+        let ev = collect_param(&rx, &p, Duration::from_millis(400));
+        assert_eq!(ev.len(), 1, "{name} from B: {ev:?}");
+        assert_eq!(ev[0].0, Origin::External, "{name}");
+        a.write(&p, mk(v2)).unwrap();
+        let ev = collect_param(&rx, &p, Duration::from_millis(400));
+        assert!(
+            ev.iter().all(|e| e.0 == Origin::Local),
+            "{name} own write: {ev:?}"
+        );
+        assert_eq!(ev.len(), 1, "{name} own write: {ev:?}");
+    }
+}
+
+/// Acceptance (M019): a value that changed on the console while the link was down is announced as exactly one
+/// `External` change after `Reconnected`; unchanged values are not. (The restarted console is at factory defaults,
+/// so everything this client had changed differs from the pre-disconnect mirror.)
+#[test]
+fn wing_sim_reconnect_diff_emits_external_changes() {
+    use mix_surface::surface::Origin;
+    use mix_surface::SurfaceEvent as E;
+    let Some(mut d) = daemon_or_skip("wing_sim_reconnect_diff_emits_external_changes") else {
+        return;
+    };
+    let s = WingSurface::connect(
+        d.addr,
+        &ConnectOptions {
+            discovery_port: None,
+            reconnect: Some(mix_wing::ReconnectPolicy {
+                initial: Duration::from_millis(50),
+                max: Duration::from_millis(400),
+            }),
+            ..ConnectOptions::default()
+        },
+    )
+    .unwrap();
+    let rx = s.subscribe();
+    let changed = ParamId::new("input.5/eq/band.2.gain");
+    let name = ParamId::new("bus.2/meta/name");
+    let untouched = ParamId::new("input.6/fader");
+    let default = s.read(&changed).unwrap();
+    let default_name = s.read(&name).unwrap();
+    let default_untouched = s.read(&untouched).unwrap();
+    s.write(&changed, Value::Float(-4.3)).unwrap();
+    s.write(&name, Value::Text("WEDGE 2".into())).unwrap();
+    while rx.try_recv().is_ok() {}
+
+    d.kill();
+    assert!(wait_event(
+        &rx,
+        |e| matches!(e, E::Disconnected),
+        Duration::from_secs(5)
+    ));
+    assert!(d.restart());
+    assert!(wait_event(
+        &rx,
+        |e| matches!(e, E::Reconnected),
+        Duration::from_secs(30)
+    ));
+    // the diff follows the Reconnected event
+    let mut evs = Vec::new();
+    while let Ok(e) = rx.recv_timeout(Duration::from_millis(500)) {
+        evs.push(e);
+    }
+    let of = |p: &ParamId| -> Vec<(Origin, Value)> {
+        evs.iter()
+            .filter_map(|e| match e {
+                E::ParamChanged {
+                    param,
+                    value,
+                    origin,
+                } if param == p => Some((*origin, value.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(of(&changed), vec![(Origin::External, default)], "{evs:?}");
+    assert_eq!(of(&name), vec![(Origin::External, default_name)], "{evs:?}");
+    assert!(
+        of(&untouched).is_empty(),
+        "{:?} vs {default_untouched:?}",
+        of(&untouched)
+    );
+}
+
+/// Acceptance (M019): end to end on mix-wing + wing-sim, an engineer's move (another client) pauses the actuator's
+/// ramp: the param is yielded, never written again, and the engineer's value stands.
+#[test]
+fn wing_sim_engineer_move_pauses_the_actuator_ramp() {
+    use mix_actuator::{Actuator, ActuatorConfig, ActuatorEvent, PolicyGate};
+    use mix_core::action::{Action, ParamChange};
+    use std::sync::Arc;
+    let Some(d) = daemon_or_skip("wing_sim_engineer_move_pauses_the_actuator_ramp") else {
+        return;
+    };
+    let s = Arc::new(d.connect());
+    let engineer = d.connect();
+    let fader = ParamId::new("input.1/fader");
+    s.write(&fader, Value::Float(-30.0)).unwrap();
+    let cfg = ActuatorConfig {
+        external_cooldown_s: 2.0,
+        ..Default::default()
+    };
+    let dt = 1.0 / cfg.tick_hz;
+    let gate = PolicyGate::new(common::policy(), &*s).unwrap();
+    let mut a = Actuator::new(s.clone(), Box::new(gate), cfg);
+    let ev = a.subscribe();
+    let id = a.submit(Action::new("raise").with(ParamChange::new("input.1/fader", -6.0)));
+    let mut t = 0.0;
+    let mut tick = |a: &mut Actuator, secs: f64| {
+        let end = t + secs;
+        while t < end - 1e-9 {
+            t += dt;
+            a.tick(Duration::from_secs_f64(t));
+        }
+    };
+    tick(&mut a, 0.6);
+    let before = s.read(&fader).unwrap().as_f64().unwrap();
+    assert!(
+        before > -30.0 && before < -6.0,
+        "ramp in progress: {before}"
+    );
+    // virtual time runs far faster than the wire: make sure the console has the ramp's writes before the
+    // engineer's (separate connections are not ordered against each other)
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    // the engineer grabs the fader
+    engineer.write(&fader, Value::Float(-1.0)).unwrap();
+    engineer.client().barrier(Duration::from_secs(2)).unwrap();
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let writes_before = a.write_log().len();
+    tick(&mut a, 1.0);
+    let evs: Vec<_> = ev.try_iter().collect();
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, ActuatorEvent::Yielded { param, .. } if *param == fader)),
+        "{evs:?}"
+    );
+    assert!(
+        a.write_log()[writes_before..]
+            .iter()
+            .all(|w| w.param != fader),
+        "no write of the yielded param"
+    );
+    tick(&mut a, 5.0);
+    assert_eq!(
+        s.read(&fader).unwrap(),
+        Value::Float(-1.0),
+        "engineer's value stands"
+    );
+    assert_eq!(engineer.read(&fader).unwrap(), Value::Float(-1.0));
+    let _ = id;
 }

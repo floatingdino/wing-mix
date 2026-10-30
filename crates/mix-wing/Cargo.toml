@@ -16,3 +16,4 @@ wing-blocks.workspace = true
 
 [dev-dependencies]
 mix-testsim = { path = "../mix-testsim" }
+mix-actuator = { path = "../mix-actuator" }

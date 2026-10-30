@@ -810,6 +810,7 @@ dependencies = [
 name = "mix-wing"
 version = "0.1.0"
 dependencies = [
+ "mix-actuator",
  "mix-core",
  "mix-surface",
  "mix-testsim",
