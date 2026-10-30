@@ -107,37 +107,34 @@ impl Measured {
         self.strips
             .iter()
             .enumerate()
-            .map(|(i, (id, a))| {
-                let mut t = StripTap::new(id.clone(), TRACKS[i], a.session.clone(), kb);
-                t.source = source_for(kb, TRACKS[i]);
-                t
-            })
+            .map(|(i, (id, a))| StripTap::new(id.clone(), TRACKS[i], a.session.clone(), kb))
             .collect()
     }
 }
 
-/// Source type of a synthetic track: kb name hints, except "LEAD" (a lead synth, which the hints read as a lead
-/// vocal; source identification M025 would tell them apart).
-pub fn source_for(kb: &KnowledgeBase, name: &str) -> Option<String> {
-    if name == "LEAD" {
-        return Some("keys_synth".into());
-    }
-    kb.source_by_name(name).map(|s| s.id.clone())
+/// Source type of each synthetic track from mix-sources (name + the measured strip features; M035 replaced the
+/// harness's "LEAD is a synth" override: the classifier types it `keys_synth` from its features).
+pub fn sources_of(measured: &Measured, kb: &KnowledgeBase) -> Vec<Option<String>> {
+    measured
+        .strip_taps(kb)
+        .into_iter()
+        .map(|t| t.source)
+        .collect()
 }
 
-/// Stem kind of each synthetic track (kb name hints → family → stem).
-pub fn stem_map(kb: &KnowledgeBase) -> BTreeMap<StripId, StemKind> {
+/// Stem kind of each synthetic track (mix-sources type → family → stem).
+pub fn stem_map(measured: &Measured, kb: &KnowledgeBase) -> BTreeMap<StripId, StemKind> {
     let avail = [
         StemKind::Vocals,
         StemKind::Drums,
         StemKind::Bass,
         StemKind::Other,
     ];
-    TRACKS
-        .iter()
+    sources_of(measured, kb)
+        .into_iter()
         .enumerate()
-        .filter_map(|(i, n)| {
-            let src = source_for(kb, n)?;
+        .filter_map(|(i, src)| {
+            let src = src?;
             let k = stem_of(kb, &src, &avail).unwrap_or(StemKind::Other);
             Some((StripId::new("input", i as u32 + 1), k))
         })
@@ -156,7 +153,7 @@ pub fn profile(reference: &Render, measured: &Measured, kb: &KnowledgeBase) -> T
         &[],
         None,
     );
-    let map = stem_map(kb);
+    let map = stem_map(measured, kb);
     let mut sums: BTreeMap<StemKind, Vec<f32>> = BTreeMap::new();
     for (id, a) in &reference.strips {
         let Some(k) = map.get(id) else { continue };

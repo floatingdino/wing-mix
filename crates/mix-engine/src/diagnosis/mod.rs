@@ -57,7 +57,7 @@ pub struct StripTap {
     pub strip: StripId,
     /// Strip name (display / explanations).
     pub name: String,
-    /// sources.toml source id (`lead_vocal`, `kick`...) from source identification (M025) or name hints.
+    /// sources.toml source id (`lead_vocal`, `kick`...) from source identification (mix-sources, M025/M035).
     pub source: Option<String>,
     /// Features of the tapped signal. Mono taps are fine.
     pub features: Features,
@@ -68,13 +68,36 @@ pub struct StripTap {
     pub fx_return: bool,
 }
 
+/// sources.toml id of a strip from mix-sources' classifier (M035: the authority for source type in diagnosis and
+/// planning): scribble-strip name/tag heuristics (console abbreviations; the knowledge base's name hints as a
+/// low-confidence fallback) combined with the feature prototypes of the tapped signal, so e.g. a strip named
+/// "LEAD" that sounds like a synth is typed `keys_synth`, not `lead_vocal`. `None` below mix-sources'
+/// `MIN_CONFIDENCE` or for types without a knowledge-base entry (percussion, click...).
+pub fn classify_source(
+    kb: &KnowledgeBase,
+    name: &str,
+    tags: &[String],
+    features: Option<&Features>,
+) -> Option<String> {
+    let mut input = mix_sources::StripInput::named(name);
+    input.tags = tags.to_vec();
+    if let Some(f) = features {
+        input = input.with_features(f);
+    }
+    let id = mix_sources::Identifier::new(kb)
+        .classify(&input)
+        .source()?
+        .kb_id()?;
+    kb.source(id).map(|s| s.id.clone())
+}
+
 impl StripTap {
-    /// A post-fader tap; the source type comes from the knowledge base's name hints.
+    /// A post-fader tap; the source type comes from mix-sources ([`classify_source`]: name + features).
     pub fn new(strip: StripId, name: &str, features: Features, kb: &KnowledgeBase) -> Self {
         StripTap {
             strip,
             name: name.to_string(),
-            source: kb.source_by_name(name).map(|s| s.id.clone()),
+            source: classify_source(kb, name, &[], Some(&features)),
             features,
             gain_to_main_db: 0.0,
             fx_return: false,
@@ -82,7 +105,8 @@ impl StripTap {
     }
 
     /// Taps for every strip of `topology` that has features, typed from strip tags (a tag equal to a source id
-    /// wins) or name hints; FX-return/FX strips are flagged as FX returns.
+    /// wins) or mix-sources ([`classify_source`]: name, tags, features); FX-return/FX strips are flagged as FX
+    /// returns.
     pub fn from_topology(
         topology: &mix_surface::Topology,
         features: &BTreeMap<StripId, Features>,
@@ -95,9 +119,10 @@ impl StripTap {
             .filter_map(|s| {
                 let f = features.get(&s.id)?;
                 let mut tap = StripTap::new(s.id.clone(), &s.name, f.clone(), kb);
-                if let Some(t) = s.tags.iter().find(|t| kb.source(t).is_some()) {
-                    tap.source = Some(t.clone());
-                }
+                tap.source = match s.tags.iter().find(|t| kb.source(t).is_some()) {
+                    Some(t) => Some(t.clone()),
+                    None => classify_source(kb, &s.name, &s.tags, Some(f)),
+                };
                 tap.fx_return = matches!(s.kind, StripKind::FxReturn | StripKind::Fx);
                 Some(tap)
             })
