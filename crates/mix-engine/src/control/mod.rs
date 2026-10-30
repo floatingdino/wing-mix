@@ -38,6 +38,16 @@
 //! **Actuator stops** (STOP, PANIC, safety trip, link loss) pause the loop until the actuator is ready again; then
 //! it re-measures and re-plans. The loop never writes to the surface itself.
 //!
+//! **Strips without a tap** (M062, [`strips`]): when the meter carries only the main and the solo bus (or taps for
+//! some strips only), every eligible strip without a tap is filled in from the book of solo measurements
+//! (re-referenced to its current settings) or, until it has been measured (or when the console cannot solo), from
+//! a prior ([`StripTap::estimated`]). In autopilot, between batches (settling/measuring, never while a job runs), the
+//! loop runs rate-limited **solo sweeps**: actuator inspections without an adjustment that measure the most
+//! valuable unmeasured or stale strip through [`MixMeter::solo_probe`] and restore the solo state exactly. Plan
+//! inspections (solo before an EQ/dynamics move) feed the book too. New measurements join the measurement basis only
+//! between verifications (a batch is judged on the basis it was planned on); then the loop re-plans
+//! ([`PlanReason::StripsMeasured`]) and lifts a converged/no-progress hold.
+//!
 //! [`plan::score_with`]: crate::plan::score_with
 //! [`plan::plan_with`]: crate::plan::plan_with
 
@@ -46,6 +56,7 @@ pub mod event;
 pub mod guard;
 pub mod io;
 pub mod section;
+pub mod strips;
 
 #[cfg(test)]
 mod tests;
@@ -57,17 +68,20 @@ use std::time::Duration;
 
 use mix_actuator::{AbortReason, ActuatorEvent, InspectRequest, Job, MoveId, Refusal};
 use mix_core::action::Action;
+use mix_core::features::Features;
 use mix_core::ids::{ParamId, StripId};
 use mix_core::profile::TargetProfile;
+use mix_core::value::Value;
 use mix_knowledge::KnowledgeBase;
 use mix_surface::journal::Change;
 use mix_surface::remit::{
-    detect_topology, effective_roles, Policy, RemitContext, RemitSession, ScoringDetector,
+    detect_topology, effective_roles, evaluate_inspection, InspectionKind, Policy, RemitContext,
+    RemitSession, ScoringDetector, Verdict,
 };
 use mix_surface::surface::{Origin, Surface, SurfaceEvent, SurfaceResult};
 use mix_surface::Role;
 
-use crate::diagnosis::{diagnose, window_loudness, Diagnosis, DiagnosisInput};
+use crate::diagnosis::{diagnose, window_loudness, Diagnosis, DiagnosisInput, StripTap};
 use crate::plan::{
     plan_with, score_with, transfer_for_surface, ConsoleState, PlanInput, PlanScore, PlanStep,
     PlannedMove, Remit, TransferModel,
@@ -80,6 +94,7 @@ pub use event::{
 pub use guard::{action_type, Block, Guard};
 pub use io::{Executor, Measurement, MixMeter, SoloProbe};
 pub use section::{SectionDetector, SectionJump};
+pub use strips::{Coverage, Due, StripBook, StripConfig};
 
 /// Keep or revert a verified batch (see [`KeepRule`]).
 pub fn keep(before: f64, after: f64, predicted_gain: f64, rule: &KeepRule) -> bool {
@@ -183,6 +198,25 @@ struct Inspection {
     strip: StripId,
     loudness_lufs: Option<f32>,
     active: bool,
+    /// The solo bus while soloed (M062: kept in the strip book).
+    features: Option<Features>,
+}
+
+/// A running solo sweep (M062).
+#[derive(Debug)]
+struct SweepJob {
+    id: MoveId,
+    strip: StripId,
+    name: String,
+    due: Due,
+    priority: f64,
+    /// The strip's params when the sweep started.
+    values: BTreeMap<ParamId, Value>,
+    /// Fader (dB) to add when the solo tap is pre-fader (PFL).
+    pre_fader_db: Option<f64>,
+    section: u32,
+    /// An engineer move on the strip or a section change during the dwell: the result is discarded.
+    spoiled: bool,
 }
 
 /// Last measurement.
@@ -190,7 +224,10 @@ struct Inspection {
 struct Sample {
     score: PlanScore,
     diagnosis: Diagnosis,
+    /// Main + every strip the loop works with (taps, solo-measured, estimated).
     measurement: Measurement,
+    /// What the meter delivered.
+    raw: Measurement,
 }
 
 /// Pending confirmation.
@@ -241,6 +278,18 @@ pub struct Controller<'k> {
     actuator_stopped: bool,
     curve: Vec<CyclePoint>,
     records: Vec<BatchRecord>,
+    /// M062: solo measurements of strips without a tap.
+    book: StripBook,
+    sweeper: strips::SweepScheduler,
+    sweep: Option<SweepJob>,
+    sweep_sink: Arc<Mutex<Option<Option<Features>>>>,
+    coverage: Coverage,
+    /// Strips the meter taps (last measurement).
+    tapped: std::collections::BTreeSet<StripId>,
+    /// Params of the strip a plan inspection is about to solo (for its book entry).
+    inspect_values: Option<(StripId, BTreeMap<ParamId, Value>, Option<f64>)>,
+    /// The console's channel solo tap is pre-fader (`None`: not asked yet).
+    solo_pfl: Option<bool>,
 }
 
 impl<'k> Controller<'k> {
@@ -295,6 +344,14 @@ impl<'k> Controller<'k> {
             actuator_stopped: false,
             curve: Vec::new(),
             records: Vec::new(),
+            book: StripBook::default(),
+            sweeper: Default::default(),
+            sweep: None,
+            sweep_sink: Arc::new(Mutex::new(None)),
+            coverage: Coverage::default(),
+            tapped: Default::default(),
+            inspect_values: None,
+            solo_pfl: None,
             cfg,
         }
     }
@@ -396,6 +453,21 @@ impl<'k> Controller<'k> {
         self.last.as_ref().map(|s| &s.diagnosis)
     }
 
+    /// How the strips of the last measurement were covered (M062).
+    pub fn coverage(&self) -> &Coverage {
+        &self.coverage
+    }
+
+    /// Strips measured through the solo bus (M062).
+    pub fn strip_book(&self) -> &StripBook {
+        &self.book
+    }
+
+    /// A solo sweep is running (M062).
+    pub fn is_sweeping(&self) -> bool {
+        self.sweep.is_some()
+    }
+
     /// A job of ours is running on the actuator (or the actuator is stopped).
     pub fn is_busy(&self) -> bool {
         matches!(
@@ -414,6 +486,7 @@ impl<'k> Controller<'k> {
         self.drain_surface();
         self.poll_section(meter);
         self.step(exec, meter);
+        self.maybe_sweep(exec);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -426,6 +499,22 @@ impl<'k> Controller<'k> {
     fn drain_actuator(&mut self) {
         let evs: Vec<ActuatorEvent> = self.actuator_rx.try_iter().collect();
         for ev in evs {
+            if let Some(j) = &self.sweep {
+                let end = match &ev {
+                    ActuatorEvent::Done { id, .. } if *id == j.id => Some(None),
+                    ActuatorEvent::Aborted { id, reason, .. } if *id == j.id => {
+                        Some(Some(format!("aborted: {reason:?}")))
+                    }
+                    ActuatorEvent::Refused { id, reason, .. } if *id == j.id => {
+                        Some(Some(format!("refused: {reason:?}")))
+                    }
+                    _ => None,
+                };
+                if let Some(err) = end {
+                    self.sweep_ended(err);
+                    continue;
+                }
+            }
             match ev {
                 ActuatorEvent::Done { id, changes } => self.on_job_end(id, changes, None),
                 ActuatorEvent::Aborted {
@@ -543,6 +632,9 @@ impl<'k> Controller<'k> {
     }
 
     fn on_engineer(&mut self, param: ParamId) {
+        if let Some(j) = self.sweep.as_mut() {
+            j.spoiled |= param.strip().as_ref() == Some(&j.strip);
+        }
         self.guard.engineer(&param, self.now, &self.cfg);
         self.emit(ControlEvent::EngineerMoved {
             param: param.clone(),
@@ -559,6 +651,10 @@ impl<'k> Controller<'k> {
             return;
         };
         if let Some(j) = self.section.observe(self.now, &f) {
+            self.book.section_changed(self.now);
+            if let Some(s) = self.sweep.as_mut() {
+                s.spoiled = true;
+            }
             self.emit(ControlEvent::SectionChanged {
                 at_s: j.at_s,
                 loudness_jump_lu: j.loudness_jump_lu,
@@ -651,15 +747,16 @@ impl<'k> Controller<'k> {
         }
     }
 
-    fn evaluate(&mut self, m: Measurement) -> Option<Sample> {
+    fn evaluate(&mut self, raw: Measurement) -> Option<Sample> {
+        // M035: gate problems are answered by the console's gate state
+        let state = ConsoleState::capture(&*self.surface).ok();
+        let m = self.augment(&raw, state.as_ref());
         let d = diagnose(
             &DiagnosisInput::new(&m.main, &self.target).with_strips(&m.strips),
             self.kb,
             &self.cfg.plan.diagnosis,
         )
         .ok()?;
-        // M035: gate problems are answered by the console's gate state
-        let state = ConsoleState::capture(&*self.surface).ok();
         let s = score_with(&d, self.cfg.plan.target_weight, state.as_ref());
         self.emit(ControlEvent::Measured {
             at_s: self.now,
@@ -675,7 +772,273 @@ impl<'k> Controller<'k> {
             score: s,
             diagnosis: d,
             measurement: m,
+            raw,
         })
+    }
+
+    /// M062: the meter's taps plus, for every eligible strip without one, its solo measurement (re-referenced to
+    /// the current settings) or a prior.
+    fn augment(&mut self, raw: &Measurement, state: Option<&ConsoleState>) -> Measurement {
+        self.tapped = raw.strips.iter().map(|t| t.strip.clone()).collect();
+        let c = &self.cfg.strips;
+        let Some(state) = state else {
+            return raw.clone();
+        };
+        let elig = strips::eligible(state, self.kb, c.fader_floor_db);
+        let missing: Vec<&strips::Eligible> = elig
+            .iter()
+            .filter(|e| !self.tapped.contains(&e.strip))
+            .collect();
+        let mut cov = Coverage {
+            eligible: elig.len(),
+            tapped: elig.len() - missing.len(),
+            sweeps: self.sweeper.count,
+            ..Coverage::default()
+        };
+        if missing.is_empty() || (!c.priors && self.book.is_empty()) {
+            cov.unknown = missing.len();
+            self.coverage = cov;
+            return raw.clone();
+        }
+        let ids: Vec<StripId> = missing.iter().map(|e| e.strip.clone()).collect();
+        let solo = self
+            .book
+            .taps_for(&ids, state, &raw.main, &*self.transfer);
+        let have: std::collections::BTreeSet<StripId> =
+            solo.iter().map(|t| t.strip.clone()).collect();
+        let rest: Vec<strips::Eligible> = missing
+            .iter()
+            .filter(|e| !have.contains(&e.strip) && self.book.silent_since(&e.strip).is_none())
+            .map(|e| (*e).clone())
+            .collect();
+        let mut m = raw.clone();
+        cov.solo_measured = solo.len();
+        m.strips.extend(solo);
+        if c.priors {
+            let est = strips::priors(&raw.main, &m.strips, &rest, self.kb, c.min_prior_share);
+            cov.estimated = est.len();
+            m.strips.extend(est);
+        }
+        cov.unknown = missing.len() - cov.solo_measured - cov.estimated;
+        self.coverage = cov;
+        m
+    }
+
+    /// M062: fold new solo measurements into the basis (between verifications), re-evaluate the last measurement
+    /// on it and re-plan; a converged / no-progress hold is lifted (there is new information).
+    fn absorb_book(&mut self) {
+        if !self.book.has_pending() {
+            return;
+        }
+        self.book.merge();
+        let Some(raw) = self.last.as_ref().map(|s| s.raw.clone()) else {
+            return;
+        };
+        if let Some(s) = self.evaluate(raw) {
+            self.best = s.score.objective;
+            self.last = Some(s);
+        }
+        self.since_best = 0;
+        self.replan = Some(PlanReason::StripsMeasured);
+        self.plan.clear();
+        if matches!(
+            self.hold,
+            Some(HoldReason::Converged | HoldReason::NoProgress)
+        ) {
+            self.hold = None;
+            self.emit(ControlEvent::Resumed {
+                reason: PlanReason::StripsMeasured,
+            });
+        }
+    }
+
+    /// The console's channel solo tap is pre-fader (WING `cfg/solo/chtap = PFL`); AFL (post fader, the default
+    /// assumption) when the surface does not say.
+    fn solo_is_pfl(&mut self) -> bool {
+        *self.solo_pfl.get_or_insert_with(|| {
+            matches!(
+                self.surface.read(&ParamId::new("system/cfg/solo/chtap")),
+                Ok(Value::Enum(ref t)) if t == "PFL"
+            )
+        })
+    }
+
+    /// M062: start a solo sweep when one is due and allowed (see [`strips`]).
+    fn maybe_sweep(&mut self, exec: &mut dyn Executor) {
+        let c = self.cfg.strips.clone();
+        let mode_ok = match self.cfg.mode {
+            Mode::Autopilot => true,
+            Mode::Suggest => c.sweep_in_suggest,
+            Mode::Observe => false,
+        };
+        if !c.sweep
+            || !mode_ok
+            || !self.cfg.inspect
+            || self.sweep.is_some()
+            || self.actuator_stopped
+            || self.probe.is_none()
+            || self.last.is_none()
+            || self.hold == Some(HoldReason::Budget)
+            || !matches!(self.state, State::Settling { .. } | State::Measuring { .. })
+        {
+            return;
+        }
+        let now = self.now;
+        if self
+            .sweeper
+            .may_start(&c, now, self.section.pending(), self.book.last_section_s)
+            .is_err()
+        {
+            return;
+        }
+        if !self.surface.info().capabilities.solo {
+            self.sweeper.back_off(now, 60.0);
+            return;
+        }
+        match self.surface.solo_state() {
+            Ok(st) if !st.is_destructive() && (st.active.is_empty() || !c.respect_engineer_solo) => {}
+            _ => {
+                // the engineer is listening to something (or the solo mode mutes the PA): later
+                self.sweeper.back_off(now, 5.0);
+                return;
+            }
+        }
+        let Ok(state) = ConsoleState::capture(&*self.surface) else {
+            self.sweeper.back_off(now, 5.0);
+            return;
+        };
+        let elig = strips::eligible(&state, self.kb, c.fader_floor_db);
+        let implicated = self
+            .last
+            .as_ref()
+            .map(|s| strips::implicated(&s.diagnosis))
+            .unwrap_or_default();
+        let planned: std::collections::BTreeSet<StripId> = self
+            .plan
+            .iter()
+            .map(|b| b.mv.strip.clone())
+            .chain(self.pending.iter().map(|p| p.summary.strip.clone()))
+            .filter(|s| !self.tapped.contains(s) && self.book.get(s).is_none())
+            .collect();
+        let cands = strips::candidates(
+            &c,
+            self.kb,
+            &self.book,
+            &elig,
+            &self.tapped,
+            &state,
+            now,
+            &implicated,
+            &planned,
+        );
+        if cands.is_empty() {
+            self.sweeper.back_off(now, 10.0);
+            return;
+        }
+        let Ok(ctx) = remit_context(&self.policy, &*self.surface, &self.roles) else {
+            self.sweeper.back_off(now, 5.0);
+            return;
+        };
+        let Some(pick) = cands.into_iter().find(|k| {
+            evaluate_inspection(&self.policy, &ctx, InspectionKind::Solo, &k.strip).class
+                == Verdict::Allowed
+        }) else {
+            self.sweeper.back_off(now, 30.0);
+            return;
+        };
+        let values = strips::strip_values(&state, &pick.strip);
+        let pre_fader_db = self
+            .solo_is_pfl()
+            .then(|| state.settings(&pick.strip).fader_db.unwrap_or(0.0));
+        let name = elig
+            .iter()
+            .find(|e| e.strip == pick.strip)
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        let probe = self.probe.clone();
+        let sink = self.sweep_sink.clone();
+        *sink.lock().unwrap() = None;
+        let s2 = pick.strip.clone();
+        let mut req = InspectRequest::strip(
+            pick.strip.clone(),
+            Duration::from_secs_f64(c.dwell_s.max(0.0)),
+        )
+        .measure(move |_view| {
+            let f = probe.as_ref().and_then(|p| p(&s2));
+            *sink.lock().unwrap() = Some(f);
+            Vec::new()
+        });
+        req.label = format!("measure {} soloed ({:?})", pick.strip, pick.due).to_lowercase();
+        let id = exec.submit(Job::Inspect(req));
+        self.sweeper.started(&c, now);
+        self.sweep = Some(SweepJob {
+            id,
+            strip: pick.strip,
+            name,
+            due: pick.due,
+            priority: pick.priority,
+            values,
+            pre_fader_db,
+            section: self.book.section,
+            spoiled: false,
+        });
+    }
+
+    /// The sweep's inspection ended (`err`: refused / aborted).
+    fn sweep_ended(&mut self, err: Option<String>) {
+        let Some(j) = self.sweep.take() else {
+            return;
+        };
+        let now = self.now;
+        self.sweeper.ended(&self.cfg.strips, now);
+        let feat = self.sweep_sink.lock().unwrap().take().flatten();
+        if err.is_some() {
+            // refused (remit, destructive solo, no solo) or aborted (STOP, engineer): try later
+            self.sweeper.back_off(now, 30.0);
+            return;
+        }
+        if j.spoiled || j.section != self.book.section {
+            return;
+        }
+        let lufs = feat.as_ref().map(window_loudness);
+        let active = lufs.is_some_and(|l| l.is_finite() && l > self.cfg.inspect_silent_lufs);
+        self.emit(ControlEvent::StripMeasured {
+            strip: j.strip.clone(),
+            due: j.due,
+            priority: j.priority,
+            loudness_lufs: lufs,
+            active,
+        });
+        match feat {
+            Some(f) if active => {
+                let tap = self.solo_tap(&j.strip, &j.name, f, j.pre_fader_db);
+                self.book.add(
+                    j.strip,
+                    strips::Measured {
+                        tap,
+                        at_s: now,
+                        section: j.section,
+                        values: j.values,
+                    },
+                );
+            }
+            _ => self.book.add_silent(j.strip, now),
+        }
+    }
+
+    /// A solo-bus capture as a post-fader tap of `strip`.
+    fn solo_tap(
+        &self,
+        strip: &StripId,
+        name: &str,
+        mut f: Features,
+        pre_fader_db: Option<f64>,
+    ) -> StripTap {
+        if let Some(g) = pre_fader_db {
+            strips::shift_level(&mut f, g as f32);
+        }
+        f.tap = strip.as_str().to_string();
+        StripTap::new(strip.clone(), name, f, self.kb)
     }
 
     fn measured(&mut self, sample: Sample, purpose: Purpose, exec: &mut dyn Executor) {
@@ -722,6 +1085,7 @@ impl<'k> Controller<'k> {
                 return;
             }
         }
+        self.absorb_book();
         self.decide(exec);
     }
 
@@ -791,7 +1155,29 @@ impl<'k> Controller<'k> {
         let mut v = r.verify;
         let inspections: Vec<Inspection> = std::mem::take(&mut *self.inspections.lock().unwrap());
         let mut silent = false;
+        let values = self.inspect_values.take();
         for i in inspections {
+            if let (true, Some(f), Some((s, vals, pre))) = (i.active, &i.features, &values) {
+                // M062: the solo capture before the move is a measurement of the strip
+                if *s == i.strip && !self.tapped.contains(s) {
+                    let name = self
+                        .last
+                        .as_ref()
+                        .and_then(|x| x.measurement.strips.iter().find(|t| t.strip == *s))
+                        .map(|t| t.name.clone())
+                        .unwrap_or_default();
+                    let tap = self.solo_tap(s, &name, f.clone(), *pre);
+                    self.book.add(
+                        s.clone(),
+                        strips::Measured {
+                            tap,
+                            at_s: self.now,
+                            section: self.book.section,
+                            values: vals.clone(),
+                        },
+                    );
+                }
+            }
             silent |= !i.active;
             if !i.active {
                 // M036: a strip that played nothing while soloed is not inspected again (sparse sources, e.g.
@@ -893,6 +1279,10 @@ impl<'k> Controller<'k> {
     fn decide(&mut self, exec: &mut dyn Executor) {
         if self.actuator_stopped {
             self.pause("actuator stopped");
+            return;
+        }
+        if self.sweep.is_some() && self.cfg.mode == Mode::Autopilot {
+            // a solo sweep holds the actuator for its dwell: decide when it has finished
             return;
         }
         let Some(obj) = self.last.as_ref().map(|s| s.score.objective) else {
@@ -1028,6 +1418,13 @@ impl<'k> Controller<'k> {
         let seq = self.seq;
         let job = match (&b.inspect, self.cfg.inspect) {
             (Some((strip, dwell)), true) => {
+                let vals = strips::read_strip_values(&*self.surface, strip);
+                let pre = self.solo_is_pfl().then(|| {
+                    vals.get(&ParamId::of(strip, "fader"))
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0)
+                });
+                self.inspect_values = Some((strip.clone(), vals, pre));
                 exec.submit(Job::Inspect(self.inspection(strip.clone(), *dwell, &b)))
             }
             _ => exec.submit(Job::Move(b.mv.action.clone())),
@@ -1070,6 +1467,7 @@ impl<'k> Controller<'k> {
                     strip: s2.clone(),
                     loudness_lufs: lufs,
                     active,
+                    features: feat,
                 });
                 if active {
                     vec![action.clone()]

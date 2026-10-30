@@ -28,6 +28,8 @@ pub enum PlanReason {
     Confirmed,
     /// The actuator was stopped and resumed, or a batch failed.
     Resumed,
+    /// M062: solo inspections measured strips the plan only had estimates (or older measurements) of.
+    StripsMeasured,
 }
 
 /// Why the closed loop holds (keeps measuring, makes no moves).
@@ -144,6 +146,16 @@ pub enum ControlEvent {
     /// Solo inspection measured the strip (through the actuator's inspect callback).
     Inspected {
         strip: StripId,
+        loudness_lufs: Option<f32>,
+        active: bool,
+    },
+    /// M062: a strip without a tap was measured through the solo bus (sweep inspection); `due` says why it was
+    /// picked (`never` / `changed` / `stale` / `retry`), `priority` its expected value. `active` false: silent in
+    /// solo (tried again later).
+    StripMeasured {
+        strip: StripId,
+        due: super::strips::Due,
+        priority: f64,
         loudness_lufs: Option<f32>,
         active: bool,
     },

@@ -66,6 +66,12 @@ pub struct StripTap {
     pub gain_to_main_db: f32,
     /// An FX return (reverb/delay): measured for depth only, excluded from balance/masking/source checks.
     pub fx_return: bool,
+    /// M062: not a measurement but a prior (knowledge-base level + mix-sources prototype spectrum, scaled into the
+    /// measured main; [`crate::control::strips`]) for a strip no tap or solo inspection has measured yet. It only
+    /// stands in for the strip's share of the main: mix-level contributor shares and the planner's effect model
+    /// use it, every strip/stem/intent check skips it (a prior would only confirm itself), and the planner moves
+    /// nothing on it but its fader.
+    pub estimated: bool,
 }
 
 /// sources.toml id of a strip from mix-sources' classifier (M035: the authority for source type in diagnosis and
@@ -101,6 +107,7 @@ impl StripTap {
             features,
             gain_to_main_db: 0.0,
             fx_return: false,
+            estimated: false,
         }
     }
 

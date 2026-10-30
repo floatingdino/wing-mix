@@ -96,7 +96,8 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
                 .strips
                 .iter()
                 .filter(|s| {
-                    s.source.as_deref().is_some_and(|src| {
+                    !s.estimated
+                        && s.source.as_deref().is_some_and(|src| {
                         src == scope
                             || cx
                                 .kb

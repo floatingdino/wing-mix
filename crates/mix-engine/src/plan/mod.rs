@@ -658,6 +658,17 @@ fn check_remit(
     Ok(Checked { cand: c, confirm })
 }
 
+/// M062: a candidate touching an [estimated](StripTap::estimated) strip may only move its fader (a prior has no
+/// spectrum or dynamics worth processing against, only a share of the main).
+fn estimated_ok(c: &Candidate, estimated: &BTreeSet<StripId>) -> bool {
+    estimated.is_empty()
+        || c.changes.iter().all(|x| {
+            x.param
+                .strip()
+                .is_none_or(|s| !estimated.contains(&s) || x.param.as_str().ends_with("/fader"))
+        })
+}
+
 fn strip_mid_of(t: &StripTap) -> [f64; N_ERB] {
     let l = window_loudness(&t.features) as f64 + t.gain_to_main_db as f64;
     std::array::from_fn(|b| 10f64.powf((t.features.spectrum.erb_mid_rel_db[b] as f64 + l) / 10.0))
@@ -691,6 +702,13 @@ pub fn plan_with(
         .strips
         .iter()
         .map(|s| (s.strip.clone(), s.source.clone()))
+        .collect();
+    // M062: strips standing in as priors (no measurement yet) may only have their fader moved
+    let estimated: BTreeSet<StripId> = input
+        .strips
+        .iter()
+        .filter(|s| s.estimated)
+        .map(|s| s.strip.clone())
         .collect();
     let stems: Vec<mix_core::profile::StemKind> = input
         .target
@@ -774,7 +792,10 @@ pub fn plan_with(
                         .map(|x| (&x.param, &x.to))
                         .collect::<Vec<_>>()
                 );
-                if !seen.insert(key.clone()) || tried_bad.contains(&key) {
+                if !seen.insert(key.clone())
+                    || tried_bad.contains(&key)
+                    || !estimated_ok(&c, &estimated)
+                {
                     continue;
                 }
                 match check_remit(&input.remit, input.state, &state, c, cfg) {

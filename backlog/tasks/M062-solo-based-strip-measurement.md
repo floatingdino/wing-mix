@@ -2,10 +2,10 @@
 id: M062
 title: Solo-based per-strip measurement when only a stereo tap is available
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M062
 depends: [M052, M039]
-branch: -
+branch: task/M062
 model: opus
 ---
 
@@ -28,3 +28,13 @@ instead of proposing nothing. Also: per-strip taps from USB (≤24) as an option
 
 ## Log
 - 2026-10-31 coordinator: created from M052's main finding.
+- 2026-10-31 agent-M062: claimed. Design: mix-engine `control::strips` — (1) StripTap.estimated priors (kb level +
+  fader offset, mix-sources prototype spectrum, scaled into the main residual) for eligible strips without a tap:
+  diagnosis skips them in strip/stem/intent checks, the planner may only move their faders (mix-level fallback);
+  (2) StripBook of solo measurements (values at capture; re-referenced through MixModel when settings changed);
+  (3) SweepScheduler: autopilot-only measure-only inspections between batches, priority = source weight x due
+  (never/changed/stale/retry) + implicated (mix problem score x share) + planned, rate limit (8/min, 2 s gap),
+  section-quiet (pending jump / 6 s after), engineer-solo respected, remit/destructive checked; plan inspections feed
+  the book; new measurements join the basis only after a verification (`absorb_book`), then re-plan
+  (PlanReason::StripsMeasured). New event `strip_measured`. Unit tests green; next: closed-loop tests (solo only,
+  X32 no solo), daemon passthrough, e2e option.

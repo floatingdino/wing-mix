@@ -67,6 +67,12 @@ impl SectionDetector {
         self.over_since = None;
     }
 
+    /// A jump is building (over the threshold, not yet held long enough): the music is changing section (M062:
+    /// no solo sweep starts now).
+    pub fn pending(&self) -> bool {
+        self.over_since.is_some()
+    }
+
     /// Feed one short-term (3 s) main snapshot taken at `now_s`.
     pub fn observe(&mut self, now_s: f64, f: &Features) -> Option<SectionJump> {
         let dt = self.last_s.map_or(0.0, |t| (now_s - t).max(0.0));
