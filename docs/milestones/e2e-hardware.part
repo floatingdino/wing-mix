@@ -1,0 +1,49 @@
+## Hardware verification on a real WING (manual; HUMAN-ACTIONS item 6)
+
+What the simulator cannot prove: the real console's network timing, its USB audio interface and clocking, real
+room acoustics (feedback guard), firmware differences in the parameter tree, and how WING-Edit / the console surface
+show the moves. Run this once a WING is available. Nothing here needs code changes; record results in a dated
+section at the end of this file.
+
+**Safety first**: do it at a soundcheck or with the PA muted / at low level, with someone at the console. STOP is
+`Cmd-.` in WingMix.app or `wing-mix-cli ctl STOP`; PANIC is `wing-mix-cli ctl PANIC`. Save a scene/snapshot on the
+console before starting (it is the ground truth for step 9).
+
+1. **Network + identity.** Mac and WING on the same network. `wing-mix-cli ctl '{"cmd":"list_consoles"}'` lists the
+   WING (name, model, firmware). Note the firmware.
+2. **USB audio + taps.** Connect the WING by USB. On the console route: USB out 1/2 = MAIN 1, 3/4 = MON A (solo
+   bus), USB out 5.. = user signals 1..N (`Routing > User signals`: CH n, POST, L+R) for up to 24 key inputs.
+   `wing-mix-cli ctl '{"cmd":"list_devices"}'` shows the WING device with >= 4 + N channels at 48 kHz. Grant the
+   microphone permission when macOS asks (HUMAN-ACTIONS item 5).
+3. **Connect + input.** `{"cmd":"connect_console","console":"wing","ip":"<ip>","scene":"<show>"}`, then
+   `select_input` `device` WING with taps main [1,2], solo [3,4], `input.N` [5..]. `status.input.dropped_frames`
+   stays 0 for a minute; `snapshot.loudness` follows the program.
+4. **Roles.** `list_roles`: every IEM/wedge/comms bus is `monitor`/`comms` (or `unknown`, i.e. protected) and every
+   matrix is locked. Confirm only what you are sure of. Expected: same as the PUBLIC.snap scene in the sim run
+   (13 protected strips there).
+5. **Suggest.** Load a reference (`load_reference` a record of the song) or a description; `set_mode suggest`,
+   `start`. A plan appears in WingMix.app within one window; WING-Edit and the console show **no change at all**
+   (watch the faders of the inputs in the plan for a full minute).
+6. **Autopilot, watched in WING-Edit.** `set_mode autopilot`. In WING-Edit (or on the surface) every move is a
+   smooth glide (faders at <= 6 dB/s, EQ gains <= 3 dB/s, pans <= 40/s; no jumps), solos flash only on the
+   inspected strip during an inspection and return exactly to what they were (try with one engineer solo engaged
+   beforehand), and nothing on any IEM bus, matrix, main 2-4, routing or the monitor section moves. The console RTA
+   source changes while a session runs and returns to your setting at `stop`/`quit`.
+7. **Engineer has priority.** While a tool move is running, grab that fader on the surface: the tool stops moving
+   it immediately (`yielded` in the event log) and does not touch it again for the cool-down.
+8. **STOP / PANIC.** During a move press STOP: motion stops within one tick (nothing moves afterwards in WING-Edit);
+   `resume` continues. Then PANIC: every param the session touched glides back to where it was (except what you
+   moved yourself).
+9. **State audit.** After `quit`, save a new scene on the console and compare it with the one from the start (WING-Edit
+   compare, or export both and diff with `wing-diff`): only the params listed in `snapshot.touched` differ (and none
+   after a PANIC).
+10. **Safety in a room.** At low PA level, with the tool in autopilot, slowly raise a vocal mic's gain until it just
+    starts to ring: the feedback guard trips (STOP + revert of the last move, `safety` event) before you would have
+    reached for the fader. Then raise the main fader quickly by 10 dB: the mains hold engages (`ceiling_hold`), no
+    boosts are made until it drops. Record the trip times and levels (thresholds are not yet tuned on real rooms).
+11. **Link loss.** Pull the network cable for 10 s during a move: the move stops (`link_lost`), nothing is replayed
+    when it comes back (`link_restored`), anything you changed meanwhile is left alone.
+12. **Result.** Note the distance curve (`snapshot.curve`) and whether the mix moved towards the target by ear.
+
+If any step fails: STOP/PANIC, save `<state-dir>/events.jsonl` and `status.json`, and file it against M052's
+follow-ups.

@@ -153,8 +153,8 @@ fn report(title: &str, runs: &[RunResult]) {
         if dr.stop_tested || dr.yield_param.is_some() {
             let _ = writeln!(
                 s,
-                "- engineer move on {:?}: yielded event {}, engineer_moved event {}, untouched afterwards {:?}",
-                dr.yield_param, dr.yielded, dr.engineer_moved_event, dr.yield_respected
+                "- engineer move on {:?}: yielded event {}, engineer_moved event {}, left alone for the cool-down {:?}, planned again after it {}",
+                dr.yield_param, dr.yielded, dr.engineer_moved_event, dr.yield_respected, dr.retouched_after_cooldown
             );
             let _ = writeln!(
                 s,

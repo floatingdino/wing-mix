@@ -96,6 +96,8 @@ pub struct Drills {
     pub yielded: bool,
     pub engineer_moved_event: bool,
     pub yield_respected: Option<bool>,
+    /// The tool planned the engineer's param again after the cool-down (allowed).
+    pub retouched_after_cooldown: bool,
     pub stop_tested: bool,
     pub writes_after_stop: usize,
     pub ceiling: String,
@@ -173,6 +175,19 @@ fn soundcheck(obs: &Observer, ex: &RealExcerpt) {
             eprintln!("setup {p}: {e}");
         }
     };
+    // flat processing: the PUBLIC scene's channel processing belongs to another band's sources
+    let flat = |ch: u8| {
+        for b in [
+            "eq/on",
+            "dyn/on",
+            "gate/on",
+            "pre_eq/on",
+            "filter/lowcut.on",
+            "filter/highcut.on",
+        ] {
+            try_w(&format!("input.{ch}/{b}"), PValue::Bool(false));
+        }
+    };
     for t in &ex.tracks {
         let ch = t.channel;
         obs.setup_write(
@@ -189,9 +204,7 @@ fn soundcheck(obs: &Observer, ex: &RealExcerpt) {
             &format!("input.{ch}/meta/name"),
             PValue::Text(name.chars().take(16).collect()),
         );
-        for b in ["eq/on", "dyn/on", "gate/on", "pre_eq/on"] {
-            try_w(&format!("input.{ch}/{b}"), PValue::Bool(false));
-        }
+        flat(ch);
     }
     for (p, v) in rough_scene(ex).writes {
         try_w(p.as_str(), v);
@@ -207,6 +220,7 @@ fn soundcheck(obs: &Observer, ex: &RealExcerpt) {
     );
     obs.setup_write(&format!("{FB_STRIP}/fader"), PValue::Float(-144.0));
     try_w(&format!("{FB_STRIP}/mute"), PValue::Bool(false));
+    flat(FB_STRIP.trim_start_matches("input.").parse().unwrap());
     try_w(&format!("{FB_STRIP}/send/main.1/on"), PValue::Bool(true));
 }
 
@@ -524,9 +538,16 @@ pub fn run(
     obs.settle();
     let after_auto = audit::read_state(&*obs.s, &ids);
     if let Some((p, t)) = &yield_at {
-        // after the engineer's move the tool must not write that param again during the cool-down
-        let later = obs.changes_of(p, *t + Duration::from_millis(500), t_end_auto);
+        // after the engineer's move the tool must not write that param again during the controller's engineer
+        // cool-down (120 s live, x time_scale); after it the param may be planned again
+        let cool = Duration::from_secs_f64(120.0 * dur / 20.0 * 0.95);
+        let later = obs.changes_of(
+            p,
+            *t + Duration::from_millis(500),
+            t_end_auto.min(*t + cool),
+        );
         dr.yield_respected = Some(later.is_empty());
+        dr.retouched_after_cooldown = !obs.changes_of(p, *t + cool, t_end_auto).is_empty();
     }
 
     // The tool's mix as the console outputs it.
@@ -547,6 +568,36 @@ pub fn run(
     r.batches = moves.len();
     r.kept = moves.iter().filter(|m| m["outcome"] == "kept").count();
 
+    // Feedback drill after the hold when no move finished during autopilot (nothing to revert then).
+    if o.drills && !fb_started {
+        let seen = d.seen();
+        let t0 = Instant::now();
+        let mut lvl = -40.0;
+        let mut trip = None;
+        while lvl <= 6.0 && trip.is_none() {
+            obs.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(lvl));
+            std::thread::sleep(Duration::from_millis(100));
+            lvl += 0.6;
+            trip = d
+                .wait_event(seen, Duration::ZERO, |e| ev_type(e) == "safety")
+                .map(|(_, e)| e.v);
+        }
+        let trip = trip.or_else(|| {
+            d.wait_event(seen, Duration::from_secs(4), |e| ev_type(e) == "safety")
+                .map(|(_, e)| e.v)
+        });
+        dr.feedback = match trip {
+            Some(e) => format!(
+                "(after the hold, no recent move) tripped after {:.1} s (fader {lvl:.1} dB): {}",
+                t0.elapsed().as_secs_f64(),
+                e["trip"]
+            ),
+            None => format!("(after the hold) no trip (tone up to {lvl:.1} dB fader)"),
+        };
+        obs.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(-144.0));
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = d.try_req(json!({"cmd": "resume"}));
+    }
     // Mains ceiling drill: the engineer slams the spare channel (a -12 dBFS tone) and the main fader up by 10 dB
     // each: short-term loudness and true peak far above the limits -> hold + STOP/revert, `resume` afterwards.
     if o.drills {
