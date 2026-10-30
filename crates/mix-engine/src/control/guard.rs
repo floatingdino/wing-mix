@@ -201,7 +201,9 @@ impl Guard {
             }
             // a reversal needs one spare: a revert of this move would be another one
             let dir = c.from.as_ref().map_or(0, |f| direction(f, &c.to));
-            let reverses = t.changes > 0 && dir != 0 && (dir == -t.last_dir || !matches!(c.to, Value::Float(_)));
+            let reverses = t.changes > 0
+                && dir != 0
+                && (dir == -t.last_dir || !matches!(c.to, Value::Float(_)));
             if reverses && t.reversals + 1 >= cfg.max_reversals {
                 return Err(Block::Never(format!(
                     "{} would reverse again ({} reversals)",

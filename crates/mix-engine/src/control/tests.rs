@@ -61,9 +61,15 @@ fn keep_rule() {
 
 #[test]
 fn block_and_type() {
-    assert_eq!(guard::block_of(&ParamId::new("input.3/eq/band.1.gain")), "eq");
+    assert_eq!(
+        guard::block_of(&ParamId::new("input.3/eq/band.1.gain")),
+        "eq"
+    );
     assert_eq!(guard::block_of(&ParamId::new("input.3/fader")), "fader");
-    assert_eq!(action_type(&mv("input.3/fader", 0.0, 1.0, 0.1)), "balance:fader");
+    assert_eq!(
+        action_type(&mv("input.3/fader", 0.0, 1.0, 0.1)),
+        "balance:fader"
+    );
     assert!(guard::is_db_param(&ParamId::new("input.3/eq/band.1.gain")));
     assert!(!guard::is_db_param(&ParamId::new("input.3/eq/band.1.freq")));
 }
@@ -78,7 +84,9 @@ fn hunting_guard_limits_reversals() {
     assert_eq!(g.record(&p, &f(-10.0), &f(-7.0), 0.0, &c), None);
     assert_eq!(g.record(&p, &f(-7.0), &f(-4.0), 1.0, &c), None);
     assert_eq!(g.reversals(&p), 0);
-    assert!(g.check(&mv("input.1/fader", -4.0, -1.0, 0.1), 2.0, &c).is_ok());
+    assert!(g
+        .check(&mv("input.1/fader", -4.0, -1.0, 0.1), 2.0, &c)
+        .is_ok());
     // down: a reversal, then the param cools down
     assert_eq!(g.record(&p, &f(-4.0), &f(-7.0), 2.0, &c), None);
     assert_eq!(g.reversals(&p), 1);
@@ -88,7 +96,9 @@ fn hunting_guard_limits_reversals() {
     ));
     // after the cool-down: continuing down is fine, going up again would need the last spare reversal
     let later = 3.0 + c.reversal_cooldown_s;
-    assert!(g.check(&mv("input.1/fader", -7.0, -9.0, 0.1), later, &c).is_ok());
+    assert!(g
+        .check(&mv("input.1/fader", -7.0, -9.0, 0.1), later, &c)
+        .is_ok());
     assert!(matches!(
         g.check(&mv("input.1/fader", -7.0, -5.0, 0.1), later, &c),
         Err(Block::Never(_))
@@ -134,7 +144,9 @@ fn refused_direction_is_not_retried() {
         Err(Block::Never(_))
     ));
     // the other direction is still fine, and the action type is not penalised
-    assert!(g.check(&mv("input.13/fader", -4.0, -6.0, 0.2), 0.0, &c).is_ok());
+    assert!(g
+        .check(&mv("input.13/fader", -4.0, -6.0, 0.2), 0.0, &c)
+        .is_ok());
     assert_eq!(g.type_reverts("balance:fader"), 0);
 }
 
@@ -149,7 +161,11 @@ fn engineer_hold() {
         Err(Block::Wait { .. })
     ));
     assert!(g
-        .check(&mv("input.1/fader", 0.0, -3.0, 0.1), 10.0 + c.engineer_hold_s, &c)
+        .check(
+            &mv("input.1/fader", 0.0, -3.0, 0.1),
+            10.0 + c.engineer_hold_s,
+            &c
+        )
         .is_ok());
 }
 
@@ -216,8 +232,14 @@ fn events_serialise() {
         objective: 0.3,
     };
     let j = serde_json::to_string(&e).unwrap();
-    assert!(j.contains("\"type\":\"holding\"") && j.contains("converged"), "{j}");
+    assert!(
+        j.contains("\"type\":\"holding\"") && j.contains("converged"),
+        "{j}"
+    );
     let s = MoveSummary::of(&mv("input.1/fader", 0.0, -3.0, 0.1), false);
     let j = serde_json::to_string(&ControlEvent::Suggested { moves: vec![s] }).unwrap();
-    assert!(j.contains("suggested") && j.contains("input.1/fader"), "{j}");
+    assert!(
+        j.contains("suggested") && j.contains("input.1/fader"),
+        "{j}"
+    );
 }

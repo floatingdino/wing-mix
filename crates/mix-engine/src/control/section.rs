@@ -8,6 +8,8 @@
 //! On mix-sim's synthetic song (looping 8 s, seed 7) the steady-state excursions are ≤ 1.9 LU / 2.4 dB with the
 //! defaults (fast 1.5 s, slow 10 s), against 3.5 LU / 4.0 dB unsmoothed.
 
+#![allow(clippy::needless_range_loop)] // index-parallel band arrays read clearer with explicit indices
+
 use mix_core::bands::N_ERB;
 use mix_core::features::Features;
 
@@ -109,8 +111,8 @@ impl SectionDetector {
         let spec = if n > 0 { (s / n as f32).sqrt() } else { 0.0 };
         let dl = self.cur_l - self.ref_l;
         let warm = self.seen_s >= self.cfg.warmup_s;
-        let over = warm
-            && (dl.abs() >= self.cfg.loudness_jump_lu || spec >= self.cfg.spectral_jump_db);
+        let over =
+            warm && (dl.abs() >= self.cfg.loudness_jump_lu || spec >= self.cfg.spectral_jump_db);
         // update the reference (running mean until it has seen `tau_s`, then EMA); frozen while a jump is pending
         if !over {
             self.seen_s += dt;

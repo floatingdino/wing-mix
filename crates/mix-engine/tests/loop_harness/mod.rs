@@ -186,7 +186,8 @@ pub struct Rig {
 /// The default WING remit policy.
 pub fn default_policy() -> Policy {
     Policy::load(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/remit/wing-default.toml"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/remit/wing-default.toml"),
     )
     .expect("policy")
 }
@@ -314,7 +315,12 @@ impl Rig {
         for p in self.ctl.curve() {
             eprintln!(
                 "  t {:6.1}  objective {:.3}  distance {:.3}  load {:5.2}  problems {:3}  kept {}",
-                p.at_s, p.score.objective, p.score.distance, p.score.target_load, p.score.problems, p.kept
+                p.at_s,
+                p.score.objective,
+                p.score.distance,
+                p.score.target_load,
+                p.score.problems,
+                p.kept
             );
         }
         for r in self.ctl.records() {

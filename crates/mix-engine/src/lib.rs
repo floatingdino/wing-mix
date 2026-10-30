@@ -12,8 +12,8 @@ pub mod control;
 pub mod diagnosis;
 pub mod plan;
 
-pub use diagnosis::{diagnose, Diagnosis, DiagnosisConfig, DiagnosisInput, Problem, ProblemKind};
 pub use control::{ControlConfig, ControlEvent, Controller, Mode};
+pub use diagnosis::{diagnose, Diagnosis, DiagnosisConfig, DiagnosisInput, Problem, ProblemKind};
 pub use plan::{plan, Plan, PlanConfig, PlanInput, PlanStep, Remit};
 
 /// Crate name, used by the scaffold smoke test.

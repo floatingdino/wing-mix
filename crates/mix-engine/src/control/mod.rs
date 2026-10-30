@@ -159,12 +159,20 @@ struct Running {
 
 #[derive(Debug)]
 enum State {
-    Settling { until: f64, purpose: Purpose },
-    Measuring { purpose: Purpose },
+    Settling {
+        until: f64,
+        purpose: Purpose,
+    },
+    Measuring {
+        purpose: Purpose,
+    },
     /// Decide from the last measurement on the next tick (after a refusal: nothing changed).
     Deciding,
     Executing(Box<Running>),
-    Reverting { job: MoveId, verify: Box<Verify> },
+    Reverting {
+        job: MoveId,
+        verify: Box<Verify>,
+    },
     /// The actuator is stopped: wait for `Ready`.
     Paused,
 }
@@ -946,14 +954,13 @@ impl<'k> Controller<'k> {
                 }
                 Err(Block::Never(_)) => continue,
             }
-            let travel: f64 = b
-                .mv
-                .action
-                .changes
-                .iter()
-                .filter(|c| guard::is_db_param(&c.param))
-                .filter_map(|c| Some((c.to.as_f64()? - c.from.as_ref()?.as_f64()?).abs()))
-                .sum();
+            let travel: f64 =
+                b.mv.action
+                    .changes
+                    .iter()
+                    .filter(|c| guard::is_db_param(&c.param))
+                    .filter_map(|c| Some((c.to.as_f64()? - c.from.as_ref()?.as_f64()?).abs()))
+                    .sum();
             if self.change_db + travel > self.cfg.max_change_db {
                 self.set_hold(HoldReason::Budget);
                 return;
@@ -1078,13 +1085,12 @@ impl<'k> Controller<'k> {
                         inspect: insp,
                     };
                     // conditional moves wait in the pending queue (published now, not when reached)
-                    let missing: Vec<String> = b
-                        .mv
-                        .needs_confirmation
-                        .iter()
-                        .filter(|k| !self.session.is_confirmed(k))
-                        .cloned()
-                        .collect();
+                    let missing: Vec<String> =
+                        b.mv.needs_confirmation
+                            .iter()
+                            .filter(|k| !self.session.is_confirmed(k))
+                            .cloned()
+                            .collect();
                     if missing.is_empty() {
                         self.plan.push_back(b);
                     } else {

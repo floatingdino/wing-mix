@@ -18,9 +18,7 @@ use mix_actuator::ActuatorEvent;
 use mix_core::bands::N_ERB;
 use mix_core::ids::ParamId;
 use mix_core::value::Value;
-use mix_engine::control::{
-    ControlConfig, ControlEvent, HoldReason, Mode, Outcome, PlanReason,
-};
+use mix_engine::control::{ControlConfig, ControlEvent, HoldReason, Mode, Outcome, PlanReason};
 use mix_engine::plan::{
     state::{CutSettings, DynSettings, EqSettings, GateSettings},
     TransferModel, WingTransfer,
@@ -147,11 +145,7 @@ fn autopilot_converges_on_degraded_fixture() {
     let r = converge("autopilot seed 7 (degraded)", 600.0);
     let curve = r.curve();
     let (first, last) = (curve[0], *curve.last().unwrap());
-    assert_eq!(
-        r.ctl.holding(),
-        Some(HoldReason::Converged),
-        "{curve:.3?}"
-    );
+    assert_eq!(r.ctl.holding(), Some(HoldReason::Converged), "{curve:.3?}");
     // converged within tolerance; later windows of the unchanged mix stay within the resume hysteresis
     let at_hold = r
         .log
@@ -168,12 +162,24 @@ fn autopilot_converges_on_degraded_fixture() {
     assert!(at_hold <= target, "{curve:.3?}");
     assert!(last <= target * r.ctl.config().resume_factor, "{curve:.3?}");
     assert!(at_hold < 0.4 * first, "{first:.3} -> {at_hold:.3}");
-    assert!(r.ctl.records().len() <= 30, "{} batches", r.ctl.records().len());
+    assert!(
+        r.ctl.records().len() <= 30,
+        "{} batches",
+        r.ctl.records().len()
+    );
     assert_no_hunting(&r);
     // the ground truth is undone in the right direction
     let f = |p: &str| value(&r, p).as_f64().unwrap();
-    assert!(f("input.7/fader") < 1.0 - 2.0, "bass {}", f("input.7/fader"));
-    assert!(f("input.13/fader") > -10.0 + 2.0, "vox {}", f("input.13/fader"));
+    assert!(
+        f("input.7/fader") < 1.0 - 2.0,
+        "bass {}",
+        f("input.7/fader")
+    );
+    assert!(
+        f("input.13/fader") > -10.0 + 2.0,
+        "vox {}",
+        f("input.13/fader")
+    );
 }
 
 /// Sampled: the first batches of the same run (solo inspections, keep, objective falling).
@@ -205,7 +211,10 @@ fn autopilot_first_batches_reduce_objective() {
     assert!(r.sim.solo_state().unwrap().active.is_empty());
     assert_eq!(r.ctl.budget_used().0, 2);
     assert_no_hunting(&r);
-    assert_eq!(r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })), 0);
+    assert_eq!(
+        r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })),
+        0
+    );
 }
 
 #[test]
@@ -253,14 +262,22 @@ fn suggest_mode_plans_but_writes_nothing() {
         .unwrap();
     eprintln!("suggested:");
     for m in &moves {
-        eprintln!("  {:<14} {} (gain {:.3})", m.phase, m.explanation, m.predicted_gain);
+        eprintln!(
+            "  {:<14} {} (gain {:.3})",
+            m.phase, m.explanation, m.predicted_gain
+        );
     }
     assert!(moves.len() >= 3);
-    assert!(moves.iter().all(|m| !m.changes.is_empty() && m.predicted_gain > 0.0));
+    assert!(moves
+        .iter()
+        .all(|m| !m.changes.is_empty() && m.predicted_gain > 0.0));
     // nothing submitted, nothing written
     assert!(r.actuator.write_log().is_empty());
     assert!(r.act_log.is_empty(), "{:?}", r.act_log);
-    assert_eq!(r.count(|e| matches!(e, ControlEvent::BatchStarted { .. })), 0);
+    assert_eq!(
+        r.count(|e| matches!(e, ControlEvent::BatchStarted { .. })),
+        0
+    );
     for (p, v) in before {
         assert_eq!(r.sim.read(&p).unwrap(), v, "{p}");
     }
@@ -276,7 +293,10 @@ fn suggest_mode_plans_but_writes_nothing() {
         ControlEvent::Planned { .. } | ControlEvent::Suggested { .. }
     )));
     assert!(r.actuator.write_log().is_empty());
-    assert_eq!(r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })), 0);
+    assert_eq!(
+        r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })),
+        0
+    );
 }
 
 // -------------------------------------------------------------------------------------------------------------
@@ -360,13 +380,15 @@ fn mispredicted_batch_is_reverted_and_penalised() {
         .unwrap();
     assert!(pen.ends_with(":eq"), "{pen}");
     assert!(r.ctl.guard().type_reverts(&pen) >= 1);
-    assert!(r.count(|e| matches!(
-        e,
-        ControlEvent::Planned {
-            reason: PlanReason::Reverted,
-            ..
-        }
-    )) >= 1);
+    assert!(
+        r.count(|e| matches!(
+            e,
+            ControlEvent::Planned {
+                reason: PlanReason::Reverted,
+                ..
+            }
+        )) >= 1
+    );
     assert!(r.actuator.journal().entries().iter().any(|e| matches!(
         &e.entry,
         mix_surface::journal::Entry::Applied { batch } if batch.label.starts_with("undo")
@@ -410,11 +432,7 @@ fn engineer_move_replans_and_is_respected() {
     assert_eq!(first_plan.1, PlanReason::EngineerMoved);
     assert!(first_plan.0 >= 4.0 + SECONDS, "{first_plan:?}");
     // the engineer's fader is left alone during the hold, even though the vocal is still low
-    assert!(r
-        .actuator
-        .write_log()
-        .iter()
-        .all(|w| w.param != vox));
+    assert!(r.actuator.write_log().iter().all(|w| w.param != vox));
     assert_eq!(value(&r, "input.13/fader"), Value::Float(-8.0));
 }
 
@@ -426,12 +444,17 @@ fn section_change_replans() {
     let mut r = rig(&fx.pair.degraded, c);
     // after the detector's warm-up, while the first batch is being verified
     r.run(14.0);
-    assert_eq!(r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })), 0);
+    assert_eq!(
+        r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })),
+        0
+    );
     assert!(r.count(|e| matches!(e, ControlEvent::BatchStarted { .. })) == 1);
     // the band drops to a quiet section: every source 10 dB down
     let mut quiet = fx.pair.song.clone();
     for t in &mut quiet.tracks {
-        t.audio.iter_mut().for_each(|x| *x *= 10f32.powf(-10.0 / 20.0));
+        t.audio
+            .iter_mut()
+            .for_each(|x| *x *= 10f32.powf(-10.0 / 20.0));
     }
     r.sim.load_inputs(quiet).unwrap();
     let planned = r.run_until(25.0, |r| {
@@ -459,7 +482,10 @@ fn section_change_replans() {
         .expect("section change detected");
     assert!((14.0..24.0).contains(&t_sec), "{t_sec}");
     assert!(jump < -5.0, "{jump}");
-    assert_eq!(r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })), 1);
+    assert_eq!(
+        r.count(|e| matches!(e, ControlEvent::SectionChanged { .. })),
+        1
+    );
     let t_plan = r
         .log
         .iter()
@@ -513,9 +539,15 @@ fn conditional_moves_wait_for_confirmation() {
     r.print_report("pending confirmations");
     assert!(asked, "nothing pending");
     let key = r.ctl.pending()[0].key.clone();
-    assert!(r.count(|e| matches!(e, ControlEvent::ConfirmationNeeded { key: k, .. } if *k == key)) == 1);
+    assert!(
+        r.count(|e| matches!(e, ControlEvent::ConfirmationNeeded { key: k, .. } if *k == key)) == 1
+    );
     // no fader was written while unconfirmed
-    assert!(r.actuator.write_log().iter().all(|w| !w.param.as_str().ends_with("/fader")));
+    assert!(r
+        .actuator
+        .write_log()
+        .iter()
+        .all(|w| !w.param.as_str().ends_with("/fader")));
     // confirm: the fader moves are planned and run
     r.ctl.confirm(&key, &mut r.actuator);
     assert!(r.ctl.pending().iter().all(|p| p.key != key));
