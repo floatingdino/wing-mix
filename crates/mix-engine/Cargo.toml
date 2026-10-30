@@ -11,8 +11,12 @@ mix-analysis = { path = "../mix-analysis" }
 mix-knowledge = { path = "../mix-knowledge" }
 mix-surface = { path = "../mix-surface" }
 serde = { workspace = true }
+wing-blocks = { workspace = true }
+wing-dsp = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 mix-fixtures = { path = "../mix-fixtures" }
 mix-reference = { path = "../mix-reference" }
+mix-sim = { path = "../mix-sim" }
+mix-stems = { path = "../mix-stems" }

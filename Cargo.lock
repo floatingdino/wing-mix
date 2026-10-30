@@ -699,9 +699,13 @@ dependencies = [
  "mix-fixtures",
  "mix-knowledge",
  "mix-reference",
+ "mix-sim",
+ "mix-stems",
  "mix-surface",
  "serde",
  "serde_json",
+ "wing-blocks",
+ "wing-dsp",
 ]
 
 [[package]]

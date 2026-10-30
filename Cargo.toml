@@ -75,6 +75,10 @@ opt-level = 2
 [profile.dev.package.mix-sim]
 opt-level = 2
 
+# The planner (M032) re-diagnoses predicted features for every candidate move; unoptimised it is ~5x slower.
+[profile.dev.package.mix-engine]
+opt-level = 2
+
 # Analysis tests run FFTs and BS.1770 filters over tens of seconds of audio; unoptimised they are too slow.
 [profile.dev.package.mix-sources]
 opt-level = 2
