@@ -2,7 +2,7 @@
 id: M019
 title: mix-wing: correct change Origin for other clients + events for reconnect diff
 stage: S1
-status: done
+status: in_progress
 owner: agent-M019
 depends: [M018]
 branch: task/M019
@@ -50,3 +50,4 @@ after a reconnect. Optionally expose the preamp alias in SimSurface.
   Proposed follow-ups: (1) preamp alias in SimSurface (optional item not done); (2) refresh own-write mirror after
   a conflicting concurrent write (stale mirror when two clients write the same param at once).
 - 2026-10-30 coordinator: merged, make check passes. done. Simultaneous-write stale-mirror risk noted for M052 review.
+- 2026-10-30 coordinator: REOPENED. After merge, full `make check` failed once: wing_sim_engineer_move_pauses_the_actuator_ramp line 519, s.read(fader) = -29.53 vs engineer -1.0 (passes 5/5 alone → load-dependent). Likely the stale-mirror race on near-simultaneous writes. Fix on a new branch task/M019b from main.

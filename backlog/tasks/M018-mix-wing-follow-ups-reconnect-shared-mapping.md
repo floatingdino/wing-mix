@@ -2,7 +2,7 @@
 id: M018
 title: mix-wing follow-ups: auto-reconnect, preamp alias, shared WING mapping with mix-sim
 stage: S1
-status: todo
+status: done
 owner: -
 depends: [M011, M012, M013]
 branch: -
