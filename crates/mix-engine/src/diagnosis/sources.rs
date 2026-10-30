@@ -124,6 +124,42 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
             }
         })
         .collect();
+    // M035: gating is for sparse sources, which the activity rule above excludes: their sources.toml `Gate`
+    // problems (tom_cymbal_bleed, snare_hihat_bleed) are judged on them alone
+    let sparse: Vec<Src<'_>> = cx
+        .input
+        .strips
+        .iter()
+        .filter(|s| {
+            !s.fx_return
+                && s.source.is_some()
+                && !is_active(cx, &s.features)
+                && window_loudness(&s.features) > -70.0
+        })
+        .map(|s| {
+            let level = window_loudness(&s.features) + s.gain_to_main_db;
+            let rel = &s.features.spectrum.erb_mid_rel_db;
+            Src {
+                tap: s,
+                level,
+                erb_abs: std::array::from_fn(|b| rel[b] + level),
+                stem: None,
+            }
+        })
+        .collect();
+    if !sparse.is_empty() && cx.cfg.gate_opportunities {
+        let empty = vec![Bag::new(); sparse.len()];
+        let none = vec![None; sparse.len()];
+        source_problems(
+            cx,
+            &sparse,
+            &BTreeMap::new(),
+            &StemDev::new(),
+            &empty,
+            &none,
+            Some("Gate"),
+        );
+    }
     if srcs.is_empty() {
         cx.note("no active strip taps");
         return;
@@ -144,7 +180,7 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
     let stem_dev = stem_tonal(cx, &srcs, &groups);
     let mask_bag = masking_pairs(cx, &srcs, &groups, &stem_dev);
     let sib_bag = sibilance(cx, &srcs, &groups);
-    source_problems(cx, &srcs, &groups, &stem_dev, &mask_bag, &sib_bag);
+    source_problems(cx, &srcs, &groups, &stem_dev, &mask_bag, &sib_bag, None);
 }
 
 /// `t` shifted by an intent delta.
@@ -886,7 +922,7 @@ fn push_sibilance(
 }
 
 /// sources.toml `problems` of each typed strip. Problems conditioned on sibilance/masking are covered by the
-/// dedicated checks above and skipped here.
+/// dedicated checks above and skipped here. `only_block`: only problems whose action uses that block.
 fn source_problems(
     cx: &mut Ctx<'_>,
     srcs: &[Src<'_>],
@@ -894,6 +930,7 @@ fn source_problems(
     stem_dev: &StemDev,
     mask_bags: &[Bag],
     sib: &[Option<f64>],
+    only_block: Option<&str>,
 ) {
     for (i, s) in srcs.iter().enumerate() {
         let Some(src) = s.tap.source.as_deref().and_then(|x| cx.kb.source(x)) else {
@@ -935,6 +972,15 @@ fn source_problems(
         }
         bag.insert("crest_db".into(), f.loudness.crest_db as f64);
         bag.insert("peak_dbfs".into(), f.loudness.sample_peak_dbfs as f64);
+        // M035 (gate problems): activity = the analyser's active share; noise floor = the inactive frames' level
+        // when the measurement resolves it (crate::proxy::floor_estimate), at the tap
+        bag.insert(
+            "activity_pct".into(),
+            100.0 * (1.0 - f.quality.gated_fraction as f64).clamp(0.0, 1.0),
+        );
+        if let Some(fl) = crate::proxy::floor_estimate(f) {
+            bag.insert("noise_floor_dbfs".into(), fl);
+        }
         if let Some(st) = &f.stereo {
             bag.insert("correlation".into(), st.correlation as f64);
         }
@@ -942,6 +988,11 @@ fn source_problems(
             bag.insert("sibilance_db".into(), v);
         }
         for p in &src.problems {
+            if only_block.is_some_and(|b| p.action.block != b)
+                || (p.action.block == "Gate" && !cx.cfg.gate_opportunities)
+            {
+                continue;
+            }
             let conds: Vec<_> = p.when.iter().chain(p.when_any.iter()).collect();
             if conds.is_empty()
                 || conds

@@ -4,7 +4,7 @@
 //! the actuator; tests step it on a virtual clock together with a SimSurface render and streaming analysers.
 //!
 //! **Cycle.** The meter is restarted ([`MixMeter::restart`]) and, after `window_s` of audio, measured. The main and
-//! strip features are diagnosed against the target and scored with the planner's objective ([`plan::score`]:
+//! strip features are diagnosed against the target and scored with the planner's objective ([`plan::score_with`]:
 //! distance + weighted target-referenced strip/stem problems), so measurements and predictions share one scale.
 //!
 //! **Modes.** [`Mode::Observe`] only measures. [`Mode::Suggest`] also plans and publishes the plan
@@ -38,7 +38,7 @@
 //! **Actuator stops** (STOP, PANIC, safety trip, link loss) pause the loop until the actuator is ready again; then
 //! it re-measures and re-plans. The loop never writes to the surface itself.
 //!
-//! [`plan::score`]: crate::plan::score
+//! [`plan::score_with`]: crate::plan::score_with
 //! [`plan::plan_with`]: crate::plan::plan_with
 
 pub mod config;
@@ -69,7 +69,7 @@ use mix_surface::Role;
 
 use crate::diagnosis::{diagnose, window_loudness, Diagnosis, DiagnosisInput};
 use crate::plan::{
-    plan_with, score, ConsoleState, PlanInput, PlanScore, PlanStep, PlannedMove, Remit,
+    plan_with, score_with, ConsoleState, PlanInput, PlanScore, PlanStep, PlannedMove, Remit,
     TransferModel, WingTransfer,
 };
 
@@ -651,7 +651,9 @@ impl<'k> Controller<'k> {
             &self.cfg.plan.diagnosis,
         )
         .ok()?;
-        let s = score(&d, self.cfg.plan.target_weight);
+        // M035: gate problems are answered by the console's gate state
+        let state = ConsoleState::capture(&*self.surface).ok();
+        let s = score_with(&d, self.cfg.plan.target_weight, state.as_ref());
         self.emit(ControlEvent::Measured {
             at_s: self.now,
             score: s.clone(),

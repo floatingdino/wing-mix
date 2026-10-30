@@ -8,6 +8,11 @@
 //! - Low/high cut: `wing_blocks::filter::FilterBlock::magnitude_db` (`Cchfilter` designs).
 //! - Compressor: `wing_blocks::dynamics::static_gain_db` (WING `respf` law with its quadratic knee).
 //! - Gate: `wing_blocks::gate::GateParams::static_gain_db`.
+//! - Time-dependent dynamics (M035, [`TransferModel::run_dynamics`]): the strip's gate and compressor as the
+//!   wing-blocks `Gate` / `Dynamics` processors (detector, attack/hold/release, LOG/LIN envelope, AUTO) run over
+//!   a level-process proxy of the strip ([`crate::proxy`]).
+//! - De-esser (`DS902`): the wing-blocks `DeEsser902` law (HF/total ratio onset/slope, `range` cap) and its
+//!   dynamic `hqhs12` high shelf ([`TransferModel::deesser_shelf_db`]).
 //! - Pan: wing-engine's mix laws (`mix::law::PanLaw`): constant power for inputs/aux, balance for buses/mains.
 //!
 //! Band responses are power-averaged over each analysis band (ERB40: 5 log-spaced points per band), so a narrow
@@ -20,7 +25,11 @@ use wing_blocks::eq::{BandParams, BandType, EqParams, EqVariant, StdEq};
 use wing_blocks::filter::{FilterBlock, FilterParams, HcSlope, LcSlope};
 use wing_blocks::gate::{GateParams, GateRatio};
 
-use super::state::{BandKind, BandSlot, CutSettings, DynSettings, EqSettings, GateSettings};
+use super::state::{
+    BandKind, BandSlot, CutSettings, DeEsserSettings, DynSettings, EqSettings, GateSettings,
+    StripSettings,
+};
+use mix_surface::model::Block;
 
 /// Points per ERB band for band-averaged responses.
 const POINTS_PER_BAND: usize = 5;
@@ -37,7 +46,36 @@ pub trait TransferModel: Send + Sync {
     fn comp_gain_db(&self, d: &DynSettings, level_db: f64) -> f64;
     /// Static gate/expander gain (dB, ≤ 0) for a detected level (dBFS).
     fn gate_gain_db(&self, g: &GateSettings, level_db: f64) -> f64;
+    /// Process mono audio `x` (sample rate `fs`, the strip's input level) through the strip's gate and compressor
+    /// in chain order, with the signal raised by `gate_shift_db` / `dyn_shift_db` into each block (EQ/filter
+    /// changes before it) and lowered again after it. `false`: not supported (the predictor uses static curves).
+    fn run_dynamics(
+        &self,
+        _s: &StripSettings,
+        _x: &mut [f32],
+        _fs: f64,
+        _gate_shift_db: f64,
+        _dyn_shift_db: f64,
+    ) -> bool {
+        false
+    }
+    /// Gate attack/release value to write for a ~63 % time constant (dynamics.toml convention), ms.
+    fn gate_time_from_tau(&self, tau_ms: f64) -> f64 {
+        tau_ms
+    }
+    /// Band-averaged power gain (dB) per ERB40 band of a de-esser applying `reduction_db`.
+    fn deesser_shelf_db(&self, d: &DeEsserSettings, reduction_db: f64) -> [f64; N_ERB] {
+        let _ = d;
+        [-reduction_db.max(0.0); N_ERB]
+    }
+    /// De-esser reduction (dB) for an HF (above `freq_hz`) / total energy ratio (dB) of a frame.
+    fn deesser_reduction_db(&self, d: &DeEsserSettings, hf_ratio_db: f64) -> f64 {
+        ((hf_ratio_db + 12.0).max(0.0)).min(d.range_db)
+    }
 }
+
+/// WING's 10-90 % / 63 % time ratio `ln 9` (mix-wing-map `convert::TAU_TO_10_90`).
+pub const TAU_TO_10_90: f64 = 2.197_224_577_336_219_6;
 
 /// [`TransferModel`] of the Behringer WING (wing-simulator blocks).
 #[derive(Clone, Debug)]
@@ -194,20 +232,148 @@ impl TransferModel for WingTransfer {
         if !g.on {
             return 0.0;
         }
-        let ratio = match g.ratio {
-            r if r <= 1.75 => GateRatio::R1_5,
-            r if r <= 2.5 => GateRatio::R2,
-            r if r <= 3.5 => GateRatio::R3,
-            r if r.is_finite() => GateRatio::R4,
-            _ => GateRatio::Gate,
+        Self::gate_params(g).static_gain_db(level_db as f32) as f64
+    }
+
+    fn run_dynamics(
+        &self,
+        s: &StripSettings,
+        x: &mut [f32],
+        fs: f64,
+        gate_shift_db: f64,
+        dyn_shift_db: f64,
+    ) -> bool {
+        const BLOCK: usize = 256;
+        let gate_first = s.before(&Block::Gate, &Block::Dyn);
+        let run_gate = |x: &mut [f32]| {
+            let Some(g) = s.gate.filter(|g| g.on) else {
+                return;
+            };
+            let mut gt = wing_blocks::gate::Gate::new();
+            gt.prepare(fs, BLOCK);
+            gt.set_params(&Self::gate_params(&g));
+            scale(x, gate_shift_db);
+            let mut r = vec![0.0f32; BLOCK];
+            for c in x.chunks_mut(BLOCK) {
+                let n = c.len();
+                r[..n].copy_from_slice(c);
+                gt.process(c, &mut r[..n], None);
+            }
+            scale(x, -gate_shift_db);
         };
-        let p = GateParams {
+        let run_comp = |x: &mut [f32]| {
+            let Some(d) = s.dynamics.filter(|d| d.on) else {
+                return;
+            };
+            let mut dy = wing_blocks::dynamics::Dynamics::new(Self::dyn_params(&d));
+            dy.prepare(fs, 1);
+            scale(x, dyn_shift_db);
+            for c in x.chunks_mut(BLOCK) {
+                dy.process_mono(c, None);
+            }
+            scale(x, -dyn_shift_db);
+        };
+        if gate_first {
+            run_gate(x);
+            run_comp(x);
+        } else {
+            run_comp(x);
+            run_gate(x);
+        }
+        true
+    }
+
+    fn gate_time_from_tau(&self, tau_ms: f64) -> f64 {
+        tau_ms * TAU_TO_10_90
+    }
+
+    fn deesser_shelf_db(&self, d: &DeEsserSettings, reduction_db: f64) -> [f64; N_ERB] {
+        use wing_blocks::models::dyn_eq::{band_section, DeqFilter};
+        use wing_blocks::wingcoef::{response, Ctx};
+        if reduction_db <= 1e-4 || !d.on {
+            return [0.0; N_ERB];
+        }
+        let m = (d.mix_pct / 100.0).clamp(0.0, 1.0);
+        if !d.hf_mode {
+            let g = 10f64.powf(-reduction_db / 20.0);
+            return [20.0 * ((1.0 - m) + m * g).log10(); N_ERB];
+        }
+        let ctx = Ctx::new(self.sample_rate);
+        let bq = band_section(
+            DeqFilter::Hp12,
+            &ctx,
+            d.freq_hz.clamp(800.0, 8000.0) as f32,
+            1.0,
+            -reduction_db as f32,
+        );
+        self.average(|f| {
+            let h = response(self.sample_rate, &[bq], f);
+            let wet = (h.re * h.re + h.im * h.im).sqrt();
+            20.0 * ((1.0 - m) + m * wet).max(1e-9).log10()
+        })
+    }
+
+    fn deesser_reduction_db(&self, d: &DeEsserSettings, hf_ratio_db: f64) -> f64 {
+        use wing_blocks::models::dyn_eq::{DS902_ONSET_DB, DS902_SLOPE};
+        ((hf_ratio_db - DS902_ONSET_DB) * DS902_SLOPE).clamp(0.0, d.range_db.clamp(0.0, 12.0))
+    }
+}
+
+impl WingTransfer {
+    fn dyn_params(d: &DynSettings) -> wing_blocks::dynamics::DynParams {
+        use wing_blocks::dynamics::{Detector, DynParams, Envelope};
+        DynParams {
+            thr_db: d.threshold_db as f32,
+            ratio: d.ratio.max(1.0) as f32,
+            knee: d.knee,
+            det: if d.peak_detector {
+                Detector::Peak
+            } else {
+                Detector::Rms
+            },
+            att_ms: d.attack_ms as f32,
+            hld_ms: d.hold_ms as f32,
+            rel_ms: d.release_ms as f32,
+            env: if d.lin_env {
+                Envelope::Lin
+            } else {
+                Envelope::Log
+            },
+            auto: d.auto,
+            mix_pct: d.mix_pct as f32,
+            gain_db: d.makeup_db as f32,
+            link: false,
+            ..DynParams::comp()
+        }
+    }
+
+    fn gate_params(g: &GateSettings) -> GateParams {
+        GateParams {
             threshold_db: g.threshold_db as f32,
             range_db: g.range_db as f32,
-            ratio,
+            attack_ms: g.attack_ms as f32,
+            hold_ms: g.hold_ms as f32,
+            release_ms: g.release_ms as f32,
+            ratio: gate_ratio(g.ratio),
             ..GateParams::gate_default()
-        };
-        p.static_gain_db(level_db as f32) as f64
+        }
+    }
+}
+
+fn gate_ratio(r: f64) -> GateRatio {
+    match r {
+        r if r <= 1.75 => GateRatio::R1_5,
+        r if r <= 2.5 => GateRatio::R2,
+        r if r <= 3.5 => GateRatio::R3,
+        r if r.is_finite() => GateRatio::R4,
+        _ => GateRatio::Gate,
+    }
+}
+
+fn scale(x: &mut [f32], db: f64) {
+    if db != 0.0 {
+        let g = 10f64.powf(db / 20.0) as f32;
+        x.iter_mut().for_each(|v| *v *= g);
     }
 }
 
@@ -301,24 +467,13 @@ mod tests {
     fn comp_and_gate_static_curves() {
         let t = WingTransfer::default();
         let d = DynSettings {
-            on: true,
-            threshold_db: -20.0,
-            ratio: 4.0,
             knee: 0,
-            makeup_db: 0.0,
-            mix_pct: 100.0,
-            peak_detector: false,
-            attack_ms: 10.0,
+            ..DynSettings::new(true, -20.0, 4.0)
         };
         assert!(t.comp_gain_db(&d, -30.0).abs() < 0.1);
         let g = t.comp_gain_db(&d, -8.0);
         assert!((g + 9.0).abs() < 0.3, "{g}");
-        let gate = GateSettings {
-            on: true,
-            threshold_db: -50.0,
-            range_db: 30.0,
-            ratio: f64::INFINITY,
-        };
+        let gate = GateSettings::new(true, -50.0, 30.0, f64::INFINITY);
         assert_eq!(t.gate_gain_db(&gate, -40.0), 0.0);
         assert_eq!(t.gate_gain_db(&gate, -60.0), -30.0);
     }

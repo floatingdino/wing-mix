@@ -12,7 +12,7 @@ mod loop_harness;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use common::{source_for, Fixture, SECONDS};
+use common::{sources_of, Fixture, SECONDS};
 use loop_harness::{default_policy, Rig, TapSpec};
 use mix_actuator::ActuatorEvent;
 use mix_core::bands::N_ERB;
@@ -39,13 +39,14 @@ fn fixture() -> &'static Fixture {
 
 fn strips() -> Vec<TapSpec> {
     let kb = KnowledgeBase::embedded();
+    let src = sources_of(&fixture().reference, kb);
     TRACKS
         .iter()
         .enumerate()
         .map(|(i, n)| TapSpec {
             ch: i as u8 + 1,
             name: n.to_string(),
-            source: source_for(kb, n),
+            source: src[i].clone(),
         })
         .collect()
 }

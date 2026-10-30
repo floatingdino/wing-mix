@@ -107,37 +107,34 @@ impl Measured {
         self.strips
             .iter()
             .enumerate()
-            .map(|(i, (id, a))| {
-                let mut t = StripTap::new(id.clone(), TRACKS[i], a.session.clone(), kb);
-                t.source = source_for(kb, TRACKS[i]);
-                t
-            })
+            .map(|(i, (id, a))| StripTap::new(id.clone(), TRACKS[i], a.session.clone(), kb))
             .collect()
     }
 }
 
-/// Source type of a synthetic track: kb name hints, except "LEAD" (a lead synth, which the hints read as a lead
-/// vocal; source identification M025 would tell them apart).
-pub fn source_for(kb: &KnowledgeBase, name: &str) -> Option<String> {
-    if name == "LEAD" {
-        return Some("keys_synth".into());
-    }
-    kb.source_by_name(name).map(|s| s.id.clone())
+/// Source type of each synthetic track from mix-sources (name + the measured strip features; M035 replaced the
+/// harness's "LEAD is a synth" override: the classifier types it `keys_synth` from its features).
+pub fn sources_of(measured: &Measured, kb: &KnowledgeBase) -> Vec<Option<String>> {
+    measured
+        .strip_taps(kb)
+        .into_iter()
+        .map(|t| t.source)
+        .collect()
 }
 
-/// Stem kind of each synthetic track (kb name hints → family → stem).
-pub fn stem_map(kb: &KnowledgeBase) -> BTreeMap<StripId, StemKind> {
+/// Stem kind of each synthetic track (mix-sources type → family → stem).
+pub fn stem_map(measured: &Measured, kb: &KnowledgeBase) -> BTreeMap<StripId, StemKind> {
     let avail = [
         StemKind::Vocals,
         StemKind::Drums,
         StemKind::Bass,
         StemKind::Other,
     ];
-    TRACKS
-        .iter()
+    sources_of(measured, kb)
+        .into_iter()
         .enumerate()
-        .filter_map(|(i, n)| {
-            let src = source_for(kb, n)?;
+        .filter_map(|(i, src)| {
+            let src = src?;
             let k = stem_of(kb, &src, &avail).unwrap_or(StemKind::Other);
             Some((StripId::new("input", i as u32 + 1), k))
         })
@@ -156,7 +153,7 @@ pub fn profile(reference: &Render, measured: &Measured, kb: &KnowledgeBase) -> T
         &[],
         None,
     );
-    let map = stem_map(kb);
+    let map = stem_map(measured, kb);
     let mut sums: BTreeMap<StemKind, Vec<f32>> = BTreeMap::new();
     for (id, a) in &reference.strips {
         let Some(k) = map.get(id) else { continue };
@@ -180,6 +177,58 @@ pub fn profile(reference: &Render, measured: &Measured, kb: &KnowledgeBase) -> T
     p
 }
 
+/// 70 ms bursts of high-passed noise at the start of sung notes (one per detected note onset).
+pub fn add_sibilants(x: &mut [f32], sr: f64) {
+    let n = x.len();
+    let win = (0.01 * sr) as usize;
+    let env: Vec<f32> = (0..n / win)
+        .map(|k| (x[k * win..(k + 1) * win].iter().map(|v| v * v).sum::<f32>() / win as f32).sqrt())
+        .collect();
+    let mut seed: u64 = 0x5151;
+    let mut rnd = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+    };
+    let len = (0.07 * sr) as usize;
+    let mut k = 1;
+    while k + 8 < env.len() {
+        // onset: silent before, sounding after
+        if env[k - 1] < 1e-3 && env[k + 2] > 1e-2 {
+            let start = k * win;
+            let level = env[k + 2..k + 8].iter().cloned().fold(0.0, f32::max) * 0.55;
+            let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            // 2nd-order high-pass ~5 kHz (RBJ, Q 0.7)
+            let w = std::f32::consts::TAU * 5000.0 / sr as f32;
+            let (c, s) = (w.cos(), w.sin());
+            let a = s / (2.0 * 0.7);
+            let (b0, b1, b2) = ((1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0);
+            let (a0, a1, a2) = (1.0 + a, -2.0 * c, 1.0 - a);
+            for i in 0..len.min(n - start) {
+                let u = rnd();
+                let y = (b0 * u + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+                x2 = x1;
+                x1 = u;
+                y2 = y1;
+                y1 = y;
+                let t = i as f32 / sr as f32;
+                let e = (t / 0.005).min(1.0) * ((len - i) as f32 / (0.01 * sr as f32)).min(1.0);
+                x[start + i] += 2.5 * level * y * e;
+            }
+            k += 30;
+        }
+        k += 1;
+    }
+}
+
+/// The fixture song with `edit` applied to its tracks (e.g. sibilants on VOX, bleed into TOM).
+pub fn song_pair(seed: u64, edit: impl FnOnce(&mut mix_sim::scenes::FixturePair)) -> FixturePair {
+    let mut p = FixturePair::generate(&spec(seed));
+    edit(&mut p);
+    p
+}
+
 /// Everything a planner test needs from one fixture.
 pub struct Fixture {
     pub pair: FixturePair,
@@ -189,7 +238,11 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(seed: u64, kb: &KnowledgeBase) -> Self {
-        let pair = FixturePair::generate(&spec(seed));
+        Self::from_pair(FixturePair::generate(&spec(seed)), kb)
+    }
+
+    /// A fixture from an edited song/scenes (the target is the render of `pair.reference`).
+    pub fn from_pair(pair: FixturePair, kb: &KnowledgeBase) -> Self {
         let sim = pair.console(&pair.reference).unwrap();
         let r = render(&sim);
         let m = Measured::of(&r);

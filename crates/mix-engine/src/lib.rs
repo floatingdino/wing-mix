@@ -11,6 +11,7 @@
 pub mod control;
 pub mod diagnosis;
 pub mod plan;
+pub mod proxy;
 
 pub use control::{ControlConfig, ControlEvent, Controller, Mode};
 pub use diagnosis::{diagnose, Diagnosis, DiagnosisConfig, DiagnosisInput, Problem, ProblemKind};

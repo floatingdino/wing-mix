@@ -230,21 +230,28 @@ fn plan_and_apply(fx: &Fixture, m: &Measured, label: &str) -> (f32, f32, f32, f3
     eprintln!("{label}: planned in {:?}", t0.elapsed());
     print_plan(&plan);
 
-    // remit: the default policy allows every planned change outright
+    // remit: the default policy allows every planned change outright, or the move carries the confirmation
+    // (M035: switching a gate on / a dynamics model is conditional)
     let mut st = ConsoleState::capture(&deg).unwrap();
     for mv in plan.moves() {
         for c in &mv.action.changes {
             let mut req = WriteRequest::new(c.param.clone(), st.spec(&c.param).unwrap().class);
             req.from = st.get(&c.param).cloned();
             req.to = Some(c.to.clone());
-            assert_eq!(
-                evaluate(&policy, &ctx, &session, &req).class,
-                Verdict::Allowed,
-                "{}",
-                c.param
-            );
+            let d = evaluate(&policy, &ctx, &session, &req);
+            match d.class {
+                Verdict::Allowed => {}
+                Verdict::Conditional => assert!(
+                    d.confirm_key
+                        .as_ref()
+                        .is_some_and(|k| mv.needs_confirmation.contains(k)),
+                    "{}: conditional without its confirmation",
+                    c.param
+                ),
+                Verdict::Forbidden => panic!("{}: forbidden", c.param),
+            }
+            st.apply_one(c);
         }
-        st.apply(&mv.action.changes);
         assert!(!mv.explanation.is_empty() && !mv.problem.is_empty());
         assert!(mv.predicted.objective_after < mv.predicted.objective_before);
     }
