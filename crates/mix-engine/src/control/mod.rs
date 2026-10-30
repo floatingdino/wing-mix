@@ -940,8 +940,30 @@ impl<'k> Controller<'k> {
             None => {}
         }
         if obj <= target {
-            self.set_hold(HoldReason::Converged);
-            return;
+            // M039: within the target, keep going only while the planner still has a clearly worthwhile move
+            let min = self.cfg.converge_min_gain;
+            let worthwhile = min > 0.0 && self.since_best < self.cfg.no_progress_cycles && {
+                let has = |c: &Self| {
+                    c.plan.iter().any(|b| {
+                        b.predicted_gain() >= min && c.guard.check(&b.mv, c.now, &c.cfg).is_ok()
+                    })
+                };
+                let mut fresh = false;
+                if let Some(reason) = self.replan.take() {
+                    fresh = self.make_plan(reason);
+                } else if self.plan.is_empty() {
+                    fresh = self.make_plan(PlanReason::Exhausted);
+                }
+                // the rest of an older plan was predicted from an older measurement: ask once more from this one
+                if !has(self) && !fresh {
+                    self.make_plan(PlanReason::Exhausted);
+                }
+                has(self)
+            };
+            if !worthwhile {
+                self.set_hold(HoldReason::Converged);
+                return;
+            }
         }
         if self.since_best >= self.cfg.no_progress_cycles {
             self.set_hold(HoldReason::NoProgress);

@@ -177,6 +177,7 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
     }
 
     levels(cx, &srcs, &groups);
+    balance(cx, &srcs);
     placement(cx, &srcs);
     if cx.cfg.comp_opportunities {
         compression(cx, &srcs);
@@ -185,6 +186,86 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
     let mask_bag = masking_pairs(cx, &srcs, &groups, &stem_dev);
     let sib_bag = sibilance(cx, &srcs, &groups);
     source_problems(cx, &srcs, &groups, &stem_dev, &mask_bag, &sib_bag, None);
+}
+
+/// Hit-only sources whose live mics carry mostly kit bleed between fills: their level says nothing about the
+/// balance within the kit (M039 balance check).
+const SPARSE_SOURCES: &[&str] = &["tom_rack", "tom_floor"];
+
+/// Extra tolerance (LU) of the within-group balance check on top of the kb range's half-width: the ranges are
+/// genre-generic, the balance between them less so.
+const BALANCE_MARGIN_LU: f32 = 1.0;
+
+/// Severity weight of a kit-balance problem: a snare 6 dB under the kick is one of the most audible balance faults
+/// (well above a generic kb level problem's 0.7), and the check is calibrated (matched kits within +-2 LU).
+const BALANCE_WEIGHT: f32 = 1.5;
+
+/// M039 kit balance ("subtle faults"): a drum strip's level relative to the rest of the kit (its stem, or without
+/// stem targets its sources.toml family), compared with the balance the knowledge base's typical levels
+/// (`level_rel_mix_lu`) imply. A stem target fixes the kit's total, not how its strips share it, and the kb's
+/// absolute levels are genre-dependent (mix-sim's matched kit sits ~9 LU under them), but the *differences* between
+/// kick, snare, hats and overheads hold across styles: each strip's offset from its kb typical level is compared
+/// with the kit's median offset. Needs three or more dense members (toms excluded, [`SPARSE_SOURCES`]); tolerance =
+/// the kb range's half-width + [`BALANCE_MARGIN_LU`]. Other families are left out: a lead vocal against its
+/// backing vocals or a lead synth against pads is arrangement, not balance (mix-sim's matched lead vocal sits +5..+10
+/// LU over the kb's lead/backing difference). On mix-sim seeds 3-11 a snare 6 dB down reads -4..-6.5 LU against
+/// the kit, the matched kit within +-2 (hats -5..-6 against a 5.5 LU tolerance).
+fn balance(cx: &mut Ctx<'_>, srcs: &[Src<'_>]) {
+    let main_l = window_loudness(cx.input.main);
+    let mut groups: BTreeMap<String, Vec<(usize, f32, f32)>> = BTreeMap::new();
+    for (i, s) in srcs.iter().enumerate() {
+        let Some(id) = s.tap.source.as_deref() else {
+            continue;
+        };
+        let Some(src) = cx.kb.source(id) else {
+            continue;
+        };
+        if SPARSE_SOURCES.contains(&id) || src.family != mix_knowledge::Family::Drums {
+            continue;
+        }
+        let key = match s.stem {
+            Some(k) => format!("stem:{k:?}"),
+            None => format!("family:{}", src.family.as_str()),
+        };
+        let r = src.level_rel_mix_lu;
+        let off = s.level - main_l - r.mid() as f32;
+        let half = ((r.hi() - r.lo()) / 2.0) as f32;
+        groups.entry(key).or_default().push((i, off, half));
+    }
+    for members in groups.into_values() {
+        if members.len() < 3 {
+            continue;
+        }
+        let mut offs: Vec<f32> = members.iter().map(|m| m.1).collect();
+        offs.sort_by(f32::total_cmp);
+        let n = offs.len();
+        let median = if n % 2 == 1 {
+            offs[n / 2]
+        } else {
+            0.5 * (offs[n / 2 - 1] + offs[n / 2])
+        };
+        let group = "kit";
+        for &(i, off, half) in &members {
+            let s = &srcs[i];
+            let dev = off - median;
+            let tol = half.max(cx.kb.workflow.targets.reference_matching.level_tolerance_lu as f32)
+                + BALANCE_MARGIN_LU;
+            let e = Evidence::new("balance_dev_lu", "lu", dev, 0.0, tol);
+            let explanation = format!(
+                "{} ({}) sits {:+.1} LU against the rest of the {group} relative to the knowledge base's typical balance",
+                s.name(),
+                s.tap.source.as_deref().unwrap_or_default(),
+                dev
+            );
+            cx.push(
+                Draft::new(ProblemKind::Level, Scope::of(s.subject()), e)
+                    .weight(BALANCE_WEIGHT)
+                    .confidence(0.6 * quality_factor(&s.tap.features))
+                    .blocks(&["Fader"])
+                    .explain(explanation),
+            );
+        }
+    }
 }
 
 /// Side of a stereo-pair strip from its name (`OH L`, `KEYS R`, `L`): -1 left, +1 right.
@@ -358,6 +439,12 @@ fn levels(cx: &mut Ctx<'_>, srcs: &[Src<'_>], groups: &BTreeMap<StemKind, Vec<us
         let Some(src) = s.tap.source.as_deref().and_then(|x| cx.kb.source(x)) else {
             continue;
         };
+        // M039: an ungated tom's session level is kit bleed between fills, not its level in the mix (the kb range
+        // is for the hits); on the real multitrack every tom read 12-16 LU "too quiet" and the planner cut eight
+        // other faders to lift a bleed mic. Gating them is M035's gate opportunity.
+        if SPARSE_SOURCES.contains(&src.id.as_str()) {
+            continue;
+        }
         let r = src.level_rel_mix_lu;
         let scopes = s.scopes(cx);
         let sref: Vec<&str> = scopes.iter().map(String::as_str).collect();

@@ -3,7 +3,7 @@
 #
 # The topology is generic (no WING paths) and modelled on wing-simulator fixtures/PUBLIC.snap after role
 # detection: roles below are the *effective* roles (section 6.5). Strip fields:
-#   id, kind, role, tags, chain (block order; position decides coupling), sends (dest, tap_after = last block
+#   id, kind, role, name (optional; stereo pairs are detected from names, M039), tags, chain (block order; position decides coupling), sends (dest, tap_after = last block
 #   before the send's tap, active), feeds_protected (strip output is re-input into a monitor/comms mix after all
 #   of its processing), hosts (fx pseudo-strips: "strip/insert.N" where the slot is inserted; empty = free slot).
 #
@@ -12,7 +12,8 @@
 # user confirmed this session), optional overlay (extra rules appended to the policy), optional action = "solo" with
 # solo_destructive. Expected: class (allowed|conditional|forbidden), reason (first decisive step:
 # unknown|readonly|hard|locked|unconfirmed|deny_tag|default_deny|rule|coupling|revive|inspection), rule (id of the
-# deciding rule, when reason is rule/coupling/revive or an unlock happened), coupled (optional bool).
+# deciding rule, when reason is rule/coupling/revive or an unlock happened), coupled (optional bool), max_delta_pct
+# (optional: the decision's pan/percent envelope).
 
 format = "wing-mix-remit-tests/1"
 
@@ -75,6 +76,64 @@ role = "comms"
 id = "input.44"           # aux input with no route to main or monitors
 kind = "aux"
 role = "unrouted"
+
+[[strip]]
+id = "input.11"           # KEYS L / KEYS R: a stereo pair by name (M039)
+kind = "input"
+role = "foh"
+name = "KEYS L"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "main.1", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.12"
+kind = "input"
+role = "foh"
+name = "KEYS R"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "main.1", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.33"           # OH L / OH R with a post-pan wedge send: pair pans stay coupled
+kind = "input"
+role = "foh"
+name = "OH L"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "bus.8", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.34"
+kind = "input"
+role = "foh"
+name = "OH R"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+sends = [ { dest = "bus.8", tap_after = "pan", active = true } ]
+
+[[strip]]
+id = "input.35"           # CLICK L / CLICK R: a pair, but monitor sources
+kind = "input"
+role = "monitor"
+name = "CLICK L"
+
+[[strip]]
+id = "input.36"
+kind = "input"
+role = "monitor"
+name = "CLICK R"
+
+[[strip]]
+id = "input.38"           # TX / TX on adjacent channels: a pair (lower = left)
+kind = "input"
+role = "foh"
+name = "TX"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
+
+[[strip]]
+id = "input.39"
+kind = "input"
+role = "foh"
+name = "TX"
+chain = ["preamp", "in", "filter", "insert.1", "gate", "eq", "dyn", "insert.2", "fader", "pan"]
 
 [[strip]]
 id = "bus.1"              # VOX VERB: FX bus, its output is re-input into IEM mixes
@@ -694,6 +753,113 @@ param = "input.9/in/delay"
 class = "input_delay"
 overlay = [ { id = "user-delay", params = ["input.*/in/delay"], class = "allowed", priority = 5 } ]
 expect = { class = "allowed", reason = "rule", rule = "user-delay" }
+
+# ===================== stereo pairs (M039) =======================================================================
+# A detected/confirmed stereo pair may spread to full L/R on its own side (input-pair-spread, +-100); mono sources
+# and moves across the centre keep input-level-pan's +-50. Coupling, locks and revive apply as before.
+
+[[case]]
+id = "pair-left-spreads-to-full-left"
+param = "input.11/pan"
+class = "pan"
+from = 0.0
+to = -100.0
+expect = { class = "allowed", reason = "rule", rule = "input-pair-spread", coupled = false, max_delta_pct = 100.0 }
+
+[[case]]
+id = "pair-right-spreads-to-full-right"
+param = "input.12/pan"
+class = "pan"
+from = 30.0
+to = 90.0
+expect = { class = "allowed", reason = "rule", rule = "input-pair-spread", max_delta_pct = 100.0 }
+
+[[case]]
+id = "pair-centre-is-own-side"
+param = "input.12/pan"
+class = "pan"
+from = 60.0
+to = 0.0
+expect = { class = "allowed", reason = "rule", rule = "input-pair-spread", max_delta_pct = 100.0 }
+
+[[case]]
+id = "pair-crossing-centre-keeps-mono-envelope"
+param = "input.11/pan"
+class = "pan"
+from = 0.0
+to = 40.0
+expect = { class = "allowed", reason = "rule", rule = "input-level-pan", max_delta_pct = 50.0 }
+
+[[case]]
+id = "pair-pan-without-value-keeps-mono-envelope"
+param = "input.11/pan"
+class = "pan"
+expect = { class = "allowed", reason = "rule", rule = "input-level-pan", max_delta_pct = 50.0 }
+
+[[case]]
+id = "mono-source-keeps-50"
+param = "input.1/pan"
+class = "pan"
+from = 0.0
+to = -80.0
+expect = { class = "allowed", reason = "rule", rule = "input-level-pan", max_delta_pct = 50.0 }
+
+[[case]]
+id = "pair-fader-unchanged"
+param = "input.11/fader"
+class = "fader"
+from = -10.0
+to = -8.0
+expect = { class = "allowed", reason = "rule", rule = "input-level-pan", max_delta_pct = 50.0 }
+
+[[case]]
+id = "pair-adjacent-same-name"
+param = "input.39/pan"
+class = "pan"
+from = 0.0
+to = 100.0
+expect = { class = "allowed", reason = "rule", rule = "input-pair-spread", max_delta_pct = 100.0 }
+
+[[case]]
+id = "pair-adjacent-lower-is-left"
+param = "input.38/pan"
+class = "pan"
+from = 0.0
+to = 70.0
+expect = { class = "allowed", reason = "rule", rule = "input-level-pan", max_delta_pct = 50.0 }
+
+[[case]]
+id = "pair-coupled-via-post-send-stays-conditional"
+param = "input.34/pan"
+class = "pan"
+from = 0.0
+to = 80.0
+expect = { class = "conditional", reason = "coupling", rule = "input-pair-spread", coupled = true }
+
+[[case]]
+id = "pair-coupled-confirmed-gets-half-envelope"
+param = "input.33/pan"
+class = "pan"
+from = 0.0
+to = -50.0
+confirmed = ["coupling:input-pair-spread"]
+expect = { class = "allowed", reason = "rule", rule = "input-pair-spread", coupled = true, max_delta_pct = 50.0 }
+
+[[case]]
+id = "pair-on-monitor-source-locked"
+param = "input.35/pan"
+class = "pan"
+from = 0.0
+to = -100.0
+expect = { class = "forbidden", reason = "locked" }
+
+[[case]]
+id = "pair-send-into-iem-still-locked"
+param = "input.11/send/bus.8/pan"
+class = "send_pan"
+from = 0.0
+to = -100.0
+expect = { class = "forbidden", reason = "locked" }
 
 # ===================== inspection ================================================================================
 

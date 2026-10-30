@@ -198,10 +198,9 @@ fn ground_truth_status(r: &Rig) -> Vec<(&'static str, bool, String)> {
     ]
 }
 
-/// Seed-7 faults the closed loop does not undo yet (M036 log): the keys' +8 dB at 250 Hz moves the Other stem's
-/// low-mid by ~3 dB inside the reference's ~20 dB window spread, and the snare's -6 dB shows only as Drums-stem tonal
-/// deficits that the power-summed kit already reads on the matched mix (-3..-6 dB).
-const NOT_YET_ADDRESSED: [&str; 2] = ["keys +8 dB at 250 Hz", "snare too quiet (-6 dB)"];
+/// Seed-7 faults the closed loop does not undo yet. M039: none (M036 missed the keys' +8 dB at 250 Hz, found now as a
+/// boost feeding the Other stem's low-mid excess, and the snare's -6 dB, found by the kit-balance check).
+const NOT_YET_ADDRESSED: [&str; 0] = [];
 
 /// Full run: converge on the degraded fixture, then keep running on the (stationary) input: no further moves, no
 /// hunting.
@@ -214,6 +213,11 @@ fn converge(seed_label: &str, max_s: f64) -> Rig {
     let batches = r.ctl.records().len();
     r.run(4.0 * SECONDS);
     r.print_report(seed_label);
+    if std::env::var("M039_LOAD").is_ok() {
+        if let Some(d) = r.ctl.diagnosis() {
+            common::print_diagnosis("last loop measurement", d);
+        }
+    }
     if std::env::var("M036_VERBOSE").is_ok() {
         // the end state, rendered offline and diagnosed as the planner sees it
         let kb = KnowledgeBase::embedded();

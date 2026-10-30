@@ -180,6 +180,9 @@ pub struct Rule {
     /// FX slots: at least one host, and all hosts match.
     pub fx_host_kinds: Option<Vec<StripKind>>,
     pub fx_host_roles: Option<Vec<Role>>,
+    /// Strips in a detected/confirmed stereo pair (`true`) or not (`false`); for pan writes `true` also needs the
+    /// requested value on the strip's own side (M039).
+    pub stereo_pair: Option<bool>,
     pub class: Option<Verdict>,
     #[serde(default)]
     pub priority: i64,
