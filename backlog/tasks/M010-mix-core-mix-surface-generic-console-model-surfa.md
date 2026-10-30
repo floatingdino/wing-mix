@@ -23,3 +23,6 @@ Implement shared types in mix-core (units, Value, Features/TargetProfile skeleto
 - 2026-10-30 agent-M010: started in .worktrees/M010. Plan: mix-core ids/value/units/action (separate files; M020 owns
   bands/features/profile); mix-surface model + Surface trait + remit (policy loader, evaluator, detection) + journal +
   testkit (FakeSurface, conformance suite); data/remit/tests tables driven as unit tests.
+- 2026-10-30 agent-M010: done: mix-core ids/value/units/action; mix-surface model.rs, surface.rs (trait), remit/
+  (policy, eval, detect, evidence, glob). tests/remit_tables.rs drives data/remit/tests/*.toml: 79/79 eval and 45/45
+  detection cases pass first try, plus a policy-mutation check. Next: journal, testkit (FakeSurface, conformance).
