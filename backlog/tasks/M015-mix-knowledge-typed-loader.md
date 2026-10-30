@@ -2,7 +2,7 @@
 id: M015
 title: mix-knowledge: typed loader + consistency checker
 stage: S1
-status: review
+status: done
 owner: task-agent-M015
 depends: [M001, M005]
 branch: task/M015
@@ -29,3 +29,4 @@ Check WING attack/release/ratio ranges noted in the TOML against wing-simulator'
   Test: `cargo test -p mix-knowledge` (27 tests, ~0.1 s) and `make check` (passes). API: `KnowledgeBase::{load(dir), embedded(), from_raw, parse_unchecked}`, `source_by_name/match_sources`, `presets_for/presets_by_source`, `rules_by_feature/rules_for_source/problems_by_feature`, `term/resolve_phrase/scaled_deltas`, `masking_winner`, `check::check`. Structs use deny_unknown_fields, so schema drift in a TOML file fails loading naming the field.
   WING range check (vs wing-blocks gate.rs/dynamics.rs/eq.rs/filter.rs/models/dyn_eq.rs, pinned rev 957b406; pinned as a test): all gate/comp preset attack/hold/release/range/ratio/mix ranges are inside the console limits. Mismatches: (1) deess_preset vocal_deess and bv_deess freq_hz = [5000, 8500] but WING DS902 `f` clamps 800..8000 Hz (adapter must clamp; data left generic). (2) workflow.toml [blocks.Dyn] note says ratio 1.1..100 but wing-blocks clamps ratio 1.0..100 (note only). (3) Time-constant definitions differ: dynamics.toml says attack/release are ~63 % (tau) times; wing-blocks gate attack/release are 10-90 % times (tau = t/2.197) and comp LOG env uses tau = att/rel, LIN env is constant dB rate; M032 must convert gate times per console model rather than reuse the numbers directly.
   Proposed follow-ups: M032 gate-time conversion (above); optionally add a wing-blocks-backed dev-dependency test once mix-sim exposes block ranges, replacing the hard-coded WING_* tables in tests.rs.
+- 2026-10-30 coordinator: merged, make check passes. done. WING mismatches (DS902 800–8000 Hz clamp, ratio 1.0, gate 10–90% times) carried into M011/M032 notes.

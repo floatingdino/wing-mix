@@ -10,7 +10,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 | Task | Agent | Model | Branch | Started |
 |---|---|---|---|---|
 | M010 | background subagent (session-local) | opus | task/M010 | 2026-10-30 |
-| M015 | background subagent (session-local) | sonnet | task/M015 | 2026-10-30 |
 | M020 | background subagent (session-local) | opus | task/M020 | 2026-10-30 |
 
 ## Decisions log
