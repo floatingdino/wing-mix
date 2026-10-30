@@ -9,7 +9,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 ## In flight
 | Task | Agent | Model | Branch | Started |
 |---|---|---|---|---|
-| M017 | background subagent (session-local) | sonnet | task/M017 | 2026-10-30 |
 | M018 | background subagent (session-local) | sonnet | task/M018 | 2026-10-30 |
 | M032 | background subagent (session-local) | opus | task/M032 (new base) | 2026-10-30 |
 
