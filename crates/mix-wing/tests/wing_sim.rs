@@ -561,3 +561,14 @@ fn wing_sim_engineer_move_pauses_the_actuator_ramp() {
     assert_eq!(engineer.read(&fader).unwrap(), Value::Float(-1.0));
     let _ = id;
 }
+
+/// M038: as the in-process test, against the wing-sim console (its own logic re-maps the slot).
+#[test]
+fn wing_sim_actuator_writes_the_model_switch_before_the_blocks_params() {
+    let Some(d) =
+        daemon_or_skip("wing_sim_actuator_writes_the_model_switch_before_the_blocks_params")
+    else {
+        return;
+    };
+    common::model_switch_is_written_before_the_blocks_params(std::sync::Arc::new(d.connect()));
+}

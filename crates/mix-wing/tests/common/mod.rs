@@ -268,3 +268,145 @@ pub fn check_monitor_classification(s: &WingSurface) {
     let d = decide("system/cfg/solo/mode", Value::Enum("SIP".into()));
     assert!(!d.is_allowed());
 }
+
+// ---- model-switch ordering (M038) -----------------------------------------------------------------------------
+
+/// Default remit, except that model switches are allowed (conditional/coupled in the shipped policy; the write
+/// ordering is what is under test).
+struct ModelsAllowed(mix_actuator::PolicyGate);
+
+impl mix_actuator::RemitGate for ModelsAllowed {
+    fn check_write(&self, req: &WriteRequest, base: &Value) -> mix_surface::remit::Decision {
+        use mix_surface::model::ParamClass as C;
+        let mut d = self.0.check_write(req, base);
+        if matches!(
+            req.class,
+            C::EqModel | C::DynamicsModel | C::FilterModel | C::FxModel
+        ) {
+            d.class = mix_surface::remit::Verdict::Allowed;
+        }
+        d
+    }
+    fn check_inspection(
+        &self,
+        kind: mix_surface::remit::InspectionKind,
+        strip: &StripId,
+    ) -> mix_surface::remit::Decision {
+        self.0.check_inspection(kind, strip)
+    }
+}
+
+/// One batch = a model switch (`input.1/eq/model` -> SOUL) + a model-dependent param of that block + an unrelated
+/// fader. The actuator must write the switch first, wait for `ParamsRemapped`, then write the block's param against
+/// the re-resolved spec, in one move (one `Done`). Slow wall-clock ticks: the console's events are asynchronous.
+pub fn model_switch_is_written_before_the_blocks_params(s: std::sync::Arc<WingSurface>) {
+    use mix_actuator::{Actuator, ActuatorConfig, ActuatorEvent, PolicyGate};
+    use mix_core::action::{Action, ParamChange};
+    use mix_surface::surface::SurfaceEvent;
+    let strip = StripId::new("input", 1);
+    let model = ParamId::new("input.1/eq/model");
+    // Discover a model-dependent EQ param of SOUL and put the console back on its prior model.
+    let prior = s.read(&model).unwrap();
+    assert_ne!(
+        prior,
+        Value::Enum("SOUL".into()),
+        "start on another eq model"
+    );
+    s.write(&model, Value::Enum("SOUL".into())).unwrap();
+    eventually_ok("SOUL params resolved", || {
+        s.params(&strip)
+            .unwrap()
+            .iter()
+            .any(|p| p.model_dependent && p.id.as_str().starts_with("input.1/eq/"))
+    });
+    let dep = s
+        .params(&strip)
+        .unwrap()
+        .into_iter()
+        .find(|p| {
+            p.model_dependent
+                && !p.read_only
+                && p.id.as_str().starts_with("input.1/eq/")
+                && p.range.is_some()
+        })
+        .expect("a model-dependent eq param");
+    let (lo, hi) = dep.range.unwrap();
+    let target = Value::Float(
+        dep.coerce(&Value::Float(lo + 0.3 * (hi - lo)))
+            .unwrap()
+            .as_f64()
+            .unwrap(),
+    );
+    s.write(&model, prior.clone()).unwrap();
+    eventually_ok("back on the prior model", || {
+        s.read(&model).unwrap() == prior
+    });
+    s.client().barrier(Duration::from_secs(10)).unwrap();
+
+    s.write(&ParamId::new("input.2/fader"), Value::Float(-20.0))
+        .unwrap();
+    let watch = s.subscribe();
+    let cfg = ActuatorConfig {
+        remap_wait_s: 1.0e6, // wall-clock events: wait for the event, not the clock
+        ..Default::default()
+    };
+    let dt = 1.0 / cfg.tick_hz;
+    let gate = ModelsAllowed(PolicyGate::new(policy(), &*s).unwrap());
+    let mut a = Actuator::new(s.clone(), Box::new(gate), cfg);
+    let ev = a.subscribe();
+    let id = a.submit(
+        Action::new("switch eq")
+            .with(ParamChange::new(dep.id.as_str(), target.clone()))
+            .with(ParamChange::new("input.2/fader", -3.0))
+            .with(ParamChange::new(model.as_str(), Value::Enum("SOUL".into()))),
+    );
+    let mut t = 0.0;
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    let mut done = false;
+    while !done {
+        assert!(std::time::Instant::now() < end, "move did not finish");
+        t += dt;
+        a.tick(Duration::from_secs_f64(t));
+        std::thread::sleep(Duration::from_millis(5));
+        for e in ev.try_iter() {
+            match e {
+                ActuatorEvent::Done { id: i, .. } if i == id => done = true,
+                ActuatorEvent::Aborted { id: i, reason, .. } if i == id => {
+                    panic!("aborted: {reason:?}")
+                }
+                ActuatorEvent::Refused { id: i, reason, .. } if i == id => {
+                    panic!("refused: {reason:?}")
+                }
+                _ => {}
+            }
+        }
+    }
+    let log = a.write_log();
+    let at = |p: &str| log.iter().position(|w| w.param.as_str() == p);
+    let m = at(model.as_str()).expect("model written");
+    let first_dep = at(dep.id.as_str()).expect("block param written");
+    assert!(m < first_dep, "switch first: {log:?}");
+    assert!(
+        log[first_dep].at_s > log[m].at_s,
+        "block params only after the switch (and its remap): {log:?}"
+    );
+    assert!(log
+        .iter()
+        .filter(|w| w.param == dep.id)
+        .all(|w| !matches!(w.value, Value::Enum(_))));
+    // the event was seen before the move finished
+    assert!(watch
+        .try_iter()
+        .any(|e| matches!(e, SurfaceEvent::ParamsRemapped { .. })));
+    s.client().barrier(Duration::from_secs(10)).unwrap();
+    assert_eq!(s.read(&model).unwrap(), Value::Enum("SOUL".into()));
+    assert_eq!(s.read(&dep.id).unwrap(), target);
+}
+
+fn eventually_ok(what: &str, f: impl Fn() -> bool) {
+    let end = std::time::Instant::now() + Duration::from_secs(15);
+    while !f() {
+        assert!(std::time::Instant::now() < end, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

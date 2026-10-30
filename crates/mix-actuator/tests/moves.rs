@@ -6,16 +6,16 @@ use common::*;
 use mix_actuator::{
     AbortReason, ActuatorConfig, ActuatorEvent, Job, JobKind, PolicyGate, Refusal, RemitGate,
 };
+use mix_core::action::{Action, ParamChange};
 use mix_core::ids::StripId;
+use mix_core::value::Value;
 use mix_surface::model::ParamClass;
 use mix_surface::remit::{Decision, InspectionKind, WriteRequest};
-use std::sync::Arc;
-use mix_core::action::{Action, ParamChange};
-use mix_core::value::Value;
 use mix_surface::remit::{Reason, Verdict};
 use mix_surface::testkit::FakeSurface;
 use mix_surface::Surface;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 fn mv(label: &str, changes: &[(&str, Value)]) -> Action {
     changes.iter().fold(Action::new(label), |a, (id, v)| {
@@ -262,7 +262,6 @@ fn never_ramps_across_a_model_change() {
     assert!(r
         .find(|e| matches!(e, ActuatorEvent::Done { id, changes } if *id == mixed && changes.len() == 3))
         .is_some());
-
 }
 
 #[test]
