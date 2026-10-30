@@ -272,7 +272,15 @@ fn preamp_alias_follows_the_patch_and_the_source() {
         s.read(&ParamId::new("source.a.5/g")).unwrap(),
         Value::Float(18.5)
     );
-    driver.client().barrier(Duration::from_secs(2)).unwrap();
+    // `s`'s write travels s -> console -> driver; poll the driver's mirror instead of racing it.
+    s.client().barrier(Duration::from_secs(2)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while driver.read(&ParamId::new("source.a.5/g")).unwrap() != Value::Float(18.5)
+        && Instant::now() < deadline
+    {
+        driver.client().barrier(Duration::from_secs(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(
         driver.read(&ParamId::new("source.a.5/g")).unwrap(),
         Value::Float(18.5),

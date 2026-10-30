@@ -2,10 +2,10 @@
 id: M066
 title: Make CI green on macOS and Linux
 stage: S6
-status: todo
-owner: -
+status: in_progress
+owner: agent-M066
 depends: []
-branch: -
+branch: task/M066
 model: sonnet
 ---
 
@@ -30,3 +30,4 @@ Pushing the task branch to origin is allowed for this task only; do not push mai
 
 ## Log
 - 2026-10-31 coordinator: created; CI red since M021 went unnoticed (coordinator now checks CI after each push).
+- 2026-10-31 agent-M066: causes: (1) linux alsa-sys -> workflow installs libasound2-dev pkg-config; (2) inproc.rs preamp_alias test read the driver mirror after only a driver barrier (s->console->driver propagation race) -> s barrier + poll. Added rust-cache. Flaky test 20x parallel passes locally. Next: push and watch CI.
