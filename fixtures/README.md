@@ -100,3 +100,23 @@ Section labels are the analyser's hints, not the song's real form. Tests: `mix_f
 lists these at run time and `matched_pair(fx, song, Some(section), cache, max_dur)` returns the multitrack excerpt
 plus the reference profile of the same section (for M031/M033/M052).
 `mix-describe`'s `worship` genre (aliases `contemporary`, `ccm`) is the average of these 3 references' profiles.
+
+## Alignment sanity and live-context targets (M037)
+`mix_fixtures::sanity` checks a matched (live section, record section) pair before it is used for calibration:
+the FOH sub band (20-60 Hz, loudness-relative) more than 25 dB off the record, or a weak chroma match of the
+section itself at the live key (smoothed chroma cosine < 0.6, or < 0.15 ahead of the best other key; the
+straight play-along song I Know That I Know scores 0.72-0.89 / 0.27-0.58), flags it. Flagged (8 of 26):
+
+| song | section | multitrack s | sub gap dB | chroma (lead) | flags |
+|---|---|---|---|---|---|
+| Holy Forever | 2 bridge 2 | 833-859 | -33.9 | 0.48 (0.19) | sub gap, chroma |
+| | 3 verse 1 | 859-875 | -33.0 | 0.56 (0.12) | sub gap, chroma |
+| | 4 verse 2 | 875-886 | -29.8 | 0.79 (0.51) | sub gap |
+| | 7 bridge 5 | 943-966 | +8.5 | 0.67 (0.13) | chroma |
+| | 11 verse 4 | 1128-1142 | +21.5 | 0.55 (0.08) | chroma |
+| | 14 chorus 3 | 906-941 | +2.6 | 0.51 (0.07) | chroma |
+| Show Me Your Face | 11 verse 6 | 1273-1314 | -48.9 | 0.68 (0.43) | sub gap |
+| | 15 outro | 1272-1313 | -13.4 | 0.54 (0.26) | chroma |
+
+The FOH (52/53) and video (55/56) mixes over the other 18 sections are the human baselines of
+`mix_describe::context` (`live` / `broadcast_video` targets; `crates/mix-engine/tests/live_context.rs`).

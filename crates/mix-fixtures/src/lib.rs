@@ -11,9 +11,11 @@
 //! * [`align`]: chroma + subsequence-DTW alignment of a reference recording to the multitrack (M016).
 //! * [`songs`]: the reference mixes (`fixtures/mixes/`), their multitrack time ranges ([`SONGS`]) and the
 //!   [`matched_pair`] test helper (multitrack excerpt + reference profile of the same song section).
+//! * [`sanity`]: alignment sanity check of a matched section pair (sub gap, chroma agreement; M037).
 
 pub mod align;
 pub mod rpp;
+pub mod sanity;
 pub mod songs;
 
 pub use songs::{matched_pair, song, MatchedPair, Song, SONGS};

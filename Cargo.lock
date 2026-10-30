@@ -697,6 +697,7 @@ dependencies = [
  "mix-actuator",
  "mix-analysis",
  "mix-core",
+ "mix-describe",
  "mix-fixtures",
  "mix-knowledge",
  "mix-reference",
@@ -1874,6 +1875,7 @@ dependencies = [
 name = "wing-mixd"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mix-actuator",
  "mix-analysis",
  "mix-capture",
@@ -1886,6 +1888,7 @@ dependencies = [
  "mix-sim",
  "mix-stems",
  "mix-surface",
+ "mix-testsim",
  "mix-wing",
  "serde",
  "serde_json",

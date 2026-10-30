@@ -71,6 +71,15 @@ fn sections_profile_json_and_section_pick() {
     )
     .unwrap();
     assert_eq!(c.section.as_ref().unwrap().label, "chorus 1");
+    // M037: PLR/LRA describe the section itself, not the song: one chorus has a small loudness range, the song
+    // (quiet verses + loud choruses) a large one.
+    assert!(
+        c.loudness.lra_lu + 2.0 < p.loudness.lra_lu,
+        "section LRA {} vs song {}",
+        c.loudness.lra_lu,
+        p.loudness.lra_lu
+    );
+    assert!(c.loudness.plr_db > 0.0 && c.loudness.plr_db != p.loudness.plr_db);
     assert!(
         c.tonal.tilt_db_per_oct.p50 != p.tonal.tilt_db_per_oct.p50
             || c.transients.onset_rate_hz.p50 != p.transients.onset_rate_hz.p50

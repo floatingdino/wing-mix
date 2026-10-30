@@ -29,7 +29,11 @@ mix-actuator = { path = "../../crates/mix-actuator" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 mix-sim = { path = "../../crates/mix-sim" }
 mix-capture = { path = "../../crates/mix-capture" }
 serde_json = { workspace = true }
+mix-testsim = { path = "../../crates/mix-testsim" }

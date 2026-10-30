@@ -38,6 +38,7 @@ fn main() {
             other => fail(&format!("unknown argument {other}\n{USAGE}")),
         }
     }
+    wing_mixd::signals::install();
     match DaemonHandle::spawn(cfg) {
         Ok(d) => {
             eprintln!(
@@ -46,7 +47,7 @@ fn main() {
                 std::process::id(),
                 d.state_dir().display()
             );
-            d.wait();
+            d.wait_or_signal();
         }
         Err(e) => fail(&format!("error: {e}")),
     }
