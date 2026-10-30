@@ -2,7 +2,7 @@
 id: M063
 title: E2E follow-up fixes: RTA claim origin, feedback guard edge cases, PANIC vs engineer moves
 stage: S4
-status: review
+status: done
 owner: agent-M063
 depends: [M052]
 branch: task/M063
@@ -33,3 +33,4 @@ Each with a regression test (FakeSurface/SimSurface; feedback cases with the rea
   - Files: crates/mix-wing/src/surface.rs, crates/mix-wing/tests/{inproc,wing_sim}.rs, crates/mix-actuator/src/{actuator,safety}.rs, crates/mix-actuator/tests/{guards,safety,sim_feedback}.rs, docs/safety.md, docs/milestones/e2e.md.
   - Proposed follow-ups: re-run tools/e2e/run.sh on merged main; add the 100 Hz post-resume case to mix-engine feedback_music once M039 lands (mix-engine untouched here).
 - 2026-10-31 agent-M063: merged main (M039); no conflicts; make check + feedback_music (35 FOH sections, 0 trips) green; floor -90 and warm-up coexist with the power-mean prominence.
+- 2026-10-31 coordinator: merged after main reconcile; make check + feedback_music (incl. recorded FOH) pass. done. Analyser quiet-programme gate (< -72 dBFS) noted as known limit in docs/safety.md.
