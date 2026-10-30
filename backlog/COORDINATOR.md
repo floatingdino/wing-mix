@@ -9,6 +9,7 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 ## In flight
 | Task | Agent | Model | Branch | Started |
 |---|---|---|---|---|
+| M014 | background subagent (session-local) | sonnet | task/M014 | 2026-10-30 |
 | M020 | background subagent (session-local) | opus | task/M020 | 2026-10-30 |
 | M004 | background subagent (session-local) | opus | task/M004 | 2026-10-30 |
 | M005 | background subagent (session-local) | opus | task/M005 | 2026-10-30 |
@@ -18,3 +19,4 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
   crates as git deps. Closed-loop testing via in-process wing-engine (mix-sim). LLM only via Claude Code CLI.
 - If agents are lost (new session), resume each in-flight task from its branch + Log with a fresh agent.
 - 2026-10-30: mix-core analysis types (bands/features/profile) owned by M020; surface/unit types by M010 (separate files).
+- 2026-10-30: NOT YET PUSHED. Local commit cce6d6c accidentally tracked fixtures/Media/peaks + RPP (199 MB); untracked in a later commit but still in history. Rewriting needs user OK (filter-branch was denied). Do not push main until resolved.
