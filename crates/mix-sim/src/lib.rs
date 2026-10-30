@@ -8,6 +8,7 @@
 //! Fixtures are generated at test time; no audio is committed.
 
 pub mod map;
+pub mod real;
 pub mod scenes;
 pub mod synth;
 pub mod surface;

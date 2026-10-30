@@ -420,12 +420,12 @@ impl SimSurface {
         Ok(())
     }
 
-    /// Read a raw WING path as display text.
+    /// Read a raw WING path as its snapshot/wire token (`USB`, `-6.0`).
     pub fn get_wing(&self, path: &str) -> Option<String> {
         let st = self.st();
         let id = st.store.lookup(path)?;
         let mut s = String::new();
-        st.store.format(id, &mut s).ok()?;
+        st.store.format_token(id, &mut s).ok()?;
         Some(s)
     }
 
