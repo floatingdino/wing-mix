@@ -19,6 +19,7 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M010 | mix-core + mix-surface: generic console model, Surface trait, Remit engine, journal | M001, M004 | opus |
 | M011 | mix-wing: WING adapter (OSC client, topology, solo, meters) | M010, M002 | opus |
 | M012 | mix-sim: offline closed-loop SimSurface + fixture generator | M010, M002 | opus |
+| M013 | Live wing-sim harness with DriverSim | M011, M012 | sonnet |
 
 ## S2 — Analysis & targets
 

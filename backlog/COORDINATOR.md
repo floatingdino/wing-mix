@@ -11,7 +11,6 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 |---|---|---|---|---|
 | M020 | background subagent (session-local) | opus | task/M020 | 2026-10-30 |
 | M021 | background subagent (session-local) | sonnet | task/M021 | 2026-10-30 |
-| M002 | background subagent (session-local) | opus | task/M002 | 2026-10-30 |
 | M004 | background subagent (session-local) | opus | task/M004 | 2026-10-30 |
 | M005 | background subagent (session-local) | opus | task/M005 | 2026-10-30 |
 

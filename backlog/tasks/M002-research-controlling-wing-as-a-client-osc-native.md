@@ -2,7 +2,7 @@
 id: M002
 title: Research: controlling WING as a client (OSC/native), meters, RTA, solo
 stage: S0
-status: review
+status: done
 owner: agent-M002
 depends: []
 branch: task/M002
@@ -37,3 +37,4 @@ Write docs/research/wing-control.md. Using ../wing-simulator (docs/research/prot
   drops it -> solo/DCA/routing changes after build are lost).
   Proposed follow-ups: dummy-driver harness (wing_shm::sim::DriverSim + --shm-name) for live-daemon tests with real
   meters (M011/M052); upstream: build_console_with returning ConsoleControl; verify roundtrip.py on real WING (human).
+- 2026-10-30 coordinator: merged. done. Follow-up DriverSim live harness added as M013.

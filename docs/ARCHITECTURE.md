@@ -25,7 +25,7 @@ Status: decisions marked (D) are fixed unless research invalidates them; (?) are
 
 ```
  WingMix.app (SwiftUI)                               WING console / wing-sim daemon / WING-Edit (observer)
-  reference drop | description | input picker              ▲ OSC UDP 2223 (+ native TCP 2222 if needed)
+  reference drop | description | input picker              ▲ native TCP 2222 (+ UDP meters; OSC 2223 debug only)
   console picker | remit editor | live view                │
   mode: observe / suggest / autopilot | STOP              │
         │ control.sock (JSON) + status.json               │
@@ -48,7 +48,7 @@ Status: decisions marked (D) are fixed unless research invalidates them; (?) are
 ```
 crates/mix-core       shared types: TargetProfile, Features, Problem, Action, units (dB, Hz, ms), time
 crates/mix-surface    generic console model (strips, params, capabilities, solo), Surface trait, Remit, journal
-crates/mix-wing       WING adapter: OSC client (wing-proto codec), tree mapping (wing-model schema), meters/RTA
+crates/mix-wing       WING adapter: native-protocol client (wing-proto nrp framing), tree mapping (wing-model schema), meters/RTA
 crates/mix-sim        SimSurface: in-process wing-engine render for closed-loop tests + fixture generator
 crates/mix-analysis   feature extraction (streaming + offline), loudness, spectra, dynamics, stereo, masking
 crates/mix-capture    audio input enumeration/capture (cpal), file source, SPSC ring
