@@ -74,7 +74,9 @@ pub enum KnowledgeError {
 impl fmt::Display for KnowledgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            KnowledgeError::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
+            KnowledgeError::Io { path, source } => {
+                write!(f, "cannot read {}: {source}", path.display())
+            }
             KnowledgeError::Parse { file, message } => write!(f, "{file}: {message}"),
             KnowledgeError::Inconsistent(p) => {
                 write!(f, "knowledge base is inconsistent ({} problems):", p.len())?;
@@ -264,7 +266,10 @@ impl KnowledgeBase {
     /// If the embedded data is invalid (the crate's tests guarantee it is not).
     pub fn embedded() -> &'static KnowledgeBase {
         static KB: OnceLock<KnowledgeBase> = OnceLock::new();
-        KB.get_or_init(|| Self::from_raw(&EMBEDDED).unwrap_or_else(|e| panic!("embedded knowledge base is invalid: {e}")))
+        KB.get_or_init(|| {
+            Self::from_raw(&EMBEDDED)
+                .unwrap_or_else(|e| panic!("embedded knowledge base is invalid: {e}"))
+        })
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -277,14 +282,17 @@ impl KnowledgeBase {
 
     /// Source types of a family.
     pub fn sources_in_family(&self, family: Family) -> impl Iterator<Item = &Source> {
-        self.sources.source.iter().filter(move |s| s.family == family)
+        self.sources
+            .source
+            .iter()
+            .filter(move |s| s.family == family)
     }
 
     /// Every source type whose name hints match a strip name, best first. The score is the longest matched hint
     /// (hints are case-insensitive substrings where `x?` makes `x` optional), with a bonus for whole-word matches
     /// and for the source id itself.
     pub fn match_sources(&self, strip_name: &str) -> Vec<(&Source, u32)> {
-        let name = strip_name.to_lowercase().replace('_', " ");
+        let name = strip_name.to_lowercase().replace(['_', '-'], " ");
         let chars: Vec<char> = name.chars().collect();
         let norm_name = normalize_word(strip_name);
         let mut out: Vec<(&Source, u32)> = Vec::new();
@@ -301,7 +309,8 @@ impl KnowledgeBase {
                             continue;
                         }
                         let word_start = start == 0 || !chars[start - 1].is_alphanumeric();
-                        let word_end = start + len == chars.len() || !chars[start + len].is_alphanumeric();
+                        let word_end =
+                            start + len == chars.len() || !chars[start + len].is_alphanumeric();
                         let score = len as u32 * 10 + if word_start && word_end { 5 } else { 0 };
                         best = best.max(score);
                     }
@@ -311,7 +320,7 @@ impl KnowledgeBase {
                 out.push((s, best));
             }
         }
-        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out.sort_by_key(|a| std::cmp::Reverse(a.1));
         out
     }
 
@@ -346,7 +355,10 @@ impl KnowledgeBase {
         SourcePresets {
             gate: self.gate_preset(&source.gate_preset),
             comp: self.comp_preset(&source.dyn_preset),
-            deess: source.deess_preset.as_deref().and_then(|id| self.deess_preset(id)),
+            deess: source
+                .deess_preset
+                .as_deref()
+                .and_then(|id| self.deess_preset(id)),
             send: self.send_preset(&source.fx_preset),
         }
     }
@@ -361,9 +373,18 @@ impl KnowledgeBase {
 
     /// All rules (dynamics, eq, fx) in file order.
     pub fn all_rules(&self) -> impl Iterator<Item = RuleRef<'_>> {
-        let d = self.dynamics.rule.iter().map(|rule| RuleRef { file: RuleFile::Dynamics, rule });
-        let e = self.eq.rule.iter().map(|rule| RuleRef { file: RuleFile::Eq, rule });
-        let f = self.fx.rule.iter().map(|rule| RuleRef { file: RuleFile::Fx, rule });
+        let d = self.dynamics.rule.iter().map(|rule| RuleRef {
+            file: RuleFile::Dynamics,
+            rule,
+        });
+        let e = self.eq.rule.iter().map(|rule| RuleRef {
+            file: RuleFile::Eq,
+            rule,
+        });
+        let f = self.fx.rule.iter().map(|rule| RuleRef {
+            file: RuleFile::Fx,
+            rule,
+        });
         d.chain(e).chain(f)
     }
 
@@ -371,7 +392,11 @@ impl KnowledgeBase {
     /// `band_dev_db.<band>`; `band_dev_db.low_mid` matches only that band (and unsuffixed uses).
     pub fn rules_by_feature<'a>(&'a self, feature: &str) -> Vec<RuleRef<'a>> {
         self.all_rules()
-            .filter(|r| r.rule.conditions().any(|c| feature_matches(&c.feature, feature)))
+            .filter(|r| {
+                r.rule
+                    .conditions()
+                    .any(|c| feature_matches(&c.feature, feature))
+            })
             .collect()
     }
 
@@ -388,11 +413,18 @@ impl KnowledgeBase {
     }
 
     /// Source-specific problems with a condition on `feature` (same matching as [`Self::rules_by_feature`]).
-    pub fn problems_by_feature<'a>(&'a self, feature: &str) -> Vec<(&'a Source, &'a SourceProblem)> {
+    pub fn problems_by_feature<'a>(
+        &'a self,
+        feature: &str,
+    ) -> Vec<(&'a Source, &'a SourceProblem)> {
         let mut out = Vec::new();
         for s in &self.sources.source {
             for p in &s.problems {
-                if p.when.iter().chain(p.when_any.iter()).any(|c| feature_matches(&c.feature, feature)) {
+                if p.when
+                    .iter()
+                    .chain(p.when_any.iter())
+                    .any(|c| feature_matches(&c.feature, feature))
+                {
                     out.push((s, p));
                 }
             }
@@ -422,7 +454,9 @@ impl KnowledgeBase {
 
     /// Term by id or synonym (case, hyphen and space insensitive): `"Warmer"`, `"hi-hat"`.
     pub fn term(&self, word: &str) -> Option<&Term> {
-        self.word_index.get(&normalize_word(word)).map(|&i| &self.vocabulary.term[i])
+        self.word_index
+            .get(&normalize_word(word))
+            .map(|&i| &self.vocabulary.term[i])
     }
 
     /// Resolve a description fragment ("very warm", "a bit less muddy", "punchy drums", "too bright"): the longest
@@ -450,7 +484,9 @@ impl KnowledgeBase {
         let after = &tokens[start + len..];
 
         let m = &self.vocabulary.modifiers;
-        let negated = before.iter().any(|t| m.negation.words.iter().any(|w| w == t));
+        let negated = before
+            .iter()
+            .any(|t| m.negation.words.iter().any(|w| w == t));
         let mut intensity = m.intensity.get("").copied().unwrap_or(1.0);
         let mut best_len = 0;
         for (word, factor) in &m.intensity {
@@ -487,7 +523,13 @@ impl KnowledgeBase {
         }
         // plural/loose forms: "drums", "vocals", "guitars"
         let singular = t.strip_suffix('s').unwrap_or(&t).to_string();
-        if self.source(&singular).is_some() || self.sources.source.iter().any(|s| s.family.as_str() == singular) {
+        if self.source(&singular).is_some()
+            || self
+                .sources
+                .source
+                .iter()
+                .any(|s| s.family.as_str() == singular)
+        {
             return Some(singular);
         }
         None
@@ -507,7 +549,9 @@ impl KnowledgeBase {
                     "band_dev_db" | "tilt_dev_db_per_oct" => Some(l.max_band_delta_db),
                     "level_dev_lu" => Some(l.max_level_delta_lu),
                     "width_dev_db" | "side_to_mid_db" => Some(l.max_width_delta_db),
-                    "reverb_rel_dev_db" | "reverb_rel_db" | "wet_rel_dry_lu" => Some(l.max_reverb_delta_db),
+                    "reverb_rel_dev_db" | "reverb_rel_db" | "wet_rel_dry_lu" => {
+                        Some(l.max_reverb_delta_db)
+                    }
                     "crest_db" => Some(l.max_crest_delta_db),
                     _ => None,
                 };
@@ -535,13 +579,17 @@ impl KnowledgeBase {
 /// Does a condition's feature (`band_dev_db.low_mid`) match a query (`band_dev_db` or `band_dev_db.low_mid`)?
 fn feature_matches(cond_feature: &str, query: &str) -> bool {
     cond_feature == query
-        || cond_feature.strip_prefix(query).is_some_and(|rest| rest.starts_with('.'))
-        || query.strip_prefix(cond_feature).is_some_and(|rest| rest.starts_with('.'))
+        || cond_feature
+            .strip_prefix(query)
+            .is_some_and(|rest| rest.starts_with('.'))
+        || query
+            .strip_prefix(cond_feature)
+            .is_some_and(|rest| rest.starts_with('.'))
 }
 
 /// A name hint compiled to `(char, optional)` pairs (`?` after a char makes it optional).
 fn compile_hint(h: &str) -> Vec<(char, bool)> {
-    let chars: Vec<char> = h.to_lowercase().chars().collect();
+    let chars: Vec<char> = h.to_lowercase().replace('-', " ").chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {

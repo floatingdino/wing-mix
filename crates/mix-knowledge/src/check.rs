@@ -24,7 +24,13 @@ const SYMBOLS: &[&str] = &[
 ];
 
 /// Non-block action keys that are still legal params of any action (side-chain key source etc.).
-const EXTRA_PARAMS: &[&str] = &["sidechain", "range_db", "level_db", "position_pct", "slope_db_per_oct"];
+const EXTRA_PARAMS: &[&str] = &[
+    "sidechain",
+    "range_db",
+    "level_db",
+    "position_pct",
+    "slope_db_per_oct",
+];
 
 /// Descriptive groups of FX buses an fx rule may target.
 const FX_TARGET_GROUPS: &[&str] = &["reverb fx_bus", "reverb fx_bus returns"];
@@ -33,7 +39,10 @@ const FX_TARGET_GROUPS: &[&str] = &["reverb fx_bus", "reverb fx_bus returns"];
 const THRESHOLD_STATS: &[&str] = &["noise_floor_dbfs", "rms_dbfs", "peak_dbfs", "lufs_s"];
 
 /// Param-name suffixes with a known unit (workflow.toml `[schema.action].fields.param_suffixes`).
-const UNIT_SUFFIXES: &[&str] = &["_ratio", "_hz", "_db", "_ms", "_pct", "_s", "_oct", "_lu", "_beats", "_dbfs", "_dbtp", "_per_oct"];
+const UNIT_SUFFIXES: &[&str] = &[
+    "_ratio", "_hz", "_db", "_ms", "_pct", "_s", "_oct", "_lu", "_beats", "_dbfs", "_dbtp",
+    "_per_oct",
+];
 
 struct Ctx<'a> {
     kb: &'a KnowledgeBase,
@@ -54,7 +63,14 @@ impl Ctx<'_> {
 
     fn range(&mut self, ctx: &str, what: &str, r: &Range) {
         if !r.is_ordered() {
-            self.err(ctx, format!("range {what} = [{}, {}] is not ordered (lo <= hi)", r.lo(), r.hi()));
+            self.err(
+                ctx,
+                format!(
+                    "range {what} = [{}, {}] is not ordered (lo <= hi)",
+                    r.lo(),
+                    r.hi()
+                ),
+            );
         }
     }
 
@@ -70,7 +86,10 @@ impl Ctx<'_> {
         }
         for k in keys {
             if !self.kb.workflow.sources.contains_key(k) {
-                self.err(ctx, format!("unknown source reference `{k}` (not in workflow.toml [sources])"));
+                self.err(
+                    ctx,
+                    format!("unknown source reference `{k}` (not in workflow.toml [sources])"),
+                );
             }
         }
     }
@@ -101,12 +120,20 @@ impl Ctx<'_> {
             match rest.first() {
                 Some(b) if self.kb.workflow.bands.contains_key(*b) => rest = &rest[1..],
                 Some(b) => {
-                    self.err(ctx, format!("feature `{feature}`: `{b}` is not a band in workflow.toml [bands]"));
+                    self.err(
+                        ctx,
+                        format!(
+                            "feature `{feature}`: `{b}` is not a band in workflow.toml [bands]"
+                        ),
+                    );
                     return;
                 }
                 None if bare_band_ok => return,
                 None => {
-                    self.err(ctx, format!("feature `{feature}` is per-band and needs a band suffix"));
+                    self.err(
+                        ctx,
+                        format!("feature `{feature}` is per-band and needs a band suffix"),
+                    );
                     return;
                 }
             }
@@ -114,7 +141,10 @@ impl Ctx<'_> {
         match rest {
             [] => {}
             [scope] if self.is_scope(scope) => {}
-            [scope] => self.err(ctx, format!("feature `{feature}`: scope `{scope}` is not a source id or family")),
+            [scope] => self.err(
+                ctx,
+                format!("feature `{feature}`: scope `{scope}` is not a source id or family"),
+            ),
             _ => self.err(ctx, format!("feature `{feature}` has too many suffixes")),
         }
     }
@@ -123,20 +153,35 @@ impl Ctx<'_> {
         for c in conds {
             self.feature(ctx, &c.feature, true);
             match (c.op, c.value) {
-                (Op::Between | Op::Outside, NumOrRange::Range(r)) => self.range(ctx, &c.feature, &r),
-                (Op::Between | Op::Outside, NumOrRange::Num(_)) => {
-                    self.err(ctx, format!("condition on `{}`: between/outside need a [lo, hi] value", c.feature))
+                (Op::Between | Op::Outside, NumOrRange::Range(r)) => {
+                    self.range(ctx, &c.feature, &r)
                 }
-                (_, NumOrRange::Range(_)) => {
-                    self.err(ctx, format!("condition on `{}`: {:?} needs a scalar value", c.feature, c.op))
-                }
+                (Op::Between | Op::Outside, NumOrRange::Num(_)) => self.err(
+                    ctx,
+                    format!(
+                        "condition on `{}`: between/outside need a [lo, hi] value",
+                        c.feature
+                    ),
+                ),
+                (_, NumOrRange::Range(_)) => self.err(
+                    ctx,
+                    format!(
+                        "condition on `{}`: {:?} needs a scalar value",
+                        c.feature, c.op
+                    ),
+                ),
                 _ => {}
             }
         }
     }
 
     fn param_name(&mut self, ctx: &str, name: &str) {
-        let known_block_param = self.kb.workflow.blocks.values().any(|b| b.params.iter().any(|p| p == name));
+        let known_block_param = self
+            .kb
+            .workflow
+            .blocks
+            .values()
+            .any(|b| b.params.iter().any(|p| p == name));
         let is_feature = self.kb.workflow.features.contains_key(name);
         if !known_block_param && !is_feature && !EXTRA_PARAMS.contains(&name) {
             self.err(ctx, format!("unknown parameter `{name}` (not in any workflow.toml [blocks.*].params or [features])"));
@@ -145,7 +190,10 @@ impl Ctx<'_> {
             return;
         }
         let has_unit = UNIT_SUFFIXES.iter().any(|s| name.ends_with(s))
-            || matches!(name, "q" | "ratio" | "size" | "kind" | "band" | "type" | "mode" | "detector")
+            || matches!(
+                name,
+                "q" | "ratio" | "size" | "kind" | "band" | "type" | "mode" | "detector"
+            )
             || name.starts_with("threshold_rel")
             || name == "model_class"
             || name == "target"
@@ -157,34 +205,64 @@ impl Ctx<'_> {
 
     fn action(&mut self, ctx: &str, a: &Action) {
         let Some(block) = self.kb.workflow.blocks.get(&a.block) else {
-            self.err(ctx, format!("action block `{}` is not in workflow.toml [blocks]", a.block));
+            self.err(
+                ctx,
+                format!(
+                    "action block `{}` is not in workflow.toml [blocks]",
+                    a.block
+                ),
+            );
             return;
         };
         if let Some(kind) = &a.kind {
             if !block.kinds.contains(kind) {
-                self.err(ctx, format!("action kind `{kind}` is not allowed for block {} (allowed: {:?})", a.block, block.kinds));
+                self.err(
+                    ctx,
+                    format!(
+                        "action kind `{kind}` is not allowed for block {} (allowed: {:?})",
+                        a.block, block.kinds
+                    ),
+                );
             }
         }
         if let Some(ty) = &a.ty {
             if !block.types.contains(ty) {
-                self.err(ctx, format!("action type `{ty}` is not allowed for block {} (allowed: {:?})", a.block, block.types));
+                self.err(
+                    ctx,
+                    format!(
+                        "action type `{ty}` is not allowed for block {} (allowed: {:?})",
+                        a.block, block.types
+                    ),
+                );
             }
         }
         if let Some(m) = &a.mode {
             if !block.modes.contains(m) {
-                self.err(ctx, format!("action mode `{m}` is not allowed for block {} (allowed: {:?})", a.block, block.modes));
+                self.err(
+                    ctx,
+                    format!(
+                        "action mode `{m}` is not allowed for block {} (allowed: {:?})",
+                        a.block, block.modes
+                    ),
+                );
             }
         }
         if let Some(q) = &a.q_class {
             if !self.kb.eq.q_class.contains_key(q) {
-                self.err(ctx, format!("unknown q_class `{q}` (not in eq.toml [q_class])"));
+                self.err(
+                    ctx,
+                    format!("unknown q_class `{q}` (not in eq.toml [q_class])"),
+                );
             }
             if a.params.contains_key("q") {
                 self.err(ctx, "both q_class and q given");
             }
         }
         if let Some(p) = &a.preset {
-            if p != "from_source" && !self.comp_ids.contains(p.as_str()) && !self.gate_ids.contains(p.as_str()) {
+            if p != "from_source"
+                && !self.comp_ids.contains(p.as_str())
+                && !self.gate_ids.contains(p.as_str())
+            {
                 self.err(ctx, format!("unknown preset `{p}`"));
             }
         }
@@ -195,7 +273,13 @@ impl Ctx<'_> {
         }
         for (k, v) in &a.params {
             if k != "band" && !block.params.contains(k) && !EXTRA_PARAMS.contains(&k.as_str()) {
-                self.err(ctx, format!("parameter `{k}` is not a parameter of block {} (allowed: {:?})", a.block, block.params));
+                self.err(
+                    ctx,
+                    format!(
+                        "parameter `{k}` is not a parameter of block {} (allowed: {:?})",
+                        a.block, block.params
+                    ),
+                );
             }
             self.param_name(ctx, k);
             match v {
@@ -206,7 +290,10 @@ impl Ctx<'_> {
                             self.err(ctx, format!("unknown Eq band `{s}`"));
                         }
                     } else if !SYMBOLS.contains(&s.as_str()) && !block.model_classes.contains(s) {
-                        self.err(ctx, format!("unknown symbolic value `{s}` for parameter `{k}`"));
+                        self.err(
+                            ctx,
+                            format!("unknown symbolic value `{s}` for parameter `{k}`"),
+                        );
                     }
                 }
                 Param::Num(_) => {}
@@ -221,7 +308,10 @@ impl Ctx<'_> {
         self.conditions(&ctx, &r.when_any);
         for a in &r.applies_to {
             if a != "*" && a != "mix" && !self.is_scope(a) {
-                self.err(&ctx, format!("applies_to `{a}` is not a source id, family, \"*\" or \"mix\""));
+                self.err(
+                    &ctx,
+                    format!("applies_to `{a}` is not a source id, family, \"*\" or \"mix\""),
+                );
             }
         }
         if r.adjust.is_empty() && r.action.is_none() && r.strategy.is_none() {
@@ -240,7 +330,10 @@ impl Ctx<'_> {
         for adj in &r.adjust {
             self.param_name(&ctx, &adj.param);
             if adj.by.is_none() && adj.to.is_none() && adj.order.is_none() {
-                self.err(&ctx, format!("adjust `{}` has neither by, to nor order", adj.param));
+                self.err(
+                    &ctx,
+                    format!("adjust `{}` has neither by, to nor order", adj.param),
+                );
             }
             if adj.by.is_some() && adj.to.is_some() {
                 self.err(&ctx, format!("adjust `{}` has both by and to", adj.param));
@@ -248,22 +341,36 @@ impl Ctx<'_> {
             self.opt_range(&ctx, &adj.param, &adj.by);
             match &adj.to {
                 Some(Param::Range(rg)) => self.range(&ctx, &adj.param, rg),
-                Some(Param::Symbol(s)) if !SYMBOLS.contains(&s.as_str()) && !s.starts_with("tempo.") => {
-                    self.err(&ctx, format!("unknown symbolic value `{s}` in adjust `{}`", adj.param))
+                Some(Param::Symbol(s))
+                    if !SYMBOLS.contains(&s.as_str()) && !s.starts_with("tempo.") =>
+                {
+                    self.err(
+                        &ctx,
+                        format!("unknown symbolic value `{s}` in adjust `{}`", adj.param),
+                    )
                 }
                 _ => {}
             }
             if let Some(t) = &adj.target {
-                if !self.fx_ids.contains(t.as_str()) && !self.is_scope(t) && !FX_TARGET_GROUPS.contains(&t.as_str()) && t != "*" && t != "mix" {
+                if !self.fx_ids.contains(t.as_str())
+                    && !self.is_scope(t)
+                    && !FX_TARGET_GROUPS.contains(&t.as_str())
+                    && t != "*"
+                    && t != "mix"
+                {
                     self.err(&ctx, format!("adjust target `{t}` is not an fx_bus, fx group, source id, family, \"*\" or \"mix\""));
                 }
             }
         }
         match &r.action {
             Some(RuleAction::Block(a)) => self.action(&ctx, a),
-            Some(RuleAction::Delegate(d)) if d.from != "sources.toml problems" => {
-                self.err(&ctx, format!("unknown delegation `{}` (only \"sources.toml problems\" exists)", d.from))
-            }
+            Some(RuleAction::Delegate(d)) if d.from != "sources.toml problems" => self.err(
+                &ctx,
+                format!(
+                    "unknown delegation `{}` (only \"sources.toml problems\" exists)",
+                    d.from
+                ),
+            ),
             _ => {}
         }
         self.refs(&ctx, &r.sources);
@@ -292,9 +399,24 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
         .map(Family::as_str)
         .collect(),
         fx_ids: kb.fx.fx_bus.iter().map(|b| b.id.as_str()).collect(),
-        gate_ids: kb.dynamics.gate_preset.iter().map(|p| p.id.as_str()).collect(),
-        comp_ids: kb.dynamics.comp_preset.iter().map(|p| p.id.as_str()).collect(),
-        deess_ids: kb.dynamics.deess_preset.iter().map(|p| p.id.as_str()).collect(),
+        gate_ids: kb
+            .dynamics
+            .gate_preset
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect(),
+        comp_ids: kb
+            .dynamics
+            .comp_preset
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect(),
+        deess_ids: kb
+            .dynamics
+            .deess_preset
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect(),
         send_ids: kb.fx.send_preset.iter().map(|p| p.id.as_str()).collect(),
     };
 
@@ -308,21 +430,39 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
         ("vocabulary", &kb.vocabulary.schema),
     ] {
         if h.version != 1 {
-            c.err(name, format!("unsupported schema version {} (this crate reads 1)", h.version));
+            c.err(
+                name,
+                format!(
+                    "unsupported schema version {} (this crate reads 1)",
+                    h.version
+                ),
+            );
         }
         if h.file != name {
-            c.err(name, format!("[schema] file = \"{}\" does not match the file name", h.file));
+            c.err(
+                name,
+                format!(
+                    "[schema] file = \"{}\" does not match the file name",
+                    h.file
+                ),
+            );
         }
     }
 
     // ---- workflow.toml
     for (name, f) in &wf.features {
         if !wf.schema.units.contains_key(&f.unit) {
-            c.err(&format!("workflow:features.{name}"), format!("unknown unit `{}`", f.unit));
+            c.err(
+                &format!("workflow:features.{name}"),
+                format!("unknown unit `{}`", f.unit),
+            );
         }
         if let Some(per) = &f.per {
             if per != "band" {
-                c.err(&format!("workflow:features.{name}"), format!("unknown `per` value `{per}`"));
+                c.err(
+                    &format!("workflow:features.{name}"),
+                    format!("unknown `per` value `{per}`"),
+                );
             }
         }
     }
@@ -336,7 +476,13 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
             if (w[0].1.hi() - w[1].1.lo()).abs() > 1e-9 {
                 c.err(
                     "workflow:bands",
-                    format!("bands `{}` and `{}` are not contiguous ({} vs {})", w[0].0, w[1].0, w[0].1.hi(), w[1].1.lo()),
+                    format!(
+                        "bands `{}` and `{}` are not contiguous ({} vs {})",
+                        w[0].0,
+                        w[1].0,
+                        w[0].1.hi(),
+                        w[1].1.lo()
+                    ),
                 );
             }
         }
@@ -350,7 +496,13 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
     let mut orders: Vec<u32> = wf.phase.iter().map(|p| p.order).collect();
     orders.sort_unstable();
     if orders != (1..=wf.phase.len() as u32).collect::<Vec<_>>() {
-        c.err("workflow:phase", format!("phase `order` values must be 1..={} without gaps, got {orders:?}", wf.phase.len()));
+        c.err(
+            "workflow:phase",
+            format!(
+                "phase `order` values must be 1..={} without gaps, got {orders:?}",
+                wf.phase.len()
+            ),
+        );
     }
     c.unique("workflow", "phase", wf.phase.iter().map(|p| p.id.as_str()));
     let phase_ids: BTreeSet<&str> = wf.phase.iter().map(|p| p.id.as_str()).collect();
@@ -367,15 +519,26 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
     }
     for id in &wf.iteration.revisit_lower_phases_after {
         if !phase_ids.contains(id.as_str()) {
-            c.err("workflow:iteration", format!("revisit_lower_phases_after: unknown phase `{id}`"));
+            c.err(
+                "workflow:iteration",
+                format!("revisit_lower_phases_after: unknown phase `{id}`"),
+            );
         }
     }
     c.range("workflow:iteration", "settle_s", &wf.iteration.settle_s);
     let t = &wf.targets;
-    c.range("workflow:targets.channel", "peak_dbfs", &t.channel.peak_dbfs);
+    c.range(
+        "workflow:targets.channel",
+        "peak_dbfs",
+        &t.channel.peak_dbfs,
+    );
     c.range("workflow:targets.channel", "rms_dbfs", &t.channel.rms_dbfs);
     c.refs("workflow:targets.channel", &t.channel.sources);
-    c.range("workflow:targets.mix_bus", "peak_dbfs", &t.mix_bus.peak_dbfs);
+    c.range(
+        "workflow:targets.mix_bus",
+        "peak_dbfs",
+        &t.mix_bus.peak_dbfs,
+    );
     c.refs("workflow:targets.mix_bus", &t.mix_bus.sources);
     c.refs("workflow:targets.delivery", &t.delivery.sources);
     for (n, p) in &t.delivery.profiles {
@@ -387,18 +550,31 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
     }
     for band in t.reference_matching.band_tolerance_db.keys() {
         if !wf.bands.contains_key(band) {
-            c.err("workflow:targets.reference_matching", format!("band_tolerance_db: unknown band `{band}`"));
+            c.err(
+                "workflow:targets.reference_matching",
+                format!("band_tolerance_db: unknown band `{band}`"),
+            );
         }
     }
     for band in wf.bands.keys() {
         if !t.reference_matching.band_tolerance_db.contains_key(band) {
-            c.err("workflow:targets.reference_matching", format!("band_tolerance_db is missing band `{band}`"));
+            c.err(
+                "workflow:targets.reference_matching",
+                format!("band_tolerance_db is missing band `{band}`"),
+            );
         }
     }
-    c.refs("workflow:targets.reference_matching", &t.reference_matching.sources);
+    c.refs(
+        "workflow:targets.reference_matching",
+        &t.reference_matching.sources,
+    );
 
     // ---- sources.toml
-    c.unique("sources", "source", kb.sources.source.iter().map(|s| s.id.as_str()));
+    c.unique(
+        "sources",
+        "source",
+        kb.sources.source.iter().map(|s| s.id.as_str()),
+    );
     for s in &kb.sources.source {
         let ctx = format!("sources:{}", s.id);
         if s.name_hints.is_empty() {
@@ -423,7 +599,15 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
             if let Some(f) = f {
                 c.range(&ctx, name, &f.freq_hz);
                 if !f.freq_hz.contains(f.start_hz) {
-                    c.err(&ctx, format!("{name}.start_hz {} is outside freq_hz [{}, {}]", f.start_hz, f.freq_hz.lo(), f.freq_hz.hi()));
+                    c.err(
+                        &ctx,
+                        format!(
+                            "{name}.start_hz {} is outside freq_hz [{}, {}]",
+                            f.start_hz,
+                            f.freq_hz.lo(),
+                            f.freq_hz.hi()
+                        ),
+                    );
                 }
             }
         }
@@ -443,37 +627,73 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
         }
         let none_or = |v: &str, set: &HashSet<&str>| v == "none" || set.contains(v);
         if !none_or(&s.gate_preset, &c.gate_ids) {
-            c.err(&ctx, format!("gate_preset `{}` not found in dynamics.toml", s.gate_preset));
+            c.err(
+                &ctx,
+                format!("gate_preset `{}` not found in dynamics.toml", s.gate_preset),
+            );
         }
         if !none_or(&s.dyn_preset, &c.comp_ids) {
-            c.err(&ctx, format!("dyn_preset `{}` not found in dynamics.toml [[comp_preset]]", s.dyn_preset));
+            c.err(
+                &ctx,
+                format!(
+                    "dyn_preset `{}` not found in dynamics.toml [[comp_preset]]",
+                    s.dyn_preset
+                ),
+            );
         }
         if let Some(d) = &s.deess_preset {
             if !none_or(d, &c.deess_ids) {
-                c.err(&ctx, format!("deess_preset `{d}` not found in dynamics.toml"));
+                c.err(
+                    &ctx,
+                    format!("deess_preset `{d}` not found in dynamics.toml"),
+                );
             }
         }
         if !none_or(&s.fx_preset, &c.send_ids) {
-            c.err(&ctx, format!("fx_preset `{}` not found in fx.toml [[send_preset]]", s.fx_preset));
+            c.err(
+                &ctx,
+                format!(
+                    "fx_preset `{}` not found in fx.toml [[send_preset]]",
+                    s.fx_preset
+                ),
+            );
         }
         c.refs(&ctx, &s.sources);
     }
 
     // ---- dynamics.toml
     let d = &kb.dynamics;
-    c.unique("dynamics", "gate_preset", d.gate_preset.iter().map(|p| p.id.as_str()));
-    c.unique("dynamics", "comp_preset", d.comp_preset.iter().map(|p| p.id.as_str()));
-    c.unique("dynamics", "deess_preset", d.deess_preset.iter().map(|p| p.id.as_str()));
+    c.unique(
+        "dynamics",
+        "gate_preset",
+        d.gate_preset.iter().map(|p| p.id.as_str()),
+    );
+    c.unique(
+        "dynamics",
+        "comp_preset",
+        d.comp_preset.iter().map(|p| p.id.as_str()),
+    );
+    c.unique(
+        "dynamics",
+        "deess_preset",
+        d.deess_preset.iter().map(|p| p.id.as_str()),
+    );
     c.unique("dynamics", "rule", d.rule.iter().map(|p| p.id.as_str()));
     let stat = |c: &mut Ctx, ctx: &str, s: &str| {
         if !THRESHOLD_STATS.contains(&s) {
-            c.err(ctx, format!("threshold statistic `{s}` must be one of {THRESHOLD_STATS:?}"));
+            c.err(
+                ctx,
+                format!("threshold statistic `{s}` must be one of {THRESHOLD_STATS:?}"),
+            );
         }
     };
     for p in &d.gate_preset {
         let ctx = format!("dynamics:{}", p.id);
         if p.kind != "gate" && p.kind != "expander" {
-            c.err(&ctx, format!("gate kind `{}` must be gate or expander", p.kind));
+            c.err(
+                &ctx,
+                format!("gate kind `{}` must be gate or expander", p.kind),
+            );
         }
         stat(&mut c, &ctx, &p.threshold_rel);
         if let Some(tc) = &p.threshold_clamp {
@@ -496,7 +716,10 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
         }
         if let (Some(h), Some(l)) = (&p.sidechain_hpf_hz, &p.sidechain_lpf_hz) {
             if h.hi() >= l.lo() {
-                c.err(&ctx, "sidechain high-pass range must lie below the low-pass range");
+                c.err(
+                    &ctx,
+                    "sidechain high-pass range must lie below the low-pass range",
+                );
             }
         }
         c.refs(&ctx, &p.sources);
@@ -504,7 +727,10 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
     for p in &d.comp_preset {
         let ctx = format!("dynamics:{}", p.id);
         if p.kind != "compressor" && p.kind != "limiter" {
-            c.err(&ctx, format!("comp kind `{}` must be compressor or limiter", p.kind));
+            c.err(
+                &ctx,
+                format!("comp kind `{}` must be compressor or limiter", p.kind),
+            );
         }
         stat(&mut c, &ctx, &p.threshold_rel);
         if let Some(det) = &p.detector {
@@ -521,7 +747,11 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
         c.range(&ctx, "ratio", &p.ratio);
         c.range(&ctx, "attack_ms", &p.attack_ms);
         c.range(&ctx, "release_ms", &p.release_ms);
-        for (n, r) in [("target_gr_db", &p.target_gr_db), ("knee_db", &p.knee_db), ("mix_pct", &p.mix_pct)] {
+        for (n, r) in [
+            ("target_gr_db", &p.target_gr_db),
+            ("knee_db", &p.knee_db),
+            ("mix_pct", &p.mix_pct),
+        ] {
             c.opt_range(&ctx, n, r);
         }
         if p.ratio.lo() < 1.0 {
@@ -553,35 +783,69 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
     for (n, q) in &e.q_class {
         c.range(&format!("eq:q_class.{n}"), "q", &q.q);
     }
-    c.range("eq:limits", "preferred_boost_db", &e.limits.preferred_boost_db);
-    c.range("eq:limits", "surface_gain_range_db", &e.limits.surface_gain_range_db);
+    c.range(
+        "eq:limits",
+        "preferred_boost_db",
+        &e.limits.preferred_boost_db,
+    );
+    c.range(
+        "eq:limits",
+        "surface_gain_range_db",
+        &e.limits.surface_gain_range_db,
+    );
     if e.limits.preferred_boost_db.hi() > e.limits.max_boost_db_peq {
         c.err("eq:limits", "preferred_boost_db exceeds max_boost_db_peq");
     }
-    if e.limits.max_step_db > e.limits.max_total_boost_db_per_strip.max(e.limits.max_cut_db_peq) {
+    if e.limits.max_step_db
+        > e.limits
+            .max_total_boost_db_per_strip
+            .max(e.limits.max_cut_db_peq)
+    {
         c.err("eq:limits", "max_step_db exceeds the per-strip limits");
     }
     c.refs("eq:limits", &e.limits.sources);
     c.refs("eq:policy", &e.policy.sources);
     c.refs("eq:masking", &e.masking.sources);
-    c.range("eq:masking", "kick_owns_hz", &e.masking.low_end_split.kick_owns_hz);
-    c.range("eq:masking", "bass_owns_hz", &e.masking.low_end_split.bass_owns_hz);
-    c.unique("eq:masking", "priority_order entry", e.masking.priority_order.iter().map(String::as_str));
+    c.range(
+        "eq:masking",
+        "kick_owns_hz",
+        &e.masking.low_end_split.kick_owns_hz,
+    );
+    c.range(
+        "eq:masking",
+        "bass_owns_hz",
+        &e.masking.low_end_split.bass_owns_hz,
+    );
+    c.unique(
+        "eq:masking",
+        "priority_order entry",
+        e.masking.priority_order.iter().map(String::as_str),
+    );
     for id in &e.masking.priority_order {
         if !c.source_ids.contains(id.as_str()) {
-            c.err("eq:masking", format!("priority_order: unknown source id `{id}`"));
+            c.err(
+                "eq:masking",
+                format!("priority_order: unknown source id `{id}`"),
+            );
         }
     }
     c.unique("eq", "rule", e.rule.iter().map(|p| p.id.as_str()));
     for r in &e.rule {
         c.rule("eq", r);
     }
-    c.unique("eq", "masking_strategy", e.masking_strategy.iter().map(|p| p.id.as_str()));
+    c.unique(
+        "eq",
+        "masking_strategy",
+        e.masking_strategy.iter().map(|p| p.id.as_str()),
+    );
     let mut ord = HashSet::new();
     for m in &e.masking_strategy {
         let ctx = format!("eq:{}", m.id);
         if !ord.insert(m.order) {
-            c.err(&ctx, format!("duplicate masking_strategy order {}", m.order));
+            c.err(
+                &ctx,
+                format!("duplicate masking_strategy order {}", m.order),
+            );
         }
         if m.when.is_empty() {
             c.err(&ctx, "strategy has no conditions");
@@ -608,19 +872,43 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
     c.refs("fx:context", &f.context.sources);
     for (n, m) in [
         ("live_reverberant_venue", &f.context.live_reverberant_venue),
-        ("live_dry_venue_or_outdoor", &f.context.live_dry_venue_or_outdoor),
-        ("broadcast_or_recording_tap", &f.context.broadcast_or_recording_tap),
+        (
+            "live_dry_venue_or_outdoor",
+            &f.context.live_dry_venue_or_outdoor,
+        ),
+        (
+            "broadcast_or_recording_tap",
+            &f.context.broadcast_or_recording_tap,
+        ),
     ] {
-        c.range(&format!("fx:context.{n}"), "wet_offset_lu", &m.wet_offset_lu);
+        c.range(
+            &format!("fx:context.{n}"),
+            "wet_offset_lu",
+            &m.wet_offset_lu,
+        );
     }
     c.unique("fx", "fx_bus", f.fx_bus.iter().map(|p| p.id.as_str()));
-    c.unique("fx", "send_preset", f.send_preset.iter().map(|p| p.id.as_str()));
+    c.unique(
+        "fx",
+        "send_preset",
+        f.send_preset.iter().map(|p| p.id.as_str()),
+    );
     c.unique("fx", "rule", f.rule.iter().map(|p| p.id.as_str()));
-    let classes = &wf.blocks.get("FxSlot").map(|b| b.model_classes.clone()).unwrap_or_default();
+    let classes = &wf
+        .blocks
+        .get("FxSlot")
+        .map(|b| b.model_classes.clone())
+        .unwrap_or_default();
     for b in &f.fx_bus {
         let ctx = format!("fx:{}", b.id);
         if !classes.contains(&b.model_class) {
-            c.err(&ctx, format!("model_class `{}` is not in workflow.toml [blocks.FxSlot].model_classes", b.model_class));
+            c.err(
+                &ctx,
+                format!(
+                    "model_class `{}` is not in workflow.toml [blocks.FxSlot].model_classes",
+                    b.model_class
+                ),
+            );
         }
         for (n, r) in [
             ("decay_s", &b.decay_s),
@@ -678,7 +966,10 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
             }
             if let Some(prev) = words.insert(norm, t.id.as_str()) {
                 if prev != t.id {
-                    c.err(&format!("vocabulary:{}", t.id), format!("word `{w}` also resolves to term `{prev}`"));
+                    c.err(
+                        &format!("vocabulary:{}", t.id),
+                        format!("word `{w}` also resolves to term `{prev}`"),
+                    );
                 }
             }
         }
@@ -702,7 +993,13 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
             }
         }
         if t.default_scope != "mix" && !c.is_scope(&t.default_scope) {
-            c.err(&ctx, format!("default_scope `{}` is not mix, a source id or a family", t.default_scope));
+            c.err(
+                &ctx,
+                format!(
+                    "default_scope `{}` is not mix, a source id or a family",
+                    t.default_scope
+                ),
+            );
         }
         for b in &t.blocks_hint {
             if !wf.blocks.contains_key(b) {
@@ -719,11 +1016,17 @@ pub fn check(kb: &KnowledgeBase) -> Vec<String> {
         c.refs(&ctx, &t.sources);
     }
     if !v.modifiers.intensity.contains_key("") {
-        c.err("vocabulary:modifiers", "intensity needs a \"\" entry (the unmodified default)");
+        c.err(
+            "vocabulary:modifiers",
+            "intensity needs a \"\" entry (the unmodified default)",
+        );
     }
     for (w, x) in &v.modifiers.intensity {
         if *x <= 0.0 {
-            c.err("vocabulary:modifiers", format!("intensity `{w}` must be positive"));
+            c.err(
+                "vocabulary:modifiers",
+                format!("intensity `{w}` must be positive"),
+            );
         }
     }
     if v.modifiers.negation.factor >= 0.0 {
