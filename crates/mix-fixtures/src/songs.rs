@@ -181,7 +181,8 @@ pub struct MatchedPair {
     /// Multitrack timeline range of the excerpt (seconds).
     pub start_s: f64,
     pub end_s: f64,
-    /// Raw multitrack excerpt over `start_s..end_s` (all tracks, see [`Fixture::excerpt`]).
+    /// Raw multitrack excerpt over `start_s..end_s` (all tracks, see [`Fixture::excerpt`]; FOH/video mix tracks
+    /// included: filter console inputs with [`crate::is_input`], the FOH mix is the engineer's version).
     pub excerpt: Excerpt,
     /// Reference profile (focused on `section` when given).
     pub reference: TargetProfile,

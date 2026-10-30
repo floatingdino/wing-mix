@@ -680,8 +680,10 @@ name = "mix-describe"
 version = "0.1.0"
 dependencies = [
  "mix-core",
+ "mix-fixtures",
  "mix-knowledge",
  "mix-llm",
+ "mix-reference",
  "serde",
  "serde_json",
 ]

@@ -11,3 +11,7 @@ mix-knowledge = { path = "../mix-knowledge" }
 mix-llm = { path = "../mix-llm" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+mix-fixtures = { path = "../mix-fixtures" }
+mix-reference = { path = "../mix-reference" }
