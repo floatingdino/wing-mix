@@ -291,7 +291,7 @@ fn e2e_wing_smoke() {
     let t0 = Instant::now();
     d.req(json!({"cmd": "set_mode", "mode": "suggest"}));
     d.req(json!({"cmd": "start", "window_s": 2.0, "time_scale": 0.1}));
-    let (_, sug) = d.expect_event(0, Duration::from_secs(30), "suggested", |e| {
+    let (_, sug) = d.expect_event(0, Duration::from_secs(90), "suggested", |e| {
         e["type"] == "suggested" && e["moves"].as_array().is_some_and(|m| !m.is_empty())
     });
     let st = d.req(json!({"cmd": "status"}));

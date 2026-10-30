@@ -668,7 +668,7 @@ pub fn run(
         .count();
     if let (Some(a), Some(b)) = (snap_before, save_snap(&console, dir, "after.snap")) {
         // after PANIC + disconnect only the engineer's own drill writes may differ
-        let own_paths: Vec<String> = own.iter().map(|p| wing_path(p)).collect();
+        let own_paths: Vec<String> = own.iter().map(wing_path).collect();
         r.snap_residual = audit::snap_diff(&a, &b)
             .into_iter()
             .filter(|(p, ..)| !own_paths.contains(p))

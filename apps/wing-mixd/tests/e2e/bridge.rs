@@ -21,8 +21,6 @@ struct Rec {
 
 pub struct Bridge {
     pub addr: String,
-    /// Lanes per frame on the wire (= the USB-out lanes captured, in order).
-    pub channels: usize,
     stop: Arc<AtomicBool>,
     rec: Arc<Mutex<Rec>>,
     join: Option<JoinHandle<()>>,
@@ -86,7 +84,6 @@ impl Bridge {
         });
         Bridge {
             addr,
-            channels,
             stop,
             rec,
             join: Some(join),

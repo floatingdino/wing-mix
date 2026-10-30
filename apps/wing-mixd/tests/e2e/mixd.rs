@@ -17,7 +17,6 @@ pub struct Ev {
 
 pub struct Mixd {
     child: Child,
-    pub state: PathBuf,
     sock: PathBuf,
     events: Arc<Mutex<Vec<Ev>>>,
 }
@@ -74,7 +73,6 @@ impl Mixd {
         });
         Mixd {
             child,
-            state,
             sock,
             events,
         }
@@ -141,20 +139,5 @@ impl Mixd {
                 tail.join("\n")
             )
         })
-    }
-
-    /// Wait until the controller holds (converged / no progress / budget) and is idle, or `max` passes. Returns the
-    /// hold reason.
-    pub fn wait_holding(&self, max: Duration) -> Option<String> {
-        let t0 = Instant::now();
-        while t0.elapsed() < max {
-            let s = self.req(serde_json::json!({"cmd": "snapshot"}));
-            let sess = &s["session"];
-            if !sess["holding"].is_null() && sess["busy"] == false {
-                return Some(sess["holding"].to_string());
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        None
     }
 }
