@@ -2,7 +2,7 @@
 id: M019
 title: mix-wing: correct change Origin for other clients + events for reconnect diff
 stage: S1
-status: in_progress
+status: done
 owner: agent-M019
 depends: [M018]
 branch: task/M019
@@ -67,3 +67,4 @@ after a reconnect. Optionally expose the preamp alias in SimSurface.
   drain in origin/reconnect-diff tests.
   Verified: 4 parallel x 20 runs of the wing_sim binary plus a `cargo test --workspace` alongside: no failure (at 8
   parallel x 12, ~1 in 100 daemon connects still refused: the daemon process itself died under extreme load).
+- 2026-10-31 coordinator: merged task/M019b; make check passed 2/2. done. Residual: rare daemon death at very high parallel load (wing-simulator side) — monitor.
