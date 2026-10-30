@@ -138,12 +138,14 @@ fn report(title: &str, runs: &[RunResult]) {
         if r.ramps.writes > 0 {
             let _ = writeln!(
                 s,
-                "- ramps (observer): {} continuous params, {} writes ({} discrete), max step {:.2} x rate/tick ({}), {} over limit",
+                "- ramps (observer): {} continuous params, {} writes ({} discrete); max step per write {:.2} x rate/tick ({}); max speed over >= 0.2 s {:.2} x the per-kind rate ({}); {} stretches over the limit",
                 r.ramps.params,
                 r.ramps.writes,
                 r.ramps.discrete_writes,
                 r.ramps.max_ratio,
                 r.ramps.worst,
+                r.ramps.max_rate_ratio,
+                r.ramps.worst_rate,
                 r.ramps.over.len()
             );
         }

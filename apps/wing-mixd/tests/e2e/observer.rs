@@ -27,6 +27,7 @@ struct Log {
     own: BTreeSet<ParamId>,
 }
 
+#[derive(Clone)]
 pub struct Observer {
     pub s: Arc<WingSurface>,
     log: Arc<Mutex<Log>>,

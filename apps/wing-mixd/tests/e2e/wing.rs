@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -98,7 +99,9 @@ pub struct Drills {
     pub stop_tested: bool,
     pub writes_after_stop: usize,
     pub ceiling: String,
+    pub ceiling_tripped: bool,
     pub feedback: String,
+    pub feedback_reverted: bool,
     pub panic_restored: Option<bool>,
     pub panic_residual: Vec<String>,
 }
@@ -379,6 +382,11 @@ pub fn run(
     let mut stop_done = !o.drills;
     let mut yield_done = !o.drills;
     let mut yield_at: Option<(ParamId, Instant)> = None;
+    let mut fb_started = false;
+    let mut fb_t0: Option<Instant> = None;
+    let mut fb_move: Option<u64> = None;
+    let fb_stop = Arc::new(AtomicBool::new(false));
+    let mut fb_thread: Option<std::thread::JoinHandle<f64>> = None;
     let deadline = Instant::now() + o.max_wait;
     let mut hold = String::new();
     let mut last_poll = Instant::now();
@@ -436,8 +444,48 @@ pub fn run(
                         );
                     }
                 }
+                "done" if stop_done && !fb_started && o.drills => {
+                    // feedback drill: right after the tool finished a move, a 2.5 kHz tone builds up at 6 dB/s
+                    // (the engineer's spare channel, standing in for a mic starting to ring)
+                    fb_started = true;
+                    fb_t0 = Some(Instant::now());
+                    fb_move = e.v["id"].as_u64();
+                    let (ob, stop) = (obs.clone(), fb_stop.clone());
+                    fb_thread = Some(std::thread::spawn(move || {
+                        let mut lvl = -40.0;
+                        while lvl <= 6.0 && !stop.load(Ordering::Relaxed) {
+                            ob.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(lvl));
+                            std::thread::sleep(Duration::from_millis(100));
+                            lvl += 0.6;
+                        }
+                        ob.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(-144.0));
+                        lvl
+                    }));
+                    eprintln!(
+                        "[{}] feedback drill started after move {:?}",
+                        o.name, fb_move
+                    );
+                }
+                "safety" if fb_started && dr.feedback.is_empty() => {
+                    fb_stop.store(true, Ordering::Relaxed);
+                    let lvl = fb_thread.take().map(|t| t.join().unwrap_or(f64::NAN));
+                    dr.feedback = format!(
+                        "tone started after move {:?}; tripped after {:.1} s (fader {:.1} dB): {}; reverted move {}",
+                        fb_move,
+                        fb_t0.map_or(0.0, |t| t.elapsed().as_secs_f64()),
+                        lvl.unwrap_or(f64::NAN),
+                        e.v["trip"],
+                        e.v["reverted"]
+                    );
+                    dr.feedback_reverted = !e.v["reverted"].is_null();
+                    std::thread::sleep(Duration::from_secs(2));
+                    d.req(json!({"cmd": "resume"}));
+                    eprintln!("[{}] {}; resumed", o.name, dr.feedback);
+                }
                 "yielded" => dr.yielded = true,
-                "engineer_moved" => dr.engineer_moved_event = true,
+                "engineer_moved" if dr.yield_param.as_deref() == e.v["param"].as_str() => {
+                    dr.engineer_moved_event = true
+                }
                 _ => {}
             }
         }
@@ -452,6 +500,14 @@ pub fn run(
             }
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+    fb_stop.store(true, Ordering::Relaxed);
+    if let Some(t) = fb_thread.take() {
+        let lvl = t.join().unwrap_or(f64::NAN);
+        if dr.feedback.is_empty() {
+            dr.feedback = format!("no trip (tone up to {lvl:.1} dB fader)");
+        }
+        let _ = d.try_req(json!({"cmd": "resume"}));
     }
     r.hold = if hold.is_empty() {
         "timeout".into()
@@ -491,55 +547,26 @@ pub fn run(
     r.batches = moves.len();
     r.kept = moves.iter().filter(|m| m["outcome"] == "kept").count();
 
-    // Safety drills: mains ceiling (engineer pushes the main fader), feedback (a 2.5 kHz tone building at 6 dB/s).
+    // Mains ceiling drill: the engineer slams the spare channel (a -12 dBFS tone) and the main fader up by 10 dB
+    // each: short-term loudness and true peak far above the limits -> hold + STOP/revert, `resume` afterwards.
     if o.drills {
-        let need = -6.0 - r.end_lufs as f64;
-        let raise = need.clamp(3.0, 10.0);
         let seen = d.seen();
-        obs.engineer_write("main.1/fader", PValue::Float(raise));
-        let hit = d.wait_event(seen, Duration::from_secs(6), |e| {
-            ev_type(e) == "safety" && e["trip"].to_string().to_lowercase().contains("loud")
-        });
+        obs.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(10.0));
+        obs.engineer_write("main.1/fader", PValue::Float(10.0));
+        let hit = d.wait_event(seen, Duration::from_secs(8), |e| ev_type(e) == "safety");
+        std::thread::sleep(Duration::from_millis(500));
         let s = d.req(json!({"cmd": "snapshot"}));
         dr.ceiling = format!(
-            "main.1 +{raise:.1} dB (mix {:.1} LUFS before): trip event {}, ceiling_hold {}",
-            r.end_lufs,
-            hit.map(|(_, e)| e.v["trip"].to_string())
+            "tone +10 dB and main +10 dB: trip {}, status {}",
+            hit.as_ref()
+                .map(|(_, e)| e.v["trip"].to_string())
                 .unwrap_or_else(|| "none".into()),
-            s["safety"]["status"]["ceiling_hold"]
+            s["safety"]["status"]
         );
+        dr.ceiling_tripped = hit.is_some();
         obs.engineer_write("main.1/fader", PValue::Float(0.0));
-        std::thread::sleep(Duration::from_secs(2));
-        let _ = d.try_req(json!({"cmd": "resume"}));
-
-        let seen = d.seen();
-        let t0 = Instant::now();
-        let mut lvl = -40.0;
-        let mut trip = None;
-        while lvl <= 6.0 && trip.is_none() {
-            obs.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(lvl));
-            std::thread::sleep(Duration::from_millis(100));
-            lvl += 0.6;
-            trip = d
-                .wait_event(seen, Duration::ZERO, |e| ev_type(e) == "safety")
-                .map(|(_, e)| e.v);
-        }
-        let trip = trip.or_else(|| {
-            d.wait_event(seen, Duration::from_secs(4), |e| ev_type(e) == "safety")
-                .map(|(_, e)| e.v)
-        });
-        dr.feedback = match trip {
-            Some(e) => format!(
-                "tripped after {:.1} s at fader {:.1} dB: {} (reverted {})",
-                t0.elapsed().as_secs_f64(),
-                lvl,
-                e["trip"],
-                e["reverted"]
-            ),
-            None => format!("no trip (tone up to {lvl:.1} dB fader)"),
-        };
         obs.engineer_write(&format!("{FB_STRIP}/fader"), PValue::Float(-144.0));
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(3));
         let _ = d.try_req(json!({"cmd": "resume"}));
     }
     let snap = d.req(json!({"cmd": "snapshot"}));

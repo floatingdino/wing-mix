@@ -125,16 +125,22 @@ pub struct RampAudit {
     pub params: usize,
     pub writes: usize,
     pub discrete_writes: usize,
-    /// Max step per write / (rate / tick) over moves (1.0 = exactly the per-kind peak rate per tick).
+    /// Max step per write / (rate / tick) (1.0 = exactly the per-kind peak rate for one 40 ms scheduler tick; a
+    /// late tick legitimately writes a bigger step at the same rate).
     pub max_ratio: f64,
     pub worst: String,
-    /// Steps above `limit` x the per-tick allowance.
+    /// Max speed over any >= 0.2 s stretch of observed writes / the per-kind peak rate (1.0 = at the peak rate;
+    /// undo/PANIC/reverts run at `restore_speed` = 2).
+    pub max_rate_ratio: f64,
+    pub worst_rate: String,
+    /// Stretches faster than `limit` x the per-kind rate.
     pub over: Vec<String>,
 }
 
-/// Steps between consecutive observed values of each param (within `[from, to]`), in the actuator's ramp space,
-/// relative to the per-kind max rate per scheduler tick. `limit` = allowed ratio (restores run at
-/// `restore_speed` = 2 x, and the observer may see two ticks' writes coalesced).
+/// Ramp smoothness as a second client sees it, in the actuator's ramp space (dB / octaves / pan units): the max
+/// step between consecutive observed values relative to the per-kind rate per scheduler tick, and the max speed
+/// over >= 0.2 s stretches relative to the per-kind rate. `limit` = allowed speed ratio (restores run at
+/// `restore_speed` = 2 x; observer timestamps jitter by a few ms).
 pub fn ramps(
     s: &dyn Surface,
     changes: &[Change],
@@ -159,6 +165,7 @@ pub fn ramps(
         };
         a.params += 1;
         let mut prev = before.get(p).and_then(Value::as_f64);
+        let mut pts: Vec<(Instant, f64)> = Vec::new();
         for c in cs {
             a.writes += 1;
             let Some(v) = c.value.as_f64() else { continue };
@@ -169,11 +176,31 @@ pub fn ramps(
                     a.max_ratio = ratio;
                     a.worst = format!("{p}: {pv:.3} -> {v:.3} ({ratio:.2} x rate/tick)");
                 }
-                if ratio > limit {
-                    a.over.push(format!("{p}: {pv:.3} -> {v:.3} ({ratio:.2})"));
-                }
             }
             prev = Some(v);
+            pts.push((c.at, space.to_x(v)));
+        }
+        // windowed speed: from each point back to the latest earlier point >= 0.2 s before it (and <= 0.5 s)
+        for i in 0..pts.len() {
+            let Some(j) = (0..i)
+                .rev()
+                .find(|&j| (pts[i].0 - pts[j].0).as_secs_f64() >= 0.2)
+            else {
+                continue;
+            };
+            let dt = (pts[i].0 - pts[j].0).as_secs_f64();
+            if dt > 0.5 {
+                continue;
+            }
+            let ratio = (pts[i].1 - pts[j].1).abs() / dt / rate;
+            if ratio > a.max_rate_ratio {
+                a.max_rate_ratio = ratio;
+                a.worst_rate = format!("{p}: {ratio:.2} x {rate} /s over {dt:.2} s");
+            }
+            if ratio > limit {
+                a.over
+                    .push(format!("{p}: {ratio:.2} x rate over {dt:.2} s"));
+            }
         }
     }
     a
