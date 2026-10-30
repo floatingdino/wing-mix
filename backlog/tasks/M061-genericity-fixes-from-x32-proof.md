@@ -2,7 +2,7 @@
 id: M061
 title: Genericity fixes from the X32 proof (docs/adapters.md F1–F5)
 stage: S6
-status: review
+status: done
 owner: task-agent-M061
 depends: [M060, M036]
 branch: task/M061
@@ -42,3 +42,4 @@ adapter selection (`--console wing:<ip>|x32:<ip>|sim`) and RTA claim only when t
   remit_tables (no-solo inspection, policy surface check).
   Gotchas: SimSurface reports surface `sim` (model WING), so check_surface also matches on model family; rta_feed test skips
   without the wing-sim binary. Proposed follow-ups: F6 (X32 solo/meters/dyn/hardware), F7 (hardware-measured X32 EQ/dyn transfer).
+- 2026-10-31 coordinator: merged; make check + make app pass. done. F6/F7 need X32 hardware (not planned).
