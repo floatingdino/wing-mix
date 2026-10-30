@@ -2,10 +2,10 @@
 id: M005
 title: Research: mixing knowledge base as structured data
 stage: S0
-status: todo
-owner: -
+status: in_progress
+owner: agent-M005
 depends: []
-branch: -
+branch: task/M005
 model: opus
 ---
 
@@ -18,3 +18,4 @@ Encode practical mix-engineering knowledge as data the planner can use: data/kno
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M005: started in worktree .worktrees/M005. Read ARCHITECTURE + wing-simulator models.md/signal-flow.md (WING capabilities: ch EQ = low/high (PEQ|SHV) + 4 PEQ, +/-15 dB, Q 0.44..10; LC 6-24 dB/oct 20..2000 Hz; gate thr -80..0, range 3..60 dB; COMP thr -60..0, ratio 1.1..100, att 0..120 ms, rel 4..4000 ms; FX = 16 stereo slots inserted on buses -> send FX). Next: web research, then TOML files.
