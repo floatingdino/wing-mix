@@ -112,6 +112,13 @@ pub struct ActuatorConfig {
     /// Most completed moves kept for undo (oldest dropped first). 0 = unbounded.
     #[serde(default = "default_history_cap")]
     pub history_cap: usize,
+    /// Most params one slot-recall snap may write (M064; a snap is one console batch, not a ramp).
+    #[serde(default = "default_max_snap")]
+    pub max_snap: usize,
+}
+
+fn default_max_snap() -> usize {
+    4096
 }
 
 fn default_remap_wait_s() -> f64 {
@@ -143,6 +150,7 @@ impl Default for ActuatorConfig {
             remap_wait_s: default_remap_wait_s(),
             write_log_cap: default_write_log_cap(),
             history_cap: default_history_cap(),
+            max_snap: default_max_snap(),
         }
     }
 }

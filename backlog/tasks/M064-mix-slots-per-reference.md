@@ -52,3 +52,4 @@ to compare. This replaces the earlier A/B/X blind-test idea, at the user's reque
 - 2026-10-31 coordinator: created at the user's request; revised the same day from A/B/X blind test to multi-slot
   reference states.
 - 2026-10-31 agent-M064: claimed; reading actuator/surface/daemon/app code.
+- 2026-10-31 agent-M064: actuator snap path (SnapRequest/Report, Snapped/Committed events, check_recall in SafetyGate: holds/ceiling/session envelope kept, per-move + quiet-only discrete relaxed), Surface::write_batch (WingSurface: one wire write + one barrier), commit; tests mix-actuator/tests/snap.rs. Next: slot store/persistence + daemon commands.

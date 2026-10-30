@@ -5,7 +5,7 @@
 use crate::config::{ramp_for, ActuatorConfig};
 use crate::event::{
     AbortReason, ActuatorEvent, InspectRequest, InspectView, Job, JobKind, MeasureFn, MoveId,
-    Refusal, WriteRecord,
+    Refusal, SnapReport, SnapRequest, WriteRecord,
 };
 use crate::gate::RemitGate;
 use crate::ramp::{Pending, Track};
@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RampKind {
@@ -82,9 +82,23 @@ struct Deferred {
     rta: Option<(MoveId, RtaSource, Option<RtaSource>)>,
 }
 
+/// A slot-recall snap waiting for the surface to re-resolve a switched block (M064).
+struct Snap {
+    report: SnapReport,
+    started: Instant,
+    /// Params of the switched blocks, written after the remap.
+    phase2: Vec<ParamChange>,
+    /// Model params written in phase 1 with the value we wrote, and their class.
+    models: Vec<(ParamId, Value, ParamClass)>,
+    remapped: bool,
+    waiting_since: f64,
+    reply: Option<Sender<SnapReport>>,
+}
+
 enum Active {
     Ramp(Box<Ramp>),
     Inspect(Box<Inspect>),
+    Snap(Box<Snap>),
 }
 
 enum Step {
@@ -342,6 +356,158 @@ impl Actuator {
         self.journal.note_revoked(key);
     }
 
+    /// Slot recall (M064): see [`SnapRequest`]. Runs at once (not queued): the running move ends in place and
+    /// queued jobs are dropped (`Superseded`). Refused while STOPped or with the link down.
+    pub fn snap(&mut self, req: SnapRequest) -> MoveId {
+        let id = self.next_id();
+        self.snap_with_id(id, req);
+        id
+    }
+
+    pub fn snap_with_id(&mut self, id: MoveId, req: SnapRequest) {
+        let mut report = SnapReport {
+            id,
+            label: req.label.clone(),
+            changes: Vec::new(),
+            skipped: Vec::new(),
+            phases: 0,
+            models: Vec::new(),
+            write_ms: 0.0,
+            total_ms: 0.0,
+            refused: None,
+            aborted: None,
+        };
+        let mut seen = BTreeSet::new();
+        let refusal = if self.link_down {
+            Some(Refusal::Disconnected)
+        } else if self.stopped {
+            Some(Refusal::Stopped)
+        } else if req.changes.len() > self.cfg.max_snap {
+            Some(Refusal::TooLarge {
+                len: req.changes.len(),
+                max: self.cfg.max_snap,
+            })
+        } else {
+            req.changes
+                .iter()
+                .find(|c| !seen.insert(&c.param))
+                .map(|c| Refusal::Duplicate {
+                    param: c.param.clone(),
+                })
+        };
+        if let Some(reason) = refusal {
+            self.emit(ActuatorEvent::Refused {
+                id,
+                label: req.label,
+                reason: reason.clone(),
+            });
+            report.refused = Some(reason);
+            if let Some(tx) = req.reply {
+                let _ = tx.send(report);
+            }
+            return;
+        }
+        self.cancel_all(AbortReason::Superseded);
+        self.emit(ActuatorEvent::Started {
+            id,
+            label: req.label.clone(),
+            kind: JobKind::Snap,
+            params: req.changes.iter().map(|c| c.param.clone()).collect(),
+            duration_s: 0.0,
+        });
+        // M038 ordering: a model that actually changes goes first; its block's params wait for the remap.
+        let mut models = Vec::new();
+        for c in &req.changes {
+            let Ok(spec) = self.surface.param_spec(&c.param) else {
+                continue;
+            };
+            let switching = is_model_class(spec.class)
+                && self.surface.read(&c.param).is_ok_and(|cur| {
+                    spec.coerce(&c.to)
+                        .is_ok_and(|to| !cur.approx_eq(&to, spec.tolerance()))
+                });
+            if switching {
+                models.push((c.param.clone(), spec.class));
+            }
+        }
+        let governed = |p: &ParamId, models: &[(ParamId, ParamClass)]| {
+            models.iter().any(|(m, class)| {
+                p != m
+                    && p.head() == m.head()
+                    && (*class == ParamClass::FxModel || p.block() == m.block())
+            })
+        };
+        let (later, first): (Vec<ParamChange>, Vec<ParamChange>) = req
+            .changes
+            .into_iter()
+            .partition(|c| governed(&c.param, &models));
+        let mut snap = Snap {
+            report,
+            started: Instant::now(),
+            phase2: later,
+            models: Vec::new(),
+            remapped: false,
+            waiting_since: self.now,
+            reply: req.reply,
+        };
+        let lost = self.snap_write(&mut snap, &first);
+        // the models that really went out (a refused switch keeps its block's params out too)
+        for (m, class) in models {
+            if let Some(c) = snap.report.changes.iter().find(|c| c.param == m) {
+                snap.models.push((m.clone(), c.to.clone(), class));
+                snap.report.models.push(m);
+            }
+        }
+        let written: Vec<(ParamId, ParamClass)> = snap
+            .models
+            .iter()
+            .map(|(m, _, c)| (m.clone(), *c))
+            .collect();
+        let (keep, drop): (Vec<ParamChange>, Vec<ParamChange>) = std::mem::take(&mut snap.phase2)
+            .into_iter()
+            .partition(|c| governed(&c.param, &written));
+        snap.phase2 = keep;
+        snap.report
+            .skipped
+            .extend(drop.into_iter().map(|c| Refusal::MixedModelChange { param: c.param }));
+        if lost {
+            self.finish_snap(snap, Some(AbortReason::Disconnected));
+        } else if snap.phase2.is_empty() {
+            self.finish_snap(snap, None);
+        } else {
+            self.active = Some(Active::Snap(Box::new(snap)));
+        }
+    }
+
+    /// End a slot comparison (M064 `slot_commit`): record `changes` (from = the values before the comparison, to =
+    /// the values now) as one journal batch and one undo unit, as if one move had made them. Nothing is written.
+    pub fn commit(&mut self, label: &str, changes: Vec<Change>) -> MoveId {
+        let id = self.next_id();
+        self.commit_with_id(id, label, changes);
+        id
+    }
+
+    pub fn commit_with_id(&mut self, id: MoveId, label: &str, changes: Vec<Change>) {
+        if !changes.is_empty() {
+            self.journal.record(label.to_string(), changes.clone());
+            self.history.push(History {
+                at: self.now,
+                label: label.to_string(),
+                changes: changes.clone(),
+            });
+            let cap = self.cfg.history_cap;
+            if cap > 0 && self.history.len() > cap {
+                let n = self.history.len() - cap;
+                self.history.drain(..n);
+            }
+        }
+        self.emit(ActuatorEvent::Committed {
+            id,
+            label: label.to_string(),
+            changes,
+        });
+    }
+
     /// Advance the scheduler to `now` (time since an arbitrary origin; must not go backwards).
     pub fn tick(&mut self, now: Duration) {
         let t = now.as_secs_f64().max(self.now);
@@ -436,6 +602,7 @@ impl Actuator {
         match self.active.as_mut()? {
             Active::Ramp(r) => Some(r),
             Active::Inspect(i) => i.current.as_mut(),
+            Active::Snap(_) => None,
         }
     }
 
@@ -492,6 +659,13 @@ impl Actuator {
 
     /// Never ramp across a model change: abort a move whose model-dependent params were re-resolved.
     fn on_remap(&mut self, strip: &StripId, block: &str) {
+        if let Some(Active::Snap(sn)) = self.active.as_mut() {
+            if sn.models.iter().any(|(m, _, c)| {
+                m.head() == strip.as_str() && (*c == ParamClass::FxModel || m.block() == Some(block))
+            }) {
+                sn.remapped = true;
+            }
+        }
         let prefix = format!("{strip}/{block}/");
         if let Some(r) = self.current_ramp_mut() {
             if let Some(p) = r.phase2.as_mut() {
@@ -960,6 +1134,13 @@ impl Actuator {
                     None
                 }
             },
+            Active::Snap(sn) => {
+                if !sn.remapped && self.now - sn.waiting_since < self.cfg.remap_wait_s {
+                    return Some(Active::Snap(sn));
+                }
+                self.snap_phase2(*sn);
+                None
+            }
             Active::Inspect(mut i) => match self.step_inspect(&mut i) {
                 Step::Running => Some(Active::Inspect(i)),
                 Step::Done => {
@@ -1062,19 +1243,12 @@ impl Actuator {
                     r.tracks[i].wrote(&w, stored.clone(), t);
                     self.tokens -= 1.0;
                     self.last_written.insert(param.clone(), stored.clone());
-                    self.write_log.push(WriteRecord {
+                    self.log_write(WriteRecord {
                         at_s: t,
                         id: r.id,
                         param,
                         value: stored,
                     });
-                    let cap = self.cfg.write_log_cap;
-                    if cap > 0 && self.write_log.len() > cap {
-                        // drop a quarter at a time: amortised O(1) per write
-                        let n = self.write_log.len() - cap + cap / 4;
-                        self.write_log.drain(..n);
-                        self.write_log_dropped += n as u64;
-                    }
                 }
                 Err(SurfaceError::Disconnected) => {
                     self.link_lost = true;
@@ -1382,10 +1556,172 @@ impl Actuator {
         }
     }
 
+    /// Validate (spec, coercion, `check_recall`) and write `changes` as one console batch. Refusals are recorded
+    /// in the report; `true` if the link went down.
+    fn snap_write(&mut self, sn: &mut Snap, changes: &[ParamChange]) -> bool {
+        let mut batch: Vec<(ParamId, Value)> = Vec::new();
+        let mut froms: Vec<Value> = Vec::new();
+        for c in changes {
+            let surf = |e: SurfaceError| Refusal::Surface {
+                param: c.param.clone(),
+                error: e.to_string(),
+            };
+            let checked = (|| {
+                let spec = self.surface.param_spec(&c.param).map_err(surf)?;
+                if spec.read_only {
+                    return Err(surf(SurfaceError::ReadOnly(c.param.clone())));
+                }
+                let to = spec.coerce(&c.to).map_err(surf)?;
+                let from = self.surface.read(&c.param).map_err(surf)?;
+                if from.approx_eq(&to, spec.tolerance()) {
+                    return Ok(None);
+                }
+                let req = WriteRequest {
+                    param: c.param.clone(),
+                    class: spec.class,
+                    from: Some(from.clone()),
+                    to: Some(to.clone()),
+                };
+                let base = self.baseline.get(&c.param).unwrap_or(&from);
+                let d = self.gate.check_recall(&req, base);
+                if !permitted(&d, false) {
+                    return Err(Refusal::Remit {
+                        param: c.param.clone(),
+                        verdict: d.class,
+                        reason: d.reason,
+                        detail: d.detail,
+                        confirm_key: d.confirm_key,
+                    });
+                }
+                Ok(Some((to, from)))
+            })();
+            match checked {
+                Ok(Some((to, from))) => {
+                    batch.push((c.param.clone(), to));
+                    froms.push(from);
+                }
+                Ok(None) => {}
+                Err(r) => sn.report.skipped.push(r),
+            }
+        }
+        if batch.is_empty() {
+            return false;
+        }
+        let t0 = Instant::now();
+        let results = self.surface.write_batch(&batch);
+        sn.report.write_ms += t0.elapsed().as_secs_f64() * 1e3;
+        sn.report.phases += 1;
+        let mut lost = false;
+        for (((param, _), from), res) in batch.into_iter().zip(froms).zip(results) {
+            match res {
+                Ok(stored) => {
+                    self.baseline
+                        .entry(param.clone())
+                        .or_insert_with(|| from.clone());
+                    self.last_written.insert(param.clone(), stored.clone());
+                    self.log_write(WriteRecord {
+                        at_s: self.now,
+                        id: sn.report.id,
+                        param: param.clone(),
+                        value: stored.clone(),
+                    });
+                    sn.report.changes.push(Change {
+                        param,
+                        from,
+                        to: stored,
+                    });
+                }
+                Err(SurfaceError::Disconnected) => {
+                    lost = true;
+                    sn.report.skipped.push(Refusal::Disconnected);
+                }
+                Err(e) => sn.report.skipped.push(Refusal::Surface {
+                    param,
+                    error: e.to_string(),
+                }),
+            }
+        }
+        if lost {
+            self.link_lost = true;
+        }
+        lost
+    }
+
+    /// The switched blocks were re-resolved (or the wait ran out): write their params, unless someone switched the
+    /// model again meanwhile (then they would land on the wrong model: skipped).
+    fn snap_phase2(&mut self, mut sn: Snap) {
+        let changes = std::mem::take(&mut sn.phase2);
+        let mut ok = Vec::new();
+        for c in changes {
+            let moved = sn.models.iter().find(|(m, v, class)| {
+                c.param.head() == m.head()
+                    && (*class == ParamClass::FxModel || c.param.block() == m.block())
+                    && self
+                        .surface
+                        .read(m)
+                        .map_or(true, |cur| !cur.approx_eq(v, 1e-9))
+            });
+            match moved {
+                Some((m, _, _)) => sn.report.skipped.push(Refusal::Surface {
+                    param: c.param.clone(),
+                    error: format!("model {m} changed by someone else before the block's params were written"),
+                }),
+                None => ok.push(c),
+            }
+        }
+        let lost = self.snap_write(&mut sn, &ok);
+        self.finish_snap(sn, lost.then_some(AbortReason::Disconnected));
+    }
+
+    /// Journal the snap (audit; not an undo unit), publish it and answer the requester.
+    fn finish_snap(&mut self, mut sn: Snap, aborted: Option<AbortReason>) {
+        sn.report.total_ms = sn.started.elapsed().as_secs_f64() * 1e3;
+        sn.report.aborted = aborted;
+        if !sn.report.changes.is_empty() {
+            self.journal
+                .record(format!("snap: {}", sn.report.label), sn.report.changes.clone());
+        }
+        self.journal.note(format!(
+            "{} snap {}: {} written in {} batch(es) ({:.1} ms), {} skipped{}",
+            sn.report.id,
+            sn.report.label,
+            sn.report.changes.len(),
+            sn.report.phases,
+            sn.report.total_ms,
+            sn.report.skipped.len(),
+            match &sn.report.aborted {
+                Some(r) => format!(", aborted: {r:?}"),
+                None => String::new(),
+            }
+        ));
+        if let Some(tx) = sn.reply.take() {
+            let _ = tx.send(sn.report.clone());
+        }
+        self.emit(ActuatorEvent::Snapped { report: sn.report });
+    }
+
+    fn log_write(&mut self, rec: WriteRecord) {
+        self.write_log.push(rec);
+        let cap = self.cfg.write_log_cap;
+        if cap > 0 && self.write_log.len() > cap {
+            // drop a quarter at a time: amortised O(1) per write
+            let n = self.write_log.len() - cap + cap / 4;
+            self.write_log.drain(..n);
+            self.write_log_dropped += n as u64;
+        }
+    }
+
     fn cancel_all(&mut self, reason: AbortReason) {
         match self.active.take() {
             Some(Active::Ramp(r)) => self.finish_ramp(*r, Step::Aborted(reason.clone())),
             Some(Active::Inspect(i)) => self.abort_inspect(*i, reason.clone()),
+            Some(Active::Snap(mut sn)) => {
+                let left = std::mem::take(&mut sn.phase2);
+                sn.report
+                    .skipped
+                    .extend(left.into_iter().map(|c| Refusal::MixedModelChange { param: c.param }));
+                self.finish_snap(*sn, Some(reason.clone()));
+            }
             None => {}
         }
         for (id, _) in std::mem::take(&mut self.queue) {

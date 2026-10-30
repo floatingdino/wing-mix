@@ -302,6 +302,25 @@ pub trait Surface: Send + Sync {
     /// Validate, quantise and apply; returns the stored value.
     fn write(&self, param: &ParamId, value: Value) -> SurfaceResult<Value>;
 
+    /// Write several params as **one console batch** (M064 slot recall): each is validated and quantised like
+    /// [`write`](Surface::write) and the results come back in order. An adapter whose wire can carry many values in
+    /// one message overrides this to send them together; the default writes them one after another. A failed entry
+    /// does not stop the others, except `Disconnected`, which fails every entry after it.
+    fn write_batch(&self, writes: &[(ParamId, Value)]) -> Vec<SurfaceResult<Value>> {
+        let mut out = Vec::with_capacity(writes.len());
+        let mut down = false;
+        for (p, v) in writes {
+            if down {
+                out.push(Err(SurfaceError::Disconnected));
+                continue;
+            }
+            let r = self.write(p, v.clone());
+            down = matches!(r, Err(SurfaceError::Disconnected));
+            out.push(r);
+        }
+        out
+    }
+
     /// Change notifications (see module docs for the origin contract). Each call returns a new receiver.
     fn subscribe(&self) -> Receiver<SurfaceEvent>;
 
