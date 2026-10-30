@@ -410,6 +410,18 @@ pub fn run(
     let from = d.seen();
     d.req(json!({"cmd": "set_mode", "mode": "autopilot"}));
     let mut confirmed: BTreeSet<String> = BTreeSet::new();
+    // M067: the operator also confirms what the suggest phase already asked for (those requests come before
+    // `from`; missing them left the plan's conditional moves pending, and multichannel runs held `no_progress`
+    // after 1-3 batches)
+    for e in &d.events()[..from] {
+        if ev_type(&e.v) == "confirmation_needed" {
+            if let Some(k) = e.v["key"].as_str() {
+                if confirmed.insert(k.to_string()) {
+                    let _ = d.try_req(json!({"cmd": "confirm", "key": k}));
+                }
+            }
+        }
+    }
     let mut dr = Drills::default();
     let mut cursor = from;
     let mut moves_started = 0usize;
@@ -605,7 +617,10 @@ pub fn run(
             .map(|e| format!("{}\n", e.v))
             .collect();
         let file = o.name.replace([' ', '[', ']', '+', ','], "_");
-        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{file}.jsonl")), body);
+        let _ = std::fs::write(
+            std::path::Path::new(&dir).join(format!("{file}.jsonl")),
+            body,
+        );
     }
     let moves = snap["moves"].as_array().cloned().unwrap_or_default();
     r.batches = moves.len();
