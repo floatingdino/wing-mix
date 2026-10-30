@@ -4,13 +4,18 @@
 //! - [`protocol`]: control requests/replies (newline JSON; docs/control-protocol.md).
 //! - [`server`]: `<state-dir>/control.sock` server and client helpers.
 //! - [`source`], [`analysis`], [`taps`]: input sources → SPSC ring → analysis thread → the controller's meter.
+//! - [`gate`]: the remit gate with live-updatable roles; [`rta`]: console RTA -> safety monitor feed; [`signals`]:
+//!   SIGINT/SIGTERM -> clean shutdown.
 //! - [`events`]: event fan-out, in-memory log and `events.jsonl`; [`status`]: status.json, roles.json.
 
 pub mod analysis;
 pub mod daemon;
 pub mod events;
+pub mod gate;
 pub mod protocol;
 pub mod server;
+pub mod rta;
+pub mod signals;
 pub mod source;
 pub mod status;
 pub mod taps;

@@ -85,6 +85,13 @@ impl PolicyGate {
         ))
     }
 
+    /// Replace the confirmed roles and rebuild the context (session confirmations are kept). Fails closed: if the
+    /// surface cannot be read the context is emptied (every write forbidden) until the next refresh. (M053)
+    pub fn set_roles(&mut self, confirmed_roles: BTreeMap<StripId, Role>, surface: &dyn Surface) {
+        self.confirmed_roles = confirmed_roles;
+        self.ctx = self.build(surface).unwrap_or_default();
+    }
+
     pub fn context(&self) -> &RemitContext {
         &self.ctx
     }

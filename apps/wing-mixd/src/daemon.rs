@@ -28,14 +28,17 @@ use mix_knowledge::KnowledgeBase;
 use mix_sim::{Multitrack, SimConfig, SimSurface, Track};
 use mix_surface::remit::{detect_topology, Policy, ScoringDetector};
 use mix_surface::{Role, Surface};
+use mix_wing::WingSurface;
 use serde_json::{json, Value};
 
 use crate::analysis::{lock, Analysis, Meters, SharedMeter};
 use crate::events::EventHub;
+use crate::gate::{LiveRolesGate, RolesHandle};
 use crate::protocol::{
-    ConnectConsole, InputKind, LoadDescription, LoadReference, Request, SelectInput, SimOptions,
+    ConnectConsole, LiveContext, InputKind, LoadDescription, LoadReference, Request, SelectInput, SimOptions,
     StartOptions, TapSel,
 };
+use crate::rta::RtaFeed;
 use crate::server::{ControlServer, Dispatch};
 use crate::source::Source;
 use crate::status::{atomic_write, unix_now, DaemonStatus, RoleStore, SOCKET_FILE, STATUS_FILE};
@@ -73,6 +76,8 @@ enum Msg {
     Req(Request, SyncSender<Result<Value, String>>),
     /// Bookkeeping after the dispatcher executed STOP/PANIC itself.
     After(Request),
+    /// SIGINT/SIGTERM: shut down as for `quit`.
+    Signal(&'static str),
 }
 
 /// What request handlers share with the engine thread.
@@ -198,6 +203,27 @@ impl DaemonHandle {
         self.server.as_ref().map(|s| s.path())
     }
 
+    /// Block until the daemon quits (a `quit` request) or SIGINT/SIGTERM arrives (see [`crate::signals`]); a
+    /// signal makes the engine thread shut down cleanly (STOP, restore inspection solo/RTA, final status), then
+    /// dropping the handle removes the socket. A second signal exits at once.
+    pub fn wait_or_signal(self) {
+        let mut asked = false;
+        while self.join.as_ref().is_some_and(|j| !j.is_finished()) {
+            let n = crate::signals::count();
+            if n >= 2 {
+                std::process::exit(130);
+            }
+            if n >= 1 && !asked {
+                asked = true;
+                self.shared.send(Msg::Signal(
+                    crate::signals::last_name().unwrap_or("signal"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        self.wait();
+    }
+
     /// Block until the daemon quits (a `quit` request).
     pub fn wait(mut self) {
         if let Some(j) = self.join.take() {
@@ -243,6 +269,8 @@ struct Console {
     scene: String,
     name: String,
     surface: Arc<dyn Surface>,
+    /// The same surface as a concrete WING (RTA claim), when it is one.
+    wing: Option<Arc<WingSurface>>,
     sim: Option<SimConsole>,
 }
 
@@ -302,6 +330,13 @@ struct Session {
     baseline: BTreeMap<ParamId, PValue>,
     trips: Vec<Value>,
     feedback_guard: bool,
+    /// Confirmed roles seen by the live remit gate (`confirm_roles` publishes here).
+    roles: RolesHandle,
+    /// The controller was built with older roles; rebuilt between batches.
+    roles_stale: bool,
+    /// Console RTA -> safety monitor (WING + feedback guard). Last field: dropped (RTA restored) after the
+    /// actuator has stopped.
+    rta: Option<RtaFeed>,
 }
 
 struct Daemon {
@@ -315,6 +350,7 @@ struct Daemon {
     last_error: Option<String>,
     roles: RoleStore,
     mode: Mode,
+    live_context: LiveContext,
     console: Option<Console>,
     input: Option<Input>,
     target: Option<Target>,
@@ -341,6 +377,7 @@ impl Daemon {
             quit: false,
             last_error: None,
             mode: Mode::Observe,
+            live_context: LiveContext::default(),
             console: None,
             input: None,
             target: None,
@@ -397,6 +434,10 @@ impl Daemon {
             Msg::After(Request::Panic) => {
                 self.set_mode(Mode::Observe);
                 self.emit("daemon", &json!({"type": "panic", "mode": "observe"}));
+            }
+            Msg::Signal(name) => {
+                self.emit("daemon", &json!({"type": "signal", "signal": name}));
+                self.quit = true;
             }
             Msg::After(_) => {
                 self.emit("daemon", &json!({"type": "emergency_stop"}));
@@ -458,6 +499,7 @@ impl Daemon {
                 self.set_mode(mode);
                 Ok(json!({"mode": mode}))
             }
+            Request::SetLiveContext { context } => self.set_live_context(context),
             Request::Start(o) => self.start(o),
             Request::Stop => self.stop(),
             Request::EmergencyStop | Request::Panic => Err("handled by the dispatcher".into()),
@@ -869,15 +911,15 @@ impl Daemon {
         self.roles
             .save(&self.cfg.state_dir)
             .map_err(|e| format!("roles: {e}"))?;
-        // The remit gate is built with the roles at session start: apply now if nothing has been written yet.
-        let applies = match &self.session {
-            None => "now",
-            Some(s) if !s.running && s.baseline.is_empty() => {
-                self.end_session();
-                "now"
-            }
-            Some(_) => "next_session",
-        };
+        // Mid-session (M053): the live remit gate sees the new roles on its next decision, so the actuator refuses
+        // writes to a bus just confirmed as monitor at once; the controller is rebuilt between batches so its
+        // plans use them too (the actuator session, journal and baseline are kept).
+        let applies = "now";
+        if let Some(s) = &mut self.session {
+            let roles = self.roles.roles(&key);
+            s.roles.set(roles);
+            s.roles_stale = s.ctl.is_some();
+        }
         self.emit(
             "daemon",
             &json!({"type": "roles_confirmed", "key": key, "roles": roles, "applies": applies}),
@@ -893,6 +935,22 @@ impl Daemon {
         if let Some(c) = self.session.as_mut().and_then(|s| s.ctl.as_mut()) {
             c.ctl.set_mode(mode);
         }
+    }
+
+    /// The live-context target setting (M037: live / broadcast_video / match_record).
+    // TODO(M037): when the live-context transform lands (task/M037), derive the target from the raw reference
+    // profile under `self.live_context` here and in `poll_loading`, rebuild the controller, and record the
+    // context in `applied_deltas`. Until then the setting is stored, reported and echoed in the target info only.
+    fn set_live_context(&mut self, context: LiveContext) -> Result<Value, String> {
+        let changed = self.live_context != context;
+        self.live_context = context;
+        if changed {
+            self.emit(
+                "daemon",
+                &json!({"type": "live_context_changed", "live_context": context, "applied": false}),
+            );
+        }
+        Ok(json!({"live_context": context, "applied": false, "note": "stored; the target transform lands with M037"}))
     }
 
     fn start(&mut self, o: StartOptions) -> Result<Value, String> {
@@ -911,21 +969,34 @@ impl Daemon {
             let monitor = SafetyMonitor::new(scfg);
             let roles = self.roles.roles(&console.role_key());
             let surface = console.surface.clone();
+            let handle = RolesHandle::new(roles.clone());
             let inner = PolicyGate::with_roles(self.policy.clone(), &*surface, roles)
                 .map_err(|e| format!("remit: {e}"))?;
-            let gate = SafetyGate::new(Box::new(inner), surface.clone(), monitor.clone());
+            let live = LiveRolesGate::new(inner, handle.clone(), surface.clone());
+            let gate = SafetyGate::new(Box::new(live), surface.clone(), monitor.clone());
             let mut act = Actuator::new(surface, Box::new(gate), ActuatorConfig::default());
             act.set_safety(monitor.clone());
             let act_rx = act.subscribe();
-            let handle = Arc::new(spawn_actuator(act));
+            let actuator = Arc::new(spawn_actuator(act));
+            // Console RTA -> feedback detector (WING only; the sim has no RTA). A failed claim is not fatal.
+            let rta = match (&console.wing, feedback_guard) {
+                (Some(w), true) => match RtaFeed::start(w.clone(), monitor.clone()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.last_error = Some(format!("rta feed: {e}"));
+                        None
+                    }
+                },
+                _ => None,
+            };
             lock(&input.analysis.meters).safety = Some(monitor.clone());
             *self
                 .shared
                 .actuator
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
+                .unwrap_or_else(|e| e.into_inner()) = Some(actuator.clone());
             self.session = Some(Session {
-                actuator: handle,
+                actuator,
                 monitor,
                 act_rx,
                 ctl: None,
@@ -935,6 +1006,9 @@ impl Daemon {
                 baseline: BTreeMap::new(),
                 trips: Vec::new(),
                 feedback_guard,
+                roles: handle,
+                roles_stale: false,
+                rta,
             });
         }
         let s = self.session.as_mut().expect("session");
@@ -1036,6 +1110,16 @@ impl Daemon {
     }
 
     fn tick(&mut self) {
+        if self.session.as_ref().is_some_and(|s| {
+            s.roles_stale && s.ctl.as_ref().is_some_and(|c| !c.ctl.is_busy())
+        }) {
+            if let Some(s) = self.session.as_mut() {
+                s.roles_stale = false;
+            }
+            if let Err(e) = self.build_ctl() {
+                self.last_error = Some(e);
+            }
+        }
         let now = self.now();
         let Some(s) = &mut self.session else { return };
         let mut events: Vec<(&'static str, Value)> = Vec::new();
@@ -1109,6 +1193,7 @@ impl Daemon {
         let mut out = json!({
             "at_s": now,
             "mode": self.mode,
+            "live_context": self.live_context,
             "console": self.console.as_ref().map(|c| json!({"kind": c.kind, "name": c.name})),
             "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label, "info": t.info})),
         });
@@ -1159,7 +1244,11 @@ impl Daemon {
             "stopped": s.stopped,
             "feedback_guard": s.feedback_guard,
         });
-        out["safety"] = json!({"status": s.monitor.status(), "trips": s.trips});
+        out["safety"] = json!({
+            "status": s.monitor.status(),
+            "trips": s.trips,
+            "rta_feed": s.rta.as_ref().map(RtaFeed::status),
+        });
         out["touched"] = touched.into();
         out["log"] = self
             .shared
@@ -1236,6 +1325,7 @@ impl Daemon {
                 .as_ref()
                 .map(|l| json!({"what": l.what, "stage": l.stage, "progress": l.progress}))
                 .unwrap_or(Value::Null),
+            live_context: self.live_context,
             mode: serde_json::to_value(self.mode)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
@@ -1244,7 +1334,13 @@ impl Daemon {
             safety: self
                 .session
                 .as_ref()
-                .map(|s| json!({"status": s.monitor.status(), "trips": s.trips.len()}))
+                .map(|s| {
+                    json!({
+                        "status": s.monitor.status(),
+                        "trips": s.trips.len(),
+                        "rta_feed": s.rta.as_ref().map(RtaFeed::status),
+                    })
+                })
                 .unwrap_or(Value::Null),
             subscribers: self.shared.hub.subscribers(),
             last_error: self.last_error.clone(),
@@ -1285,14 +1381,17 @@ fn connect_wing(ip: &str, port: Option<u16>, scene: String) -> Result<Console, S
         discovery_port: Some(port),
         ..Default::default()
     };
-    let s = mix_wing::WingSurface::connect(addr, &opts).map_err(|e| format!("{addr}: {e}"))?;
+    let s = Arc::new(
+        mix_wing::WingSurface::connect(addr, &opts).map_err(|e| format!("{addr}: {e}"))?,
+    );
     let info = s.info();
     Ok(Console {
         kind: "wing",
         key: format!("wing:{}:{}", info.model, info.name),
         scene,
         name: format!("{} {} ({addr})", info.model, info.name),
-        surface: Arc::new(s),
+        surface: s.clone(),
+        wing: Some(s),
         sim: None,
     })
 }
@@ -1385,6 +1484,7 @@ fn connect_sim(o: SimOptions, scene: String) -> Result<Console, String> {
         scene,
         name: "wing-sim (in-process)".into(),
         surface,
+        wing: None,
         sim: Some(SimConsole {
             sim,
             inputs: (1..=channels).collect(),
