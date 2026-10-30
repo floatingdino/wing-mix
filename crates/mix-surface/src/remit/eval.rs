@@ -1,8 +1,13 @@
 //! The remit evaluator (remit.md section 4): eight ordered steps, first decisive step wins.
 //!
-//! 1. unknown/read-only class; 2. hard list (+ value predicates); 3. unknown strip/destination/host; 4. locks
-//! (owning strip, send destination, fx hosts), unconfirmed, deny tag; 5. rules (highest priority, then most
-//! restrictive); 6. unlock (rule tag or session confirmation); 7. coupling cap; 8. revive cap.
+//! 1. unknown/read-only class;
+//! 2. hard list (+ value predicates);
+//! 3. unknown strip/destination/host;
+//! 4. locks (owning strip, send destination, fx hosts), unconfirmed, deny tag;
+//! 5. rules (highest priority, then most restrictive);
+//! 6. unlock (rule tag or session confirmation);
+//! 7. coupling cap;
+//! 8. revive cap.
 
 use super::glob::glob_match;
 use super::policy::{Envelope, Policy, Rule, Verdict};

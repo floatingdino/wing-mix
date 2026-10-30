@@ -302,9 +302,7 @@ impl ScoringDetector {
         };
         let name_hit = h.monitor || h.comms;
 
-        let effective = if winner == Role::Monitor {
-            protected_label
-        } else if c.name_hit_protects && name_hit {
+        let effective = if winner == Role::Monitor || (c.name_hit_protects && name_hit) {
             protected_label
         } else if winner == Role::AuxFeed {
             Role::AuxFeed

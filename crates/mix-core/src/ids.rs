@@ -121,6 +121,12 @@ impl fmt::Display for ParamId {
     }
 }
 
+impl From<String> for ParamId {
+    fn from(s: String) -> Self {
+        ParamId(s)
+    }
+}
+
 impl From<&str> for ParamId {
     fn from(s: &str) -> Self {
         ParamId(s.to_string())
