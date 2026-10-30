@@ -2,7 +2,7 @@
 id: M024
 title: Mix description → TargetProfile
 stage: S2
-status: review
+status: done
 owner: task-agent-M024
 depends: [M020, M030, M005]
 branch: task/M024
@@ -25,3 +25,4 @@ Turn text like 'warm, vocal-forward, punchy drums, wide' into TargetProfile delt
 - CLI: `wing-mix-cli describe "<text>" [--base profile.json | --genre NAME] [--out file] [--json] [--llm] [--model M]`.
 - Files: crates/mix-describe/{Cargo.toml,src/{lib,apply,base,llm,tests}.rs}, data/prompts/describe_mix.md, crates/mix-llm/src/lib.rs, apps/wing-mix-cli/{Cargo.toml,src/main.rs}, Cargo.toml/lock, CLAUDE.md, docs/ARCHITECTURE.md. Test: `cargo test -p mix-describe -p mix-llm`; `make check`.
 - Proposed follow-ups: planner (M040) must consume `intent.*` deltas; replace placeholder genre table with M005-derived data/knowledge/genres.toml; per-ERB-band spread handling when real references give narrow tolerances; `--llm` flag/config in wing-mixd.
+- 2026-10-30 coordinator: merged (CLI conflict resolved), make check passes. done. intent.* consumption → M032/M040; genre table → M016.
