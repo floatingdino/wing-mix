@@ -2,7 +2,7 @@
 id: M004
 title: Research: remit taxonomy + default WING remit policy
 stage: S0
-status: review
+status: done
 owner: agent-M004 (opus)
 depends: []
 branch: task/M004
@@ -39,3 +39,4 @@ Classify the full WING parameter tree (from ../wing-simulator data/schema and wi
   Proposed follow-ups: verify WING PRE-send post-mute (signal-flow Q3); collect 3-5 more real scenes to tune
   detection weights; M050 store for confirmed roles (console+scene key); M040/M041 capture session baseline for
   envelopes.
+- 2026-10-30 coordinator: merged. Deviations accepted (input mute + preamp gain conditional; coupling + revive layers). Follow-ups noted on M040/M041/M050. done.

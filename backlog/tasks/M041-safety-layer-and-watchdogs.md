@@ -12,6 +12,8 @@ model: sonnet
 ## Goal
 Hard limits independent of planner: max gain increase per move/session, mains loudness ceiling, feedback-risk guard (boosts on channels feeding monitor buses, rising narrowband energy detection → auto STOP + revert last move), connection loss handling, watchdog if analysis stalls.
 
+Coordinator note (from M004): capture the session-start baseline of every touched param before the first move (PANIC/revive rely on it); respect the remit coupling layer (params before IEM send taps are tightened/blocked) and revive layer (un-silencing a path needs confirmation).
+
 ## Acceptance criteria
 - [ ] Tests for each guard on FakeSurface/SimSurface
 - [ ] Documented limits in docs/safety.md

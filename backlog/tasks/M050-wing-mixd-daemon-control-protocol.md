@@ -12,6 +12,8 @@ model: sonnet
 ## Goal
 Daemon binary: state dir, status.json, control.sock (newline JSON; same conventions as ../wing-simulator apps/wing-sim control.rs), commands: list devices/consoles, select input, connect console, load reference/description, get/set remit tags, set mode, start/stop/panic, get live analysis + problems + move log, undo. Also wing-mix-cli headless equivalents.
 
+Coordinator note (from M004): persist user-confirmed strip roles (monitor/FOH/comms) per console+scene so detection isn't re-asked each session.
+
 ## Acceptance criteria
 - [ ] Protocol documented in docs/control-protocol.md
 - [ ] Integration test drives daemon end-to-end against SimSurface
