@@ -2,10 +2,10 @@
 id: M035
 title: Planner: gate + de-esser candidates, compressor timing model
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M035
 depends: [M034]
-branch: -
+branch: task/M035
 model: opus
 ---
 
