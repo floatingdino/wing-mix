@@ -21,6 +21,7 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M012 | mix-sim: offline closed-loop SimSurface + fixture generator | M010, M002 | opus |
 | M013 | Live wing-sim harness with DriverSim | M011, M012 | sonnet |
 | M014 | Real multitrack fixture loader (REAPER RPP + excerpts) | M001 | sonnet |
+| M015 | mix-knowledge: typed loader + consistency checker | M001, M005 | sonnet |
 
 ## S2 — Analysis & targets
 

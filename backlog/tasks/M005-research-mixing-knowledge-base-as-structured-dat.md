@@ -2,7 +2,7 @@
 id: M005
 title: Research: mixing knowledge base as structured data
 stage: S0
-status: review
+status: done
 owner: agent-M005
 depends: []
 branch: task/M005
@@ -31,3 +31,4 @@ Encode practical mix-engineering knowledge as data the planner can use: data/kno
   Proposed follow-ups: port the cross-reference checker into crates/mix-knowledge as a unit test (M001/M010); tune
   [targets.reference_matching] tolerances and masking thresholds on M012 fixtures (M031); verify WING attack/release
   definitions vs wing-blocks for preset translation (M032); optional data/knowledge/genres.toml tonal curves.
+- 2026-10-30 coordinator: merged. done. Follow-ups → M015 (typed loader + checker), M012/M032 tuning.
