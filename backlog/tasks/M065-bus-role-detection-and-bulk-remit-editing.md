@@ -2,7 +2,7 @@
 id: M065
 title: Bus role detection accuracy (multi-hop routing, FX buses) + bulk remit editing
 stage: S5
-status: review
+status: done
 owner: agent-M065
 depends: [M061]
 branch: task/M065
@@ -118,3 +118,4 @@ Work:
   Proposed follow-ups: (1) the name tokenizer counts "VOX" in "VOX 1 IEM" as a group word (harmless, noisy
   evidence); (2) expose aux/matrix strips for control in SimSurface so the embedded sim has no routing-only strips;
   (3) list_consoles could read wing-sim's real native port if wing-sim published it in status.json.
+- 2026-10-31 coordinator: merged; make check + make app pass. done. Correction: coordinator finding (a) was wrong — detection already followed multi-hop routes; the embedded sim's cut-down topology was the cause.
