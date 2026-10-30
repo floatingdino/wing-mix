@@ -2,7 +2,7 @@
 id: M016
 title: Reference mixes: profiles + song alignment to the multitrack
 stage: S2
-status: review
+status: done
 owner: agent-M016
 depends: [M014, M022]
 branch: task/M016
@@ -57,3 +57,4 @@ only as small test expectations if needed (prefer computing at test time).
   stretch 1150-1245 s and the later music blocks (3000-5430 s) if more references are supplied. (3) M022's profile
   cache key is per section option, so a section profile re-analyses the whole file; an ingest cache would speed
   matched_pair.
+- 2026-10-30 coordinator: merged, make check passes. done.
