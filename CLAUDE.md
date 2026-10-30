@@ -16,7 +16,7 @@ backlog/COORDINATOR.md, human actions: docs/HUMAN-ACTIONS.md). Sister repo: /Use
   Release profile: thin LTO, codegen-units=1, panic=abort. wing-blocks/wing-dsp/wing-engine build at opt-level 2 in dev.
 - CI: `.github/workflows/ci.yml` (macOS `make check`; Linux clippy + test). Audio capture is macOS-first; keep
   everything else building on Linux (gate OS APIs with `cfg(target_os = "macos")`).
-- wing-simulator deps (wing-proto, wing-model, wing-dsp, wing-blocks, wing-engine) are git deps pinned to a rev in
+- wing-simulator deps (wing-proto, wing-model, wing-dsp, wing-blocks, wing-engine, wing-sim lib) are git deps pinned to a rev in
   `[workspace.dependencies]` of Cargo.toml. For local co-development uncomment the `[patch]` block there to point at
   `../wing-simulator`; when bumping the rev, re-run `make check`.
 
@@ -24,7 +24,7 @@ backlog/COORDINATOR.md, human actions: docs/HUMAN-ACTIONS.md). Sister repo: /Use
 - `crates/mix-core`: shared types (TargetProfile, Features, Problem, Action, units, time)
 - `crates/mix-surface`: generic console model, Surface trait, Remit policy, journal
 - `crates/mix-wing`: WING adapter (OSC client via wing-proto, tree mapping via wing-model, meters/RTA)
-- `crates/mix-sim`: SimSurface, in-process wing-engine render for closed-loop tests
+- `crates/mix-sim`: SimSurface (in-process wing-sim console: render taps, meters), synthetic song + good/degraded scenes with ground truth (`scenes.rs`), real multitrack loader
 - `crates/mix-analysis`: feature extraction (loudness, spectra, dynamics, stereo, masking)
 - `crates/mix-capture`: audio input enumeration/capture, file source, SPSC ring
 - `crates/mix-reference`: reference ingest, sectioning, TargetProfile building
