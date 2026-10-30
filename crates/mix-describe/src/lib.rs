@@ -10,6 +10,11 @@
 //!    the vocabulary's terms, features and scopes. The answer is validated (unknown terms/features/scopes are
 //!    dropped and reported) and goes through the same appliers and caps as the rules.
 //!
+//! Mix context ([`context`], M037): reference and genre profiles describe mastered records; before diagnosis a
+//! console front end applies [`apply_context`] with the user's [`MixContext`] setting (`live` by default,
+//! `broadcast_video`, `match_record`) after [`describe`], which relaxes the mastering-chain targets (PLR/PSR/LRA,
+//! width, sub/air shelves) and records the setting in `applied_deltas` ([`context_of`] reads it back).
+//!
 //! With the LLM disabled or failing, step 3 is skipped and the unrecognised phrases are reported in
 //! [`Description::unrecognised`]; nothing else changes. All profile edits are small shifts of a cloned profile,
 //! so the planner still reaches them through the normal diagnosis loop (remit, limits and workflow order apply).
@@ -27,7 +32,7 @@ use mix_llm::LlmBridge;
 
 pub use apply::{Applier, Target};
 pub use base::{genre_names, genre_profile, neutral_profile};
-pub use context::{apply_context, context_of, with_context, MixContext};
+pub use context::{apply_context, context_of, with_context, ContextTargets, MixContext};
 
 /// One vocabulary term that was applied, with its effective deltas.
 #[derive(Debug, Clone, PartialEq)]

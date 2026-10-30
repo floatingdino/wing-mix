@@ -34,7 +34,8 @@ backlog/COORDINATOR.md, human actions: docs/HUMAN-ACTIONS.md). Sister repo: /Use
 - `crates/mix-knowledge`: mixing knowledge base (`data/knowledge/*.toml`) with typed access
 - `crates/mix-engine`: diagnosis, planning, effect prediction, closed-loop controller
 - `crates/mix-actuator`: move scheduler, solo workflow, safety limits, undo/panic
-- `crates/mix-describe`: text mix description -> TargetProfile deltas (vocabulary rules; optional LLM for unknown phrasing)
+- `crates/mix-describe`: text mix description -> TargetProfile deltas (vocabulary rules; optional LLM for unknown phrasing);
+  `context`: live / broadcast_video / match_record de-mastering of record-derived targets (M037)
 - `crates/mix-llm`: optional Claude Code CLI bridge (everything must work with it off)
 - `apps/wing-mixd`: daemon; `apps/wing-mix-cli`: headless CLI; `apps/WingMix`: SwiftUI app (later)
 - `data/remit`, `data/knowledge`, `docs/research`, `backlog/` as per docs/ARCHITECTURE.md

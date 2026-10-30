@@ -4,7 +4,9 @@
 //! loudness-normalise to -23 LUFS (the analysis is scale-invariant; this just keeps levels and gates in a fixed
 //! range, and the original integrated loudness is restored in `loudness.integrated_lufs`) → offline analysis
 //! (`mix_analysis::analyse_buffer`) → sections (novelty + clustering, see [`sections`]) → `ProfileBuilder`.
-//! Profiles are cached on disk by blake3 + analysis/schema/reference versions + section choice.
+//! A section-focused profile's PLR and LRA are measured over that section (M037; the builder's Session values
+//! describe the whole song). Profiles are cached on disk by blake3 + analysis/schema/reference versions +
+//! section choice.
 //!
 //! Per-stem targets (M023) plug in through [`StemTargetProvider`]; this crate does no source separation.
 

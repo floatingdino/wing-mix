@@ -579,3 +579,222 @@ fn revert(p: &mut TargetProfile) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::base::genre_profile;
+    use mix_core::features::Window;
+
+    fn record() -> TargetProfile {
+        // Measured from 3 mastered records: PLR 9, width -2.4..-0.9 dB above 250 Hz.
+        genre_profile("worship").unwrap()
+    }
+
+    fn approx(a: &TargetProfile, b: &TargetProfile) {
+        let ja = serde_json::to_value(a).unwrap();
+        let jb = serde_json::to_value(b).unwrap();
+        fn walk(x: &serde_json::Value, y: &serde_json::Value, path: &str) {
+            match (x, y) {
+                (serde_json::Value::Number(p), serde_json::Value::Number(q)) => {
+                    let (p, q) = (p.as_f64().unwrap(), q.as_f64().unwrap());
+                    assert!((p - q).abs() < 1e-4, "{path}: {p} != {q}");
+                }
+                (serde_json::Value::Array(p), serde_json::Value::Array(q)) => {
+                    assert_eq!(p.len(), q.len(), "{path}");
+                    for (i, (p, q)) in p.iter().zip(q).enumerate() {
+                        walk(p, q, &format!("{path}[{i}]"));
+                    }
+                }
+                (serde_json::Value::Object(p), serde_json::Value::Object(q)) => {
+                    assert_eq!(p.len(), q.len(), "{path}");
+                    for (k, v) in p {
+                        walk(v, &q[k], &format!("{path}.{k}"));
+                    }
+                }
+                _ => assert_eq!(x, y, "{path}"),
+            }
+        }
+        walk(&ja, &jb, "");
+    }
+
+    #[test]
+    fn names_parse_and_round_trip() {
+        for c in MixContext::ALL {
+            assert_eq!(c.as_str().parse::<MixContext>(), Ok(c));
+            let j = serde_json::to_string(&c).unwrap();
+            assert_eq!(j, format!("\"{}\"", c.as_str()));
+            assert_eq!(serde_json::from_str::<MixContext>(&j).unwrap(), c);
+        }
+        assert_eq!("FOH".parse(), Ok(MixContext::Live));
+        assert_eq!("broadcast-video".parse(), Ok(MixContext::BroadcastVideo));
+        assert_eq!("Match Record".parse(), Ok(MixContext::MatchRecord));
+        assert!("club".parse::<MixContext>().is_err());
+        assert_eq!(MixContext::default(), MixContext::Live);
+        assert_eq!(MixContext::MatchRecord.targets(), ContextTargets::NONE);
+    }
+
+    #[test]
+    fn live_relaxes_mastering_dimensions_only() {
+        let rec = record();
+        let live = with_context(&rec, MixContext::Live);
+        live.validate().unwrap();
+        let t = LIVE;
+        // PLR/PSR raised to the live norm, never lowered.
+        assert_eq!(live.loudness.plr_db, rec.loudness.plr_db.max(16.0));
+        assert!(live.loudness.psr_db.p50 >= rec.loudness.psr_db.p50);
+        assert!(
+            live.loudness.psr_db.half_spread()
+                >= rec.loudness.psr_db.half_spread() + t.psr_spread_db - 1e-4
+        );
+        assert_eq!(live.loudness.lra_lu, rec.loudness.lra_lu + t.lra_lu);
+        // Width: narrowed to the norm above 250 Hz, spread widened; sub/low untouched.
+        for i in 0..N_BROAD {
+            let (a, b) = (rec.stereo.band_width_db[i], live.stereo.band_width_db[i]);
+            match t.width_ceiling_db[i] {
+                Some(c) => {
+                    assert!((b.p50 - a.p50.min(c)).abs() < 1e-4, "band {i}");
+                    assert!(b.half_spread() > a.half_spread());
+                }
+                None => assert_eq!(a, b, "band {i}"),
+            }
+        }
+        // Shelves: wider tolerance, same p50 (not re-centred); every tonal p50 is unchanged.
+        for i in 0..rec.tonal.erb_mid_rel_db.len() {
+            assert_eq!(live.tonal.erb_mid_rel_db[i], rec.tonal.erb_mid_rel_db[i]);
+            let f = BandLayout::Erb40.centres_hz()[i];
+            let extra = live.tonal.tolerance_db[i] - rec.tonal.tolerance_db[i];
+            let want = if f >= SUB_HZ.0 && f < SUB_HZ.1 {
+                t.sub_tol_db
+            } else if f >= AIR_HZ.0 && f < AIR_HZ.1 {
+                t.air_tol_db
+            } else {
+                0.0
+            };
+            assert!((extra - want).abs() < 1e-4, "erb {i} ({f} Hz): {extra}");
+        }
+        // Strict dimensions untouched.
+        assert_eq!(live.tonal.third_oct_rel_db, rec.tonal.third_oct_rel_db);
+        assert_eq!(live.tonal.tilt_db_per_oct, rec.tonal.tilt_db_per_oct);
+        assert_eq!(live.stereo.balance_db, rec.stereo.balance_db);
+        assert_eq!(live.stereo.correlation, rec.stereo.correlation);
+        assert_eq!(live.dynamics, rec.dynamics);
+        assert_eq!(live.transients, rec.transients);
+        assert_eq!(live.stems, rec.stems);
+        assert_eq!(live.weights, rec.weights);
+    }
+
+    #[test]
+    fn edits_are_recorded_and_replaceable() {
+        let mut p = record();
+        p.applied_deltas.push(DescriptorDelta {
+            term: "warm".into(),
+            target_path: "tonal.erb_mid_rel_db[4..12]".into(),
+            delta: 1.5,
+        });
+        let orig = p.clone();
+        assert_eq!(context_of(&p), None);
+        apply_context(&mut p, MixContext::Live);
+        assert_eq!(context_of(&p), Some(MixContext::Live));
+        let ctx: Vec<_> = p
+            .applied_deltas
+            .iter()
+            .filter(|d| d.term == "context:live")
+            .collect();
+        assert!(ctx.iter().any(|d| d.target_path == MARKER_PATH));
+        assert!(ctx.iter().any(|d| d.target_path == "loudness.plr_db"));
+        assert!(ctx
+            .iter()
+            .any(|d| d.target_path == "stereo.band_width_db[3..4]"));
+        assert!(p.applied_deltas.iter().any(|d| d.term == "warm"));
+        // Idempotent: applying again gives the same profile.
+        let once = p.clone();
+        apply_context(&mut p, MixContext::Live);
+        approx(&p, &once);
+        // Switching replaces, it does not stack.
+        apply_context(&mut p, MixContext::BroadcastVideo);
+        approx(&p, &with_context(&orig, MixContext::BroadcastVideo));
+        assert_eq!(context_of(&p), Some(MixContext::BroadcastVideo));
+        // match_record restores the record (plus its marker).
+        apply_context(&mut p, MixContext::MatchRecord);
+        assert_eq!(context_of(&p), Some(MixContext::MatchRecord));
+        p.applied_deltas.retain(|d| d.target_path != MARKER_PATH);
+        approx(&p, &orig);
+    }
+
+    #[test]
+    fn records_already_past_the_norm_are_kept() {
+        let mut rec = record();
+        rec.loudness.plr_db = 20.0;
+        rec.stereo.band_width_db[3].p50 = -20.0;
+        let live = with_context(&rec, MixContext::Live);
+        assert_eq!(live.loudness.plr_db, 20.0);
+        assert_eq!(live.stereo.band_width_db[3].p50, -20.0);
+        assert!(!live
+            .applied_deltas
+            .iter()
+            .any(|d| d.target_path == "loudness.plr_db"));
+    }
+
+    fn live_features(plr: f32, width: f32, sub_rel: f32) -> Features {
+        let mut f = Features::new("main", Window::Session, true);
+        f.spectrum.erb_mid_rel_db = vec![-20.0; mix_core::bands::N_ERB];
+        for i in erb_range(SUB_HZ) {
+            f.spectrum.erb_mid_rel_db[i] = sub_rel;
+        }
+        f.loudness.plr_db = Some(plr);
+        f.loudness.lra_lu = Some(3.0);
+        if let Some(st) = f.stereo.as_mut() {
+            st.band_width_db = [width; N_BROAD];
+        }
+        f
+    }
+
+    #[test]
+    fn derive_pools_songs_not_sections() {
+        let mut rec = record();
+        for i in erb_range(SUB_HZ) {
+            rec.tonal.erb_mid_rel_db[i] = mix_core::features::Stat::constant(-20.0);
+        }
+        rec.loudness.lra_lu = 2.0;
+        // Song a: 5 sections at PLR 19, width -12, sub +6; song b: 1 section at PLR 13, width -8, sub -10.
+        let mut s: Vec<Sample> = (0..5)
+            .map(|_| sample("a", &live_features(19.0, -12.0, -14.0), Some(17.0), &rec))
+            .collect();
+        s.push(sample(
+            "b",
+            &live_features(13.0, -8.0, -30.0),
+            Some(13.0),
+            &rec,
+        ));
+        let t = derive(&s);
+        assert_eq!(t.plr_floor_db, Some(16.0)); // (19 + 13) / 2, not the section median 19
+        assert_eq!(t.psr_floor_db, Some(15.0));
+        assert_eq!(t.psr_spread_db, 2.0);
+        assert_eq!(t.lra_lu, 1.0);
+        assert_eq!(t.width_ceiling_db[3], Some(-10.0));
+        assert_eq!(t.width_ceiling_db[1], None);
+        assert_eq!(t.width_spread_db, 2.0);
+        // Relax-only shelf: RMS of the per-song deviations from the record: sqrt((36 + 100) / 2) = 8.2.
+        assert_eq!(t.sub_tol_db, 8.0);
+        assert_eq!(derive(&[]), ContextTargets::NONE);
+        assert_eq!(median(&[3.0, 1.0, f32::NAN, 2.0]), 2.0);
+        assert_eq!(median(&[]), 0.0);
+    }
+
+    #[test]
+    fn deviations_mirror_the_diagnosis_quantities() {
+        let rec = record();
+        let f = live_features(20.0, -50.0, -20.0);
+        let d = deviations(&f, &rec);
+        assert_eq!(d.plr_db, Some(20.0 - rec.loudness.plr_db));
+        // Both sides floored at -40 dB side/mid.
+        assert_eq!(
+            d.width_db[3],
+            Some(-40.0 - rec.stereo.band_width_db[3].p50.max(WIDTH_FLOOR_DB))
+        );
+        assert_eq!(d.width_db[0], None);
+        let mono = Features::new("main", Window::Session, false);
+        assert!(deviations(&mono, &rec).width_db.iter().all(Option::is_none));
+    }
+}
