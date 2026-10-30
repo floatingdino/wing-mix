@@ -7,7 +7,8 @@
 //!   a feature class (the nearest prototype's own type gets +0.05 so features alone still pick a type).
 //! - combined: noisy-OR `1 − (1 − L)(1 − F)`. If features confidently contradict a label (`p(class) < 0.05`) the
 //!   label's score is scaled by 0.85; types features cannot judge (playback, click...) keep `L` × 0.95 when a
-//!   capture exists.
+//!   capture exists. When some type has a clear label (≥ 0.6), unlabelled types get only half of `F`, so features
+//!   re-rank and confirm but rarely overturn a clear name.
 //!
 //! A user override always wins with confidence 1.
 
@@ -83,19 +84,49 @@ impl StripInput {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Evidence {
     /// Name rule matched `matched` (tokens).
-    Name { matched: String, score: f32, alternative: bool },
-    Tag { tag: String, matched: String, score: f32 },
-    Icon { icon: String, score: f32 },
+    Name {
+        matched: String,
+        score: f32,
+        alternative: bool,
+    },
+    Tag {
+        tag: String,
+        matched: String,
+        score: f32,
+    },
+    Icon {
+        icon: String,
+        score: f32,
+    },
     /// Knowledge-base `name_hints` fallback.
-    KbHint { source_id: String, score: f32 },
+    KbHint {
+        source_id: String,
+        score: f32,
+    },
     /// Same-coloured strips are mostly this family.
-    Colour { colour: u32, family: String, strips: usize, score: f32 },
+    Colour {
+        colour: u32,
+        family: String,
+        strips: usize,
+        score: f32,
+    },
     /// Feature classifier result for the candidate's class.
-    Features { class: FeatureClass, prob: f32, prototype: String, distance: f32, notes: Vec<String> },
+    Features {
+        class: FeatureClass,
+        prob: f32,
+        prototype: String,
+        distance: f32,
+        notes: Vec<String>,
+    },
     /// Features confidently point elsewhere.
-    FeaturesDisagree { best: FeatureClass, prob: f32 },
+    FeaturesDisagree {
+        best: FeatureClass,
+        prob: f32,
+    },
     /// Features had too little signal.
-    NoSignal { reason: String },
+    NoSignal {
+        reason: String,
+    },
     Override,
 }
 
@@ -207,7 +238,11 @@ impl<'kb> Identifier<'kb> {
             let (Some(c), Some(t)) = (s.colour, self.label_best(s)) else {
                 continue;
             };
-            *by_colour.entry(c).or_default().entry(t.family()).or_default() += 1;
+            *by_colour
+                .entry(c)
+                .or_default()
+                .entry(t.family())
+                .or_default() += 1;
         }
         strips
             .iter()
@@ -215,9 +250,11 @@ impl<'kb> Identifier<'kb> {
                 let prior = s.colour.and_then(|c| {
                     let fams = by_colour.get(&c)?;
                     let total: usize = fams.values().sum();
-                    let (fam, n) = fams.iter().max_by_key(|(f, n)| (**n, std::cmp::Reverse(**f)))?;
+                    let (fam, n) = fams
+                        .iter()
+                        .max_by_key(|(f, n)| (**n, std::cmp::Reverse(**f)))?;
                     // Need two agreeing strips and a clear majority.
-                    (*n >= 2 && *n * 3 >= total * 2).then(|| (c, *fam, *n))
+                    (*n >= 2 && *n * 3 >= total * 2).then_some((c, *fam, *n))
                 });
                 self.classify_with_colour(s, prior)
             })
@@ -347,6 +384,10 @@ impl<'kb> Identifier<'kb> {
             }
             Some(v) => {
                 let best_class = v.best();
+                // Features are much less reliable than a clear name: when one exists, types with no label
+                // evidence get only half the feature score, so features re-rank but rarely overturn names.
+                let max_label = acc.values().map(|a| a.label).fold(0.0f32, f32::max);
+                let unlabelled_scale = if max_label >= 0.6 { 0.5 } else { 1.0 };
                 for t in SourceType::ALL {
                     let a = acc.remove(&t).unwrap_or_default();
                     let mut evidence = a.evidence;
@@ -355,8 +396,11 @@ impl<'kb> Identifier<'kb> {
                             let prob = v.prob(c);
                             let (proto, _, dist) = &v.nearest[c.idx()];
                             let bonus = if v.source_of(c) == t { 0.05 } else { 0.0 };
-                            let f = (0.8 * prob + bonus).min(0.95);
+                            let mut f = (0.8 * prob + bonus).min(0.95);
                             let mut label = a.label;
+                            if label == 0.0 {
+                                f *= unlabelled_scale;
+                            }
                             if label > 0.0 && prob < 0.05 {
                                 label *= 0.85;
                                 evidence.push(Evidence::FeaturesDisagree {
@@ -429,7 +473,10 @@ mod tests {
         let id = Identifier::default();
         let c = id.classify(&StripInput::named("KICK IN"));
         assert_eq!(c.source(), Some(SourceType::Kick));
-        assert!(matches!(c.best().unwrap().evidence[0], Evidence::Name { .. }));
+        assert!(matches!(
+            c.best().unwrap().evidence[0],
+            Evidence::Name { .. }
+        ));
         assert_eq!(c.kb_source(KnowledgeBase::embedded()).unwrap().id, "kick");
         assert!(id.classify(&StripInput::named("Ch 28")).ranked.is_empty());
     }
@@ -441,7 +488,12 @@ mod tests {
         let both = id.classify(&StripInput::named("VOX 1").with_descriptor(desc("vocal")));
         assert_eq!(both.source(), Some(SourceType::LeadVocal));
         assert!(both.confidence() > name_only.confidence());
-        assert!(both.best().unwrap().evidence.iter().any(|e| matches!(e, Evidence::Features { .. })));
+        assert!(both
+            .best()
+            .unwrap()
+            .evidence
+            .iter()
+            .any(|e| matches!(e, Evidence::Features { .. })));
     }
 
     #[test]
@@ -456,8 +508,15 @@ mod tests {
     fn disagreement_is_reported() {
         let id = Identifier::default();
         let c = id.classify(&StripInput::named("GTR").with_descriptor(desc("kick")));
-        let gtr = c.ranked.iter().find(|c| c.source == SourceType::ElectricGuitar).unwrap();
-        assert!(gtr.evidence.iter().any(|e| matches!(e, Evidence::FeaturesDisagree { .. })));
+        let gtr = c
+            .ranked
+            .iter()
+            .find(|c| c.source == SourceType::ElectricGuitar)
+            .unwrap();
+        assert!(gtr
+            .evidence
+            .iter()
+            .any(|e| matches!(e, Evidence::FeaturesDisagree { .. })));
         assert!(gtr.confidence < 0.8);
     }
 
@@ -469,7 +528,12 @@ mod tests {
         let c = id.classify(&StripInput::named("TX").with_descriptor(d));
         assert_eq!(c.source(), Some(SourceType::Playback));
         assert!(c.features.is_none());
-        assert!(c.best().unwrap().evidence.iter().any(|e| matches!(e, Evidence::NoSignal { .. })));
+        assert!(c
+            .best()
+            .unwrap()
+            .evidence
+            .iter()
+            .any(|e| matches!(e, Evidence::NoSignal { .. })));
     }
 
     #[test]
@@ -512,8 +576,14 @@ mod tests {
         let out = id.classify_all(&strips);
         let sarah = &out[2];
         assert_eq!(sarah.best().unwrap().source.family(), "vocal");
-        assert!(matches!(sarah.best().unwrap().evidence[0], Evidence::Colour { .. }));
-        assert!(sarah.source().is_none(), "a colour prior alone stays below MIN_CONFIDENCE");
+        assert!(matches!(
+            sarah.best().unwrap().evidence[0],
+            Evidence::Colour { .. }
+        ));
+        assert!(
+            sarah.source().is_none(),
+            "a colour prior alone stays below MIN_CONFIDENCE"
+        );
         assert!(out[3].ranked.is_empty());
         // With features, the colour prior and a vocal-like capture agree.
         let mut strips = strips;
@@ -524,7 +594,11 @@ mod tests {
 
     #[test]
     fn from_surface_strip() {
-        let mut st = Strip::new(StripId::new("input", 3), mix_surface::StripKind::Input, "SN TOP");
+        let mut st = Strip::new(
+            StripId::new("input", 3),
+            mix_surface::StripKind::Input,
+            "SN TOP",
+        );
         st.tags.push("AI".into());
         let c = Identifier::default().classify(&StripInput::from_strip(&st));
         assert_eq!(c.source(), Some(SourceType::SnareTop));

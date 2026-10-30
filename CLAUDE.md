@@ -28,6 +28,8 @@ backlog/COORDINATOR.md, human actions: docs/HUMAN-ACTIONS.md). Sister repo: /Use
 - `crates/mix-analysis`: feature extraction (loudness, spectra, dynamics, stereo, masking)
 - `crates/mix-capture`: audio input enumeration/capture, file source, SPSC ring
 - `crates/mix-reference`: reference ingest, sectioning, TargetProfile building
+- `crates/mix-sources`: channel source identification (strip name/tag/icon/colour heuristics + explainable feature
+  prototypes over `Features` → ranked `SourceType`s with confidence/evidence; user overrides)
 - `crates/mix-knowledge`: mixing knowledge base (`data/knowledge/*.toml`) with typed access
 - `crates/mix-engine`: diagnosis, planning, effect prediction, closed-loop controller
 - `crates/mix-actuator`: move scheduler, solo workflow, safety limits, undo/panic

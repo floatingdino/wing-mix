@@ -19,9 +19,7 @@ pub mod features;
 pub mod names;
 pub mod types;
 
-pub use classify::{
-    Candidate, Classification, Evidence, Identifier, StripInput, MIN_CONFIDENCE,
-};
+pub use classify::{Candidate, Classification, Evidence, Identifier, StripInput, MIN_CONFIDENCE};
 pub use descriptor::{features_of_mono, Descriptor};
 pub use features::{classify_descriptor, FeatureVerdict};
 pub use types::{FeatureClass, SourceType};

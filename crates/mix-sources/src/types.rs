@@ -235,7 +235,11 @@ mod tests {
         }
         // Every knowledge-base source has a type.
         for s in &kb.sources.source {
-            assert!(SourceType::from_id(&s.id).is_some(), "no SourceType for {}", s.id);
+            assert!(
+                SourceType::from_id(&s.id).is_some(),
+                "no SourceType for {}",
+                s.id
+            );
         }
     }
 

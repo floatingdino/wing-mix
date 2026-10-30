@@ -14,8 +14,10 @@ use crate::descriptor::{Descriptor, BAND_NAMES};
 use crate::types::{FeatureClass, SourceType};
 use serde::{Deserialize, Serialize};
 
-/// Below this RMS level (dBFS) a channel is treated as silent/bleed-only and features abstain.
-pub const MIN_RMS_DBFS: f32 = -58.0;
+/// Below this RMS level (dBFS) a capture is treated as silent/bleed-only and features abstain. A line-check or
+/// performance capture of a close-miked source sits well above it; on the real live multitrack, captures below it
+/// were almost always bleed (a mic whose source was not playing).
+pub const MIN_RMS_DBFS: f32 = -50.0;
 /// Above this gated fraction the capture is mostly silence and features abstain.
 pub const MAX_GATED_FRACTION: f32 = 0.9;
 
@@ -82,39 +84,210 @@ use SourceType::*;
 /// The prototype table.
 pub const PROTOTYPES: &[Prototype] = &[
     // Kick: almost everything below 250 Hz, centroid ~60-100 Hz, regular hits.
-    p("kick", Kick, [-2.0, -4.0, -30.0, -38.0, -35.0, -35.0], -3.8, 0.001, 17.0, 2.5),
+    p(
+        "kick",
+        Kick,
+        [-2.0, -4.0, -30.0, -38.0, -35.0, -35.0],
+        -3.8,
+        0.001,
+        17.0,
+        2.5,
+    ),
     // Snare, close and bright (tight tuning, lots of wire): noisy, centroid above 2 kHz.
-    p("snare/bright", SnareTop, [-25.0, -7.0, -19.0, -7.0, -4.0, -7.0], 1.9, 0.3, 22.0, 3.0),
+    p(
+        "snare/bright",
+        SnareTop,
+        [-25.0, -7.0, -19.0, -7.0, -4.0, -7.0],
+        1.9,
+        0.3,
+        22.0,
+        3.0,
+    ),
     // Snare, body-heavy with kit bleed: low/low-mid dominant, very high crest.
-    p("snare/body", SnareTop, [-27.0, -2.0, -5.0, -15.0, -15.0, -25.0], -1.4, 0.015, 30.0, 3.0),
+    p(
+        "snare/body",
+        SnareTop,
+        [-27.0, -2.0, -5.0, -15.0, -15.0, -25.0],
+        -1.4,
+        0.015,
+        30.0,
+        3.0,
+    ),
     // Toms: low band dominant, little above 2.5 kHz, high crest (hits with silence or bleed between).
-    p("tom", TomRack, [-35.0, 0.0, -13.0, -20.0, -22.0, -30.0], -2.3, 0.005, 23.0, 2.0),
-    p("tom/clean", TomFloor, [-28.0, 0.0, -22.0, -44.0, -45.0, -45.0], -2.9, 0.001, 18.0, 1.5),
+    p(
+        "tom",
+        TomRack,
+        [-35.0, 0.0, -13.0, -20.0, -22.0, -30.0],
+        -2.3,
+        0.005,
+        23.0,
+        2.0,
+    ),
+    // Floor tom with kit bleed: more sub than a rack tom.
+    p(
+        "tom/floor",
+        TomFloor,
+        [-16.0, 0.0, -12.0, -17.0, -17.0, -26.0],
+        -2.1,
+        0.008,
+        25.0,
+        2.2,
+    ),
+    p(
+        "tom/clean",
+        TomFloor,
+        [-28.0, 0.0, -22.0, -44.0, -45.0, -45.0],
+        -2.9,
+        0.001,
+        18.0,
+        1.5,
+    ),
     // Hi-hat, close: air dominant, noise-like.
-    p("hihat/close", HiHat, [-45.0, -22.0, -34.0, -22.0, -15.0, 0.0], 3.7, 0.34, 23.0, 4.0),
+    p(
+        "hihat/close",
+        HiHat,
+        [-45.0, -22.0, -34.0, -22.0, -15.0, 0.0],
+        3.7,
+        0.34,
+        23.0,
+        4.0,
+    ),
     // Hi-hat mic dominated by kit bleed (typical live).
-    p("hihat/bleed", HiHat, [-18.0, -1.5, -7.0, -10.0, -15.0, -22.0], -1.3, 0.03, 25.0, 3.5),
+    p(
+        "hihat/bleed",
+        HiHat,
+        [-18.0, -1.5, -7.0, -10.0, -15.0, -22.0],
+        -1.3,
+        0.03,
+        25.0,
+        3.5,
+    ),
     // Overheads: cymbal wash on top of the whole kit.
-    p("overheads/bright", Overheads, [-14.0, -11.0, -25.0, -13.0, -9.0, -1.0], 3.1, 0.32, 20.0, 3.4),
-    p("overheads/kit", Overheads, [-12.0, -5.0, -4.0, -10.0, -11.0, -16.0], -0.27, 0.085, 26.0, 3.5),
+    p(
+        "overheads/bright",
+        Overheads,
+        [-14.0, -11.0, -25.0, -13.0, -9.0, -1.0],
+        3.1,
+        0.32,
+        20.0,
+        3.4,
+    ),
+    p(
+        "overheads/kit",
+        Overheads,
+        [-12.0, -5.0, -4.0, -10.0, -11.0, -16.0],
+        -0.27,
+        0.085,
+        26.0,
+        3.5,
+    ),
     // Shakers/tambourines: presence/air, very dense onsets.
-    p("percussion/shaker", Percussion, [-45.0, -45.0, -34.0, -19.0, -5.0, -2.0], 2.85, 0.14, 22.0, 8.0),
+    p(
+        "percussion/shaker",
+        Percussion,
+        [-45.0, -45.0, -34.0, -19.0, -5.0, -2.0],
+        2.85,
+        0.14,
+        22.0,
+        8.0,
+    ),
     // Bass guitar (DI/amp): low band dominant, steady (low crest), dull top.
-    p("bass", BassDi, [-14.0, 0.0, -14.0, -18.0, -27.0, -45.0], -2.9, 0.001, 14.0, 2.5),
+    p(
+        "bass",
+        BassDi,
+        [-14.0, 0.0, -14.0, -18.0, -27.0, -45.0],
+        -2.9,
+        0.001,
+        14.0,
+        2.5,
+    ),
+    // Sustained bass (long notes, few attacks): even lower centroid and crest.
+    p(
+        "bass/sustained",
+        BassDi,
+        [-14.0, 0.0, -27.0, -44.0, -45.0, -45.0],
+        -3.5,
+        0.001,
+        11.0,
+        0.3,
+    ),
     // Synth/filtered bass: fundamental in the low-mids, brighter but still no top.
-    p("bass/synth", BassDi, [-42.0, -5.0, -2.0, -13.0, -37.0, -45.0], -1.5, 0.001, 10.5, 4.0),
+    p(
+        "bass/synth",
+        BassDi,
+        [-42.0, -5.0, -2.0, -13.0, -37.0, -45.0],
+        -1.5,
+        0.001,
+        10.5,
+        4.0,
+    ),
     // Acoustic guitar: broadband, string noise (flatness), strummed onsets.
-    p("acoustic guitar", AcousticGuitar, [-17.0, -4.0, -4.0, -8.0, -13.0, -16.0], -0.3, 0.1, 18.5, 4.7),
+    p(
+        "acoustic guitar",
+        AcousticGuitar,
+        [-17.0, -4.0, -4.0, -8.0, -13.0, -16.0],
+        -0.3,
+        0.1,
+        18.5,
+        4.7,
+    ),
     // Plucked bright guitar (single notes/arpeggios).
-    p("guitar/plucked", ElectricGuitar, [-21.0, -27.0, -8.0, -4.0, -6.0, -8.0], 1.75, 0.33, 22.0, 1.0),
+    p(
+        "guitar/plucked",
+        ElectricGuitar,
+        [-21.0, -27.0, -8.0, -4.0, -6.0, -8.0],
+        1.75,
+        0.33,
+        22.0,
+        1.0,
+    ),
     // Keys/pads: low-mid and mid, little low end or air, tonal, slow.
-    p("keys", KeysSynth, [-45.0, -45.0, -3.0, -3.0, -25.0, -45.0], -0.3, 0.001, 12.0, 0.9),
-    p("pad", KeysSynth, [-45.0, -45.0, -4.0, -3.0, -22.0, -42.0], -0.28, 0.002, 13.3, 0.45),
-    p("keys/full range", Piano, [-36.0, -10.0, -1.0, -10.0, -23.0, -44.0], -1.2, 0.003, 13.9, 1.5),
-    p("synth lead", KeysSynth, [-45.0, -45.0, -45.0, 0.0, -18.0, -28.0], 0.6, 0.001, 9.5, 0.9),
+    p(
+        "keys",
+        KeysSynth,
+        [-45.0, -45.0, -3.0, -3.0, -25.0, -45.0],
+        -0.3,
+        0.001,
+        12.0,
+        0.9,
+    ),
+    p(
+        "pad",
+        KeysSynth,
+        [-45.0, -45.0, -4.0, -3.0, -22.0, -42.0],
+        -0.28,
+        0.002,
+        13.3,
+        0.45,
+    ),
+    p(
+        "synth lead",
+        KeysSynth,
+        [-45.0, -45.0, -45.0, 0.0, -18.0, -28.0],
+        0.6,
+        0.001,
+        9.5,
+        0.9,
+    ),
     // Vocals: low-mid/mid with clear presence and some air, phrase-rate onsets.
-    p("vocal", LeadVocal, [-42.0, -25.0, -3.0, -4.0, -21.0, -28.0], -0.4, 0.015, 16.0, 2.1),
-    p("vocal/close", LeadVocal, [-45.0, -45.0, -3.0, -4.0, -17.0, -35.0], -0.35, 0.002, 12.3, 1.3),
+    p(
+        "vocal",
+        LeadVocal,
+        [-42.0, -25.0, -3.0, -4.0, -21.0, -28.0],
+        -0.4,
+        0.015,
+        16.0,
+        2.1,
+    ),
+    p(
+        "vocal/close",
+        LeadVocal,
+        [-45.0, -45.0, -3.0, -4.0, -17.0, -35.0],
+        -0.35,
+        0.002,
+        12.3,
+        1.3,
+    ),
 ];
 
 /// Class probabilities and the evidence behind them.
@@ -259,11 +432,7 @@ pub fn classify_descriptor(d: &Descriptor) -> Option<FeatureVerdict> {
             "nearest prototype '{}' (distance {:.2})",
             nearest[best_i].0, nearest[best_i].2
         ),
-        format!(
-            "agrees on {}, {}",
-            fmt_dim(order[0]),
-            fmt_dim(order[1])
-        ),
+        format!("agrees on {}, {}", fmt_dim(order[0]), fmt_dim(order[1])),
         format!("differs most on {}", fmt_dim(order[N_DIMS - 1])),
     ];
     Some(FeatureVerdict {

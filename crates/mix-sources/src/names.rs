@@ -196,6 +196,8 @@ pub const RULES: &[Rule] = &[
     r(&["ag"], AcousticGuitar, 0.82),
     r(&["ac"], AcousticGuitar, 0.8),
     r(&["acc"], AcousticGuitar, 0.75),
+    r(&["acg"], AcousticGuitar, 0.88),
+    r(&["agt"], AcousticGuitar, 0.85),
     r(&["acous"], AcousticGuitar, 0.88),
     r(&["acoustic"], AcousticGuitar, 0.92),
     r(&["agtr"], AcousticGuitar, 0.92),
@@ -409,7 +411,9 @@ pub struct NameMatch {
 }
 
 fn is_known_single(tok: &str) -> bool {
-    RULES.iter().any(|r| r.phrase.len() == 1 && r.phrase[0] == tok)
+    RULES
+        .iter()
+        .any(|r| r.phrase.len() == 1 && r.phrase[0] == tok)
 }
 
 /// Normalise tokens: a token that is not itself a rule word but whose stem (trailing `l`/`r`/`s` dropped) is,
@@ -418,7 +422,10 @@ fn normalise_tokens(tokens: Vec<String>) -> Vec<String> {
     tokens
         .into_iter()
         .map(|t| {
-            if t.len() > 2 && !is_known_single(&t) && (t.ends_with('l') || t.ends_with('r') || t.ends_with('s')) {
+            if t.len() > 2
+                && !is_known_single(&t)
+                && (t.ends_with('l') || t.ends_with('r') || t.ends_with('s'))
+            {
                 let stem = &t[..t.len() - 1];
                 if is_known_single(stem) {
                     return stem.to_string();

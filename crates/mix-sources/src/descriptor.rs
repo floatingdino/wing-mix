@@ -80,7 +80,10 @@ impl Descriptor {
 
     /// Analyse a mono capture (e.g. a few seconds of a soloed channel) and derive its descriptor.
     pub fn from_mono(samples: &[f32], sample_rate: u32) -> Result<Self, AnalysisError> {
-        Ok(Self::from_features(&features_of_mono(samples, sample_rate)?))
+        Ok(Self::from_features(&features_of_mono(
+            samples,
+            sample_rate,
+        )?))
     }
 }
 
