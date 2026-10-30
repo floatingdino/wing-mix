@@ -11,7 +11,7 @@
 //! `cargo build --release -p wing-sim` in the sister repo. See `docs/testing.md`.
 //!
 //! Typical use (dev-dependency):
-//! ```ignore
+//! ```text
 //! let console = SimConsole::start(Feed::synth(10.0), &[1, 2]).expect("wing-sim available");
 //! // patch channels to USB inputs (see `console.patch_hint()`), connect mix-wing to console.addr(), read meters,
 //! let out = console.captured(1); // USB out lane 1 as f32 mono

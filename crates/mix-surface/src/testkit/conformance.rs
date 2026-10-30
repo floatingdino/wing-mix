@@ -1,7 +1,7 @@
 //! Shared Surface conformance suite: every adapter (FakeSurface here, mix-wing M011, mix-sim M012) runs it.
 //!
 //! Each check panics with a descriptive message, so call them from `#[test]` functions:
-//! ```ignore
+//! ```text
 //! #[test]
 //! fn conformance() {
 //!     let s = MySurface::connect(..);
