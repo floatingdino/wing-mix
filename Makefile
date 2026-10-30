@@ -1,4 +1,4 @@
-.PHONY: check check-full fmt build bench
+.PHONY: check check-full fmt build bench app
 
 check:
 	cargo fmt --all --check
@@ -20,3 +20,11 @@ build:
 # Criterion benches (add benches per crate as they appear).
 bench:
 	cargo bench --workspace
+
+# WingMix.app (SwiftUI, apps/WingMix): daemon release build, app bundle, Swift tests (incl. the real daemon over
+# its socket) and a launch/quit smoke test. Not part of `make check`.
+app:
+	cargo build --release -p wing-mixd
+	apps/WingMix/build.sh
+	cd apps/WingMix && swift test
+	apps/WingMix/smoke.sh
