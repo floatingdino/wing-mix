@@ -492,6 +492,24 @@ impl Actuator {
                 });
             }
         }
+        // Never ramp across a model change: a model param and params of the block it governs can't share a batch.
+        let specs: Vec<_> = changes
+            .iter()
+            .filter_map(|c| self.surface.param_spec(&c.param).ok())
+            .collect();
+        for m in specs.iter().filter(|s| is_model_class(s.class)) {
+            let mid = &m.id;
+            let same_scope = |p: &ParamId| {
+                p != mid
+                    && p.head() == mid.head()
+                    && (m.class == ParamClass::FxModel || p.block() == mid.block())
+            };
+            if let Some(o) = changes.iter().find(|c| same_scope(&c.param)) {
+                return Err(Refusal::MixedModelChange {
+                    param: o.param.clone(),
+                });
+            }
+        }
         let mut tracks = Vec::new();
         let mut skipped = Vec::new();
         for c in changes {
@@ -500,20 +518,6 @@ impl Actuator {
                 Ok(None) => {}
                 Err(r) if lenient => skipped.push(r),
                 Err(r) => return Err(r),
-            }
-        }
-        // Never ramp across a model change: a model param and params of the block it governs can't share a batch.
-        for m in tracks.iter().filter(|t| is_model_class(t.spec.class)) {
-            let mid = &m.spec.id;
-            let same_scope = |p: &ParamId| {
-                p != mid
-                    && p.head() == mid.head()
-                    && (m.spec.class == ParamClass::FxModel || p.block() == mid.block())
-            };
-            if let Some(o) = tracks.iter().find(|t| same_scope(&t.spec.id)) {
-                return Err(Refusal::MixedModelChange {
-                    param: o.spec.id.clone(),
-                });
             }
         }
         let mut duration = tracks

@@ -128,9 +128,17 @@ impl Track {
                 last: true,
             });
         };
-        let want = self.x0 + (self.x1 - self.x0) * ease(p);
+        let want = if p >= 1.0 {
+            self.x1
+        } else {
+            self.x0 + (self.x1 - self.x0) * ease(p)
+        };
         let max_dx = rate * speed * (t - self.last_t).max(0.0);
-        let x = self.last_x + (want - self.last_x).clamp(-max_dx, max_dx);
+        let x = if (want - self.last_x).abs() <= max_dx {
+            want // exact, so the last step lands on x1 bit-for-bit
+        } else {
+            self.last_x + (want - self.last_x).clamp(-max_dx, max_dx)
+        };
         if x == self.x1 {
             return Some(Pending {
                 x,
