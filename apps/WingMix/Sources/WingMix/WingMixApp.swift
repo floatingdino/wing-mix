@@ -34,6 +34,7 @@ struct WingMixApp: App {
                     }
                     await model.start()
                     if let dir = env["WINGMIX_DEMO"], !dir.isEmpty { await model.runDemo(dir: dir) }
+                    if let shots = env["WINGMIX_SHOTS"], !shots.isEmpty { await model.captureScreens(to: shots) }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     model.shutdown()
