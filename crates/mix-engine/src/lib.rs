@@ -4,11 +4,15 @@
 //!   → ranked, serialisable [`Problem`]s with evidence, severity, confidence and suggested blocks.
 //! - [`plan`] (M032): problems → remit-checked candidate moves scored by predicted effect (WING transfer functions
 //!   on the measured features, re-diagnosed) → an ordered plan of batches grouped by workflow phase.
-//! - The closed-loop controller (M033) builds on both.
+//! - [`control`] (M033): the closed loop: diagnose → plan → execute the next batch through the actuator (solo
+//!   inspections measured through its callback) → settle → re-measure → keep or revert; hunting guard, change
+//!   budget, section/engineer re-planning, observe/suggest/autopilot modes, an event stream for the GUI.
 
+pub mod control;
 pub mod diagnosis;
 pub mod plan;
 
+pub use control::{ControlConfig, ControlEvent, Controller, Mode};
 pub use diagnosis::{diagnose, Diagnosis, DiagnosisConfig, DiagnosisInput, Problem, ProblemKind};
 pub use plan::{plan, Plan, PlanConfig, PlanInput, PlanStep, Remit};
 

@@ -301,6 +301,12 @@ fn score_of(d: &Diagnosis, w: f64) -> PlanScore {
     }
 }
 
+/// The planner objective of a measured diagnosis (seam for the closed-loop controller, M033: measurements and
+/// predictions are compared on the same scale).
+pub fn score(d: &Diagnosis, target_weight: f64) -> PlanScore {
+    score_of(d, target_weight)
+}
+
 /// Problems that generate candidates: the target-referenced ones (mix level via `distance`, strip/stem) by score,
 /// then up to `max_heuristic` heuristic ones (masking, source problems), so a long tail of masking pairs cannot
 /// crowd out the problems the objective measures.

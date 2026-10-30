@@ -10,6 +10,7 @@ mix-core = { path = "../mix-core" }
 mix-analysis = { path = "../mix-analysis" }
 mix-knowledge = { path = "../mix-knowledge" }
 mix-surface = { path = "../mix-surface" }
+mix-actuator = { path = "../mix-actuator" }
 serde = { workspace = true }
 wing-blocks = { workspace = true }
 wing-dsp = { workspace = true }

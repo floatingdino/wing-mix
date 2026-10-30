@@ -694,6 +694,7 @@ dependencies = [
 name = "mix-engine"
 version = "0.1.0"
 dependencies = [
+ "mix-actuator",
  "mix-analysis",
  "mix-core",
  "mix-fixtures",
