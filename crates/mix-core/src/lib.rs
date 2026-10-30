@@ -5,6 +5,12 @@
 /// Crate name, used by the scaffold smoke test.
 pub const NAME: &str = "mix-core";
 
+// M010: console-facing shared types (ids, values, units, actions).
+pub mod action;
+pub mod ids;
+pub mod units;
+pub mod value;
+
 #[cfg(test)]
 mod tests {
     #[test]
