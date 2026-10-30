@@ -272,7 +272,7 @@ type Loaded = (TargetProfile, &'static str, String, Value);
 
 enum LoadMsg {
     Progress(String, f64),
-    Done(Result<Loaded, String>),
+    Done(Box<Result<Loaded, String>>),
 }
 
 struct Loading {
@@ -696,7 +696,7 @@ impl Daemon {
             .name("mixd-load".into())
             .spawn(move || {
                 let res = load_reference_job(&path, &r, &state, &tx);
-                let _ = tx.send(LoadMsg::Done(res));
+                let _ = tx.send(LoadMsg::Done(Box::new(res)));
             })
             .map_err(err)?;
         Ok(json!({"loading": true}))
@@ -750,12 +750,8 @@ impl Daemon {
                     "notes": desc.notes,
                     "llm_used": desc.llm_used,
                 });
-                let _ = tx.send(LoadMsg::Done(Ok((
-                    desc.profile,
-                    "description",
-                    d.text,
-                    info,
-                ))));
+                let done = Ok((desc.profile, "description", d.text, info));
+                let _ = tx.send(LoadMsg::Done(Box::new(done)));
             })
             .map_err(err)?;
         Ok(json!({"loading": true}))
@@ -773,12 +769,12 @@ impl Daemon {
                     progress.push((stage, p));
                 }
                 Ok(LoadMsg::Done(r)) => {
-                    done = Some(r);
+                    done = Some(*r);
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done = Some(Err("loader thread died".into()));
+                    done = Some(Err("loader thread died".to_string()));
                     break;
                 }
             }
