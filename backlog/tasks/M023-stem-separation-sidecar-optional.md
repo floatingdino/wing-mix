@@ -17,7 +17,7 @@ Coordinator note: implement mix-reference's `StemTargetProvider` hook (see M022 
 ## Acceptance criteria
 - [x] Sidecar install script + Rust client (install.sh verified by refusal without --approved, `bash -n` and `--approved --dry-run` only; NOT run for real)
 - [x] Per-stem profiles for a fixture (generated stereo song, via the mock backend)
-- [ ] Real-model verification (blocked on HUMAN-ACTIONS #3, see Log: exact commands)
+- [x] Real-model verification (2026-10-30, coordinator)
 - [x] System works identically (minus stems) when sidecar absent
 
 ## Log
@@ -29,3 +29,4 @@ Coordinator note: implement mix-reference's `StemTargetProvider` hook (see M022 
   Real-model verification (needs approval, leave unchecked): `tools/stems/install.sh --approved --model htdemucs` then `cargo run -p wing-mix-cli -- profile <ref.wav> --stems --cache-dir /tmp/pc` (expect "stems: htdemucs@4.1.0"; check time per song, MPS vs CPU fallback, RAM ~3 GB). Unverified without the install: demucs_backend.py / umx_backend.py (py_compile only), pyproject dependency resolution (torch/numpy pins), `uv run --project` in offline mode (UV_OFFLINE=1 is set by SidecarCommand::uv; if it blocks first resolution, drop it).
   Proposed follow-ups: pairwise stem masking (`StemTargets.masking` is empty); GUI hook for StemsStatus + progress + cancel flag; Cargo/CI skip is automatic when python3 is absent (tests return early); consider per-stem tolerances/`MatchWeights.stems` use in M-engine.
 - 2026-10-30 coordinator: cherry-picked onto rewritten main, make check passes. done (mock-verified). Real-model check pending HUMAN-ACTIONS #3. Follow-ups: stem masking pairs → M031; GUI StemsStatus → M051.
+- 2026-10-30 coordinator: user approved; ran install.sh --approved --model htdemucs (867 MB in ~/Library/Application Support/WingMix/stems; resolved torch 2.2.2 + torchaudio 2.11 — works but mismatched, consider pinning torchaudio to the torch minor). Verified: profile 'I Know That I Know.m4a' --stems → htdemucs@4.1.0, 4 stems, 32.6 s wall for a 319 s song; stem level rel. mix p50: vocals -5.3, drums -7.9, bass -12.0, other -6.4 dB. Section labelling is weak (many 'verse N') → follow-up for M022 sectioning.
