@@ -640,10 +640,13 @@ impl<'a> MixModel<'a> {
                 dd.dyn_active = st.active - old_st.active;
                 // M036: with an RMS-detector compressor the proxy over-reads the peaks that pass the attack (its
                 // events start sharper than sung phrases; dyn_sim vocal rows +0.4..+1.6 dB) and the static curve
-                // under-reads them; their mean halves the error there (peak detectors keep the proxy: kick rows)
+                // under-reads them; their mean halves the error there
                 let rms_comp =
                     |s: &StripSettings| s.dynamics.is_some_and(|d| d.on && !d.peak_detector);
-                if rms_comp(old) || rms_comp(new) {
+                // sustained sources only (sample crest under 15 dB: voices, bass, keys): on percussive strips the
+                // static peak reading is far worse than the proxy's (dyn_sim kick rows)
+                let sustained = o.tap.features.loudness.crest_db < 15.0;
+                if sustained && (rms_comp(old) || rms_comp(new)) {
                     let stt = &o.stats;
                     let pk = stt.peak_db - 3.0;
                     let a = |s: &StripSettings, sh: f64, gsh: f64| {
