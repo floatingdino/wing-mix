@@ -158,6 +158,29 @@ public struct SnapshotSession: Decodable, Sendable, Equatable {
     public var holding: String?
     public var busy: Bool?
     public var budget: [Double]?
+    /// M067: the change budget (net deviation from the session start, per-minute pacing).
+    public var changeBudget: ChangeBudget?
+}
+
+/// `session.change_budget` (M067): how far the session has taken the mix from where the engineer left it (weighted
+/// net dB of its own changes) and how fast it is changing it.
+public struct ChangeBudget: Decodable, Sendable, Equatable {
+    public var batches: Int?
+    public var maxBatches: Int?
+    public var netDb: Double?
+    public var maxNetDb: Double?
+    public var rateDb: Double?
+    public var maxDbPerMin: Double?
+    public var travelDb: Double?
+    public var pacedUntilS: Double?
+
+    /// One line for the Live screen.
+    public var display: String {
+        var s = String(format: "change budget: net %.1f of %.0f dB, %.1f of %.0f dB in the last minute",
+                       netDb ?? 0, maxNetDb ?? 0, rateDb ?? 0, maxDbPerMin ?? 0)
+        if pacedUntilS != nil { s += " (pacing)" }
+        return s
+    }
 }
 
 public struct TouchedParam: Decodable, Sendable, Equatable, Identifiable {

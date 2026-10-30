@@ -222,6 +222,9 @@ fn scaled_config() {
     assert_eq!(s.section.tau_s, c.section.tau_s);
     assert_eq!(s.section.hold_s, c.section.hold_s);
     assert_eq!(s.max_batches, c.max_batches);
+    // M067: the rate window follows the loop's clock, the limits do not
+    assert_eq!(s.rate_window_s, c.rate_window_s * 0.5);
+    assert_eq!(s.max_net_db, c.max_net_db);
     // planning stays within the safety layer's per-move boost
     assert!(c.plan.candidates.max_fader_step_db <= 3.0);
 }
@@ -243,4 +246,11 @@ fn events_serialise() {
         j.contains("suggested") && j.contains("input.1/fader"),
         "{j}"
     );
+    let j = serde_json::to_string(&ControlEvent::Paced {
+        until_s: 60.0,
+        rate_db: 21.0,
+        max_db_per_min: 24.0,
+    })
+    .unwrap();
+    assert!(j.contains("\"type\":\"paced\""), "{j}");
 }

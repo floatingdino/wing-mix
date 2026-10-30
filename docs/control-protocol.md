@@ -62,7 +62,7 @@ nothing else happens.
 | `confirm_roles` | `roles` (`{"bus.5":"monitor","bus.6":null}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none; `null` clears the confirmation = back to detection), `scene` | `{"key","confirmed","cleared","previous","applies":"now"}`. One request is one **batch** (M065): validated as a whole (a bad id/role changes nothing), applied together. `previous` maps every strip of the batch to its former confirmation (`null` = none): sending it back as `roles` undoes the batch exactly. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
 | `set_mode` | `mode`: `observe` / `suggest` / `autopilot` | |
 | `set_live_context` | `context`: `live` (default; persisted in `settings.json` and restored at the next daemon start) / `broadcast_video` / `match_record` | `{"live_context","applied","target"}` (M037/M054). `mix_describe::apply_context` is applied to the loaded target (reference or description) on every load and on every change, always from the raw profile (switching is an exact revert); a running controller is rebuilt and re-plans. `applied` is `true` once a target is loaded (`false` before: the setting is stored and applied on the next load); `target` is the context summary below (null without a target). Announced as a `live_context_changed {live_context, applied}` daemon event on change. Effects are recorded in the target's `applied_deltas` as `context:<name>` (so problems list it in `terms`). |
-| `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `target_objective`, `inspect`, `feedback_guard`, `sweep`, `priors` | `{"running":true,"mode"}`; needs a console, an input and a target |
+| `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `max_net_db`, `max_db_per_min`, `target_objective`, `inspect`, `feedback_guard`, `sweep`, `priors`, `meters` | `{"running":true,"mode"}`; needs a console, an input and a target |
 | `stop` | | ends the loop: controller stops, actuator freezes (session kept: `undo`/`PANIC` still work; `start` resumes) |
 | `STOP` (`emergency_stop`) | | freezes every move now; the loop pauses until `resume` |
 | `PANIC` (`panic`) | | ramps every touched param back to its session baseline, then stays stopped; mode drops to `observe` |
@@ -149,7 +149,8 @@ of main-tap audio analysed), `unix`, and the event's own fields.
   `batch_reverted`, `batch_inconclusive`, `batch_failed`, `param_frozen`, `confirmation_needed {key, summary}`,
   `confirmed`, `section_changed`, `engineer_moved`, `holding {reason, objective}`, `resumed`, `paused`,
   `strip_measured {strip, due, priority, loudness_lufs, active}` (M062 solo sweep; `planned.reason`
-  `strips_measured` when its result re-planned).
+  `strips_measured` when its result re-planned), `paced {until_s, rate_db, max_db_per_min}` (M067: the next batch
+  waits for the change budget's rate window).
 - `actuator`: `mix_actuator::ActuatorEvent` — `queued`, `refused`, `started`, `progress`, `yielded`, `paused`,
   `resumed`, `done {changes}`, `aborted`, `soloed`, `measured`, `solo_restored`, `reverted {restored, conflicts,
   skipped}`, `rta_restored`, `safety {trip, reverted}`, `link_lost`, `link_restored {drifted}`, `stopped`, `ready`,
@@ -169,7 +170,11 @@ at_s, mode, live_context, live_context_applied, console {kind,name}, target {kin
 loudness   {momentary_lufs, short_term_lufs, true_peak_dbtp, crest_db, tilt_db_per_oct, width_db, correlation}
 spectrum   {erb_hz[40], current_erb_rel_db, target_erb_rel_db (p50), target_erb_lo_db (p10), target_erb_hi_db (p90),
             tolerance_db, third_oct_hz[31], current_third_oct_db, target_third_oct_rel_db}
-session    {running, stopped, feedback_guard, holding, busy, budget [batches, dB travelled]}   (null without a session)
+session    {running, stopped, feedback_guard, holding, busy, budget [batches, net dB], change_budget}   (null without a session)
+           change_budget (M067): {batches, max_batches, net_db, max_net_db, rate_db, max_db_per_min, travel_db,
+            paced_until_s?}: net_db = weighted deviation of the session's own dB changes from the baseline (makeup
+            free, equal group/pair moves count once, reverted moves cost nothing), rate_db = weighted forward travel
+            in the last minute; a batch over the rate waits (`paced` event), over the net limit it is skipped
 score      last measured PlanScore {objective, distance, problems, target_load}
 curve      [{at_s, score, kept}]  the distance curve
 problems   top 20 diagnosed problems (evidence, severity, suggested blocks)

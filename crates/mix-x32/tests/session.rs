@@ -12,7 +12,7 @@ use mix_actuator::{Actuator, ActuatorConfig, ActuatorEvent, PolicyGate};
 use mix_core::features::Window;
 use mix_core::ids::{ParamId, StripId};
 use mix_core::profile::StemKind;
-use mix_engine::control::{ControlConfig, Controller, Measurement, MixMeter};
+use mix_engine::control::{ControlConfig, Controller, HoldReason, Measurement, MixMeter};
 use mix_engine::diagnosis::{synth, StripTap};
 use mix_engine::plan::{transfer_for_surface, ConsoleState, MixModel};
 use mix_engine::Mode;
@@ -240,11 +240,18 @@ fn main_only_without_solo_falls_back_to_mix_level_moves() {
             );
         }
     }
+    let c = ctl.curve();
     eprintln!(
-        "moves: {moved:?}; vocal fader {:.1} dB (start {:.1})",
+        "moves: {moved:?}; vocal fader {:.1} dB (start {:.1}); distance {:.3} -> {:.3}; hold {:?}; budget {:?}",
         surface.read(&fader).unwrap().as_f64().unwrap(),
-        start_db - 6.0
+        start_db - 6.0,
+        c.first().map_or(f32::NAN, |p| p.score.distance),
+        c.last().map_or(f32::NAN, |p| p.score.distance),
+        ctl.holding(),
+        ctl.budget_status()
     );
+    // M067: the session ends converged or without progress, never on the change budget
+    assert_ne!(ctl.holding(), Some(HoldReason::Budget));
     assert!(fake.client_sets() > 0);
 }
 

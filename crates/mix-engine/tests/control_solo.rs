@@ -162,10 +162,12 @@ fn solo_only_autopilot_sweeps_strips_and_restores_solo_exactly() {
     });
     let sw = sweeps(&r);
     assert!(sw.iter().filter(|s| s.2).count() >= 3, "{sw:?}");
-    // most valuable first: the lead vocal or a low-end source
+    // most valuable first: the lead vocal, a low-end source, or (M067: the meters show the degraded scene's hats
+    // loud, so they carry most of the mix's air/brilliance excess) the hats
     let first = &sw[0].1;
     assert!(
-        ["input.12", "input.13", "input.1", "input.2", "input.7"].contains(&first.as_str()),
+        ["input.12", "input.13", "input.1", "input.2", "input.7", "input.3"]
+            .contains(&first.as_str()),
         "{sw:?}"
     );
     // every sweep restored the solo state exactly and left nothing soloed
@@ -204,8 +206,8 @@ fn solo_only_autopilot_sweeps_strips_and_restores_solo_exactly() {
 fn solo_only_converges_comparably_to_multichannel() {
     let fx = fixture();
     let run = |strips: Vec<TapSpec>, label: &str| {
-        let mut cfg = config(Mode::Autopilot);
-        cfg.max_batches = 20;
+        // M067: no batch cap: the change budget (net deviation + pacing) applies
+        let cfg = config(Mode::Autopilot);
         let mut r = rig(&fx.pair.degraded, strips, cfg);
         r.auto_confirm = true;
         r.run_until(400.0, |r| {
@@ -221,6 +223,12 @@ fn solo_only_converges_comparably_to_multichannel() {
         let (all, exact) = solo_restores(&r);
         assert_eq!(all, exact, "{label}: solo not restored exactly");
         assert!(r.sim.solo_state().unwrap().active.is_empty());
+        assert_ne!(
+            r.ctl.holding(),
+            Some(mix_engine::control::HoldReason::Budget),
+            "{label}: {:?}",
+            r.ctl.budget_status()
+        );
         (d0, d1, sweeps(&r).len(), r.ctl.records().len())
     };
     let multi = run(all_strips(), "multichannel");
@@ -236,4 +244,94 @@ fn solo_only_converges_comparably_to_multichannel() {
         red_s >= 0.5 * red_m,
         "solo-only reduction {red_s:.2} vs multichannel {red_m:.2}"
     );
+}
+
+/// M067: a console without solo (or a session that may not solo): main only, no sweeps. Priors alone vs priors
+/// refined by the console's meters (level, activity, gain reduction).
+fn no_solo_run(meters: bool, label: &str, until_s: f64) -> Rig {
+    let fx = fixture();
+    let mut cfg = config(Mode::Autopilot);
+    cfg.inspect = false;
+    cfg.strips.sweep = false;
+    cfg.strips.meters = meters;
+    let mut r = rig(&fx.pair.degraded, Vec::new(), cfg);
+    r.auto_confirm = true;
+    r.run_until(until_s, |r| r.ctl.holding().is_some() && !r.ctl.is_busy());
+    if std::env::var("SOLO_REPORT").is_ok() {
+        r.print_report(label);
+        eprintln!("  coverage {:?}", r.ctl.coverage());
+    }
+    assert!(
+        !r.act_log
+            .iter()
+            .any(|(_, e)| matches!(e, ActuatorEvent::Soloed { .. })),
+        "{label}: soloed"
+    );
+    r
+}
+
+#[test]
+fn no_solo_meters_refine_the_estimates() {
+    let fx = fixture();
+    let mut cfg = config(Mode::Suggest);
+    cfg.inspect = false;
+    cfg.strips.sweep = false;
+    let mut r = rig(&fx.pair.degraded, Vec::new(), cfg);
+    r.run_until(3.0 * SECONDS, |r| r.ctl.measurement().is_some());
+    let cov = r.ctl.coverage().clone();
+    assert!(cov.estimated >= 10 && cov.meter_refined >= 10, "{cov:?}");
+    let m = r.ctl.measurement().unwrap();
+    let st = r.ctl.meter_stats().unwrap();
+    assert!(st.frames > 0);
+    // the degraded bass (+9 dB) reads loud and the kick's compressor is metered
+    let ml = mix_engine::diagnosis::window_loudness(&m.main);
+    let lvl = |c: u32| {
+        m.strips
+            .iter()
+            .find(|t| t.strip.index() == Some(c))
+            .map(|t| mix_engine::diagnosis::window_loudness(&t.features) - ml)
+            .unwrap()
+    };
+    assert!(lvl(7) > lvl(13), "bass {} vs vocal {}", lvl(7), lvl(13));
+    // level checks run on the meter-refined strips (with reduced confidence); spectra are not judged
+    let d = r.ctl.diagnosis().unwrap();
+    let strip_level = d.problems.iter().filter(|p| {
+        matches!(
+            p.scope.subject,
+            mix_engine::diagnosis::Subject::Strip { .. }
+        ) && p.kind == mix_engine::diagnosis::ProblemKind::Level
+    });
+    assert!(strip_level.clone().count() > 0, "{:?}", d.problems);
+    assert!(strip_level.clone().all(|p| p.confidence <= 0.5));
+    assert!(!d.problems.iter().any(|p| matches!(
+        p.scope.subject,
+        mix_engine::diagnosis::Subject::Strip { .. }
+    ) && p.kind == mix_engine::diagnosis::ProblemKind::Tonal));
+}
+
+/// Distance reduction without solo: priors alone vs priors refined by the console meters (report + check).
+#[test]
+#[ignore = "slow: run with make check-full"]
+fn no_solo_meters_improve_over_priors_alone() {
+    let run = |meters: bool, label: &str| {
+        let r = no_solo_run(meters, label, 400.0);
+        let c = r.ctl.curve();
+        let d0 = c.first().unwrap().score.distance;
+        let d1 = c.last().unwrap().score.distance;
+        (d0, d1, r.ctl.records().len(), r.ctl.holding())
+    };
+    let pri = run(false, "no solo, priors only");
+    let met = run(true, "no solo, priors + meters");
+    eprintln!(
+        "main distance without solo: priors {:.3} -> {:.3} ({} batches, {:?}); priors + meters {:.3} -> {:.3} ({} batches, {:?})",
+        pri.0, pri.1, pri.2, pri.3, met.0, met.1, met.2, met.3
+    );
+    assert!(met.1 < met.0);
+    assert!(
+        met.1 <= pri.1 + 0.01,
+        "meters {:.3} vs priors {:.3}",
+        met.1,
+        pri.1
+    );
+    assert_ne!(met.3, Some(mix_engine::control::HoldReason::Budget));
 }

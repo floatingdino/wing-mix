@@ -73,6 +73,18 @@ func tempDir(_ tag: String) throws -> URL {
         #expect(s.touched.isEmpty && s.moves.isEmpty && s.pending.isEmpty)
     }
 
+    @Test func `decodes the change budget`() throws {
+        let raw = """
+        {"ok":true,"result":{"mode":"autopilot","curve":[],"session":{"running":true,"budget":[7,12.5],
+         "change_budget":{"batches":7,"max_batches":100,"net_db":12.5,"max_net_db":60.0,"rate_db":6.0,
+         "max_db_per_min":24.0,"travel_db":20.0,"paced_until_s":80.0}}}}
+        """
+        let s = try ControlClient.parseReply(oneLine(raw), as: Snapshot.self)
+        let b = try #require(s.session?.changeBudget)
+        #expect(b.netDb == 12.5 && b.maxDbPerMin == 24 && b.batches == 7)
+        #expect(b.display == "change budget: net 12.5 of 60 dB, 6.0 of 24 dB in the last minute (pacing)")
+    }
+
     @Test func `decodes move records, pending confirmations and trips`() throws {
         let raw = """
         {"ok":true,"result":{"mode":"autopilot","curve":[],

@@ -821,7 +821,7 @@ fn estimated_strips_get_fader_moves_for_a_level_intent() {
             fader_db: state.settings(&t.strip).fader_db.unwrap_or(0.0),
         })
         .collect();
-    s.taps = crate::control::strips::priors(&s.main, &[], &eligible, kb, 0.1);
+    s.taps = crate::control::strips::priors(&s.main, &[], &eligible, kb, 0.1, None);
     assert!(s.taps.iter().all(|t| t.estimated));
     let p = run(
         &s,

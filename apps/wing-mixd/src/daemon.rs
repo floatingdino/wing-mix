@@ -1315,6 +1315,12 @@ impl Daemon {
         if let Some(b) = o.max_batches {
             cfg.max_batches = b;
         }
+        if let Some(b) = o.max_net_db {
+            cfg.max_net_db = b;
+        }
+        if let Some(b) = o.max_db_per_min {
+            cfg.max_db_per_min = b;
+        }
         if let Some(t) = o.target_objective {
             cfg.target_objective = t;
         }
@@ -1322,6 +1328,7 @@ impl Daemon {
         cfg.inspect = o.inspect.unwrap_or(true) && has_solo;
         cfg.strips.sweep = o.sweep.unwrap_or(true);
         cfg.strips.priors = o.priors.unwrap_or(true);
+        cfg.strips.meters = o.meters.unwrap_or(true);
         let names: BTreeMap<StripId, String> = console
             .surface
             .topology()
@@ -1547,6 +1554,7 @@ impl Daemon {
             out["session"]["holding"] = json!(ctl.holding());
             out["session"]["busy"] = json!(ctl.is_busy());
             out["session"]["budget"] = json!(ctl.budget_used());
+            out["session"]["change_budget"] = json!(ctl.budget_status());
             out["session"]["strips"] = json!(ctl.coverage());
             out["session"]["sweeping"] = json!(ctl.is_sweeping());
             out["score"] = json!(ctl.score());

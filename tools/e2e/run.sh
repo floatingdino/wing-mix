@@ -8,15 +8,14 @@
 #   tools/e2e/run.sh wing            # (b) only
 #
 # Env: E2E_SONGS (default: all three matched songs), E2E_MODES (reference,description), E2E_TAPS (multi | solo |
-# multi,solo: per-strip USB taps or main + solo only, M062), E2E_BATCHES (12),
-# E2E_MAX_WAIT_S (900 per run), WING_SIM_BIN (default ../wing-simulator/target/release/wing-sim),
+# multi,solo: per-strip USB taps or main + solo only, M062), E2E_BATCHES (unset: the controller's change budget, M067),
+# E2E_MAX_WAIT_S (1800 per run), WING_SIM_BIN (default ../wing-simulator/target/release/wing-sim),
 # WINGMIX_FIXTURES (default /Users/sam/code/wing-mix/fixtures), WINGMIX_PUBLIC_SNAP, E2E_REPORT.
 # Never touches ports 2222/2223, the default shm name, or the user's WingSimulator / WingMix state dirs.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 what="${1:-all}"
 export E2E_SONGS="${E2E_SONGS:-i-know-that-i-know,holy-forever,show-me-your-face}"
-export E2E_BATCHES="${E2E_BATCHES:-12}"
 report="${E2E_REPORT:-$PWD/target/e2e/report.md}"
 export E2E_REPORT="$report"
 mkdir -p "$(dirname "$report")"
@@ -24,7 +23,7 @@ mkdir -p "$(dirname "$report")"
   echo "# wing-mix e2e report"
   echo
   echo "- date: $(date -u +%Y-%m-%dT%H:%M:%SZ), commit $(git rev-parse --short HEAD) ($(git log -1 --format=%s | cut -c1-60))"
-  echo "- wing-sim: ${WING_SIM_BIN:-../wing-simulator/target/release/wing-sim}; songs: $E2E_SONGS; batches: $E2E_BATCHES"
+  echo "- wing-sim: ${WING_SIM_BIN:-../wing-simulator/target/release/wing-sim}; songs: $E2E_SONGS; batches: ${E2E_BATCHES:-controller budget}"
 } > "$report"
 t() { cargo test -p wing-mixd --release --test e2e "$1" -- --ignored --nocapture --test-threads=1; }
 case "$what" in

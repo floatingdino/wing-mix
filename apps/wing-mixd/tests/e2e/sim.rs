@@ -74,7 +74,7 @@ fn ev_type(v: &Value) -> &str {
     v["type"].as_str().unwrap_or("")
 }
 
-pub fn run(name: &str, target: TargetMode, max_batches: u32, dir: &Path) -> RunResult {
+pub fn run(name: &str, target: TargetMode, max_batches: Option<u32>, dir: &Path) -> RunResult {
     let t_wall = Instant::now();
     let (mt, reference, pair) = write_fixture(dir);
     let target = match target {
@@ -146,6 +146,7 @@ pub fn run(name: &str, target: TargetMode, max_batches: u32, dir: &Path) -> RunR
         r.start_d = ds(a) as f32;
         r.end_d = ds(b) as f32;
     }
+    r.budget = crate::wing::budget_line(&snap);
     let moves = snap["moves"].as_array().cloned().unwrap_or_default();
     r.batches = moves.len();
     r.kept = moves.iter().filter(|m| m["outcome"] == "kept").count();
