@@ -8,3 +8,7 @@ target/
 build/
 .build/
 .swiftpm/
+
+# Local multitrack fixtures (22 GB, not redistributable): keep out of the public repo
+fixtures/*
+!fixtures/README.md
