@@ -725,12 +725,14 @@ pub fn run(
     let log = obs.solo_log();
     let mut bad = Vec::new();
     for t in &restored {
-        // the observer's view just after the restore (before the next inspection soloes again)
+        // the observer's settled view after the restore: the last state it saw before the next inspection soloes
+        // again (M062: sweeps are >= 2 s apart; under a burst of ramp writes the observer's solo notifications can
+        // trail the daemon's event by more than the 400 ms M052 allowed), at most 2 s later
         let next = soloed
             .iter()
             .find(|&&s| s > *t)
-            .map_or(*t + Duration::from_millis(400), |&s| {
-                s.min(*t + Duration::from_millis(400))
+            .map_or(*t + Duration::from_secs(2), |&s| {
+                (s - Duration::from_millis(50)).min(*t + Duration::from_secs(2))
             });
         if let Some((_, st)) = log.iter().rev().find(|(at, _)| *at <= next) {
             if st != &solo0 {
