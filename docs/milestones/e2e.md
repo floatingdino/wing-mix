@@ -250,13 +250,13 @@ Reference targets (main-bus distance to the record, start -> end; batches (kept)
 | Holy Forever §7 | 2.510 -> 0.991 (-61 %) 12 (4) budget | 2.510 -> 1.359 (-46 %) 12 (6) budget | 2.510 -> 0.964 (-62 %) 18 (8) no_progress | 2.510 -> 1.171 (-53 %) 25 (13) no_progress | 85 % |
 | Show Me Your Face §4 | 2.257 -> 1.906 (-16 %) 11 (3) budget | 2.249 -> 2.319 (+3 %) 12 (4) budget | 2.251 -> 1.686 (-25 %) 14 (5) no_progress | 2.256 -> 1.499 (-34 %) 29 (8) no_progress | 136 % |
 
-Main + solo reaches 92 % of the multichannel reduction summed over the three songs (before: 69 %); every run ends on
+Main + solo reaches 92 % of the multichannel reduction summed over the three songs (before: 64 %); every run ends on
 `no_progress`, none on the budget (net deviation used 11-26 of 60 weighted dB, total travel 15-38 dB). FOH: 0.859 /
 1.031 / 1.403; Holy Forever multichannel beats FOH.
 
 Description targets: Holy Forever -30 % / -29 % before (multi / solo) -> -32 % / -30 %; I Know -18 % / -21 % ->
 -15 % / -18 %; Show Me Your Face -15 % / -6 % -> -38 % / -23 % (the solo run hit the 1800 s harness timeout still
-improving). Before, 5 of 6 description runs ended on the budget.
+improving). Before, 4 of 6 description runs ended on the budget.
 
 Consoles without solo (`E2E_TAPS=main` vs `priors`, reference, main only, no solo/sweeps): the WING meters refine 14
 of 17 strips (2 found silent and dropped), but on these drill-laden 3-4 minute runs the result is noise-dominated:
