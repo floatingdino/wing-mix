@@ -2,7 +2,7 @@
 id: M035
 title: Planner: gate + de-esser candidates, compressor timing model
 stage: S3
-status: review
+status: done
 owner: agent-M035
 depends: [M034]
 branch: task/M035
@@ -127,3 +127,4 @@ mix-sources' classifier as the authority for source type.
     Squashed problems); (5) the live Drums stem leaves out sparse (< 30 % active) strips while the reference stem
     includes them -> Drums tonal deficits on sparse-tom scenes (seen in plan_dyn); (6) PEAK-detector proxy error
     (-0.77 LU: carrier waveform), FX-rack DE-S2 de-esser not modelled, DS902 only when a slot is free.
+- 2026-10-31 coordinator: merged, make check passes. done. Follow-ups → M038 (analysis/actuator) and M036 (vocal comp check).

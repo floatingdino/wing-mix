@@ -22,6 +22,7 @@ From M033's closed-loop runs:
 5. Realistic starting scenes: `flat_scene` with faders at 0 dB leaves no boost headroom; add a "rough start"
    scene (faders around −10 dB, flat EQ) and use it for real-fixture runs.
 6. Plan hygiene seen in the GUI (docs/user/live.png): the same param appears in two separate moves (input.13 fader +2.9 and +2.5; input.7 −1.4 and −3.0) — merge moves on one param; move titles and explanation amounts disagree (title +2.9 dB, text +1.6 dB) — make them consistent.
+7. (from M035) add a strip/stem dynamics check so "vocal not compressed" is observable and the planner proposes vocal compression.
 Report before/after on seed 7 and the real-fixture song sections (distance vs FOH baseline).
 
 ## Acceptance criteria
