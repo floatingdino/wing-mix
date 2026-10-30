@@ -96,14 +96,14 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
                 .strips
                 .iter()
                 .filter(|s| {
-                    !s.estimated
-                        && s.source.as_deref().is_some_and(|src| {
-                            src == scope
-                                || cx
-                                    .kb
-                                    .source(src)
-                                    .is_some_and(|x| x.family.as_str() == scope)
-                        })
+                    // M062: estimated strips count too: an open-loop intent's deviation does not read the taps
+                    s.source.as_deref().is_some_and(|src| {
+                        src == scope
+                            || cx
+                                .kb
+                                .source(src)
+                                .is_some_and(|x| x.family.as_str() == scope)
+                    })
                 })
                 .map(|s| Contributor {
                     strip: s.strip.clone(),

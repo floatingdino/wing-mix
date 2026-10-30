@@ -68,9 +68,9 @@ pub struct StripTap {
     pub fx_return: bool,
     /// M062: not a measurement but a prior (knowledge-base level + mix-sources prototype spectrum, scaled into the
     /// measured main; [`crate::control::strips`]) for a strip no tap or solo inspection has measured yet. It only
-    /// stands in for the strip's share of the main: mix-level contributor shares and the planner's effect model
-    /// use it, every strip/stem/intent check skips it (a prior would only confirm itself), and the planner moves
-    /// nothing on it but its fader.
+    /// stands in for the strip's share of the main: mix-level contributor shares, open-loop intents (which name
+    /// strips but measure nothing) and the planner's effect model use it, every strip/stem check skips it (a prior
+    /// would only confirm itself), and the planner moves nothing on it but its fader.
     pub estimated: bool,
 }
 
