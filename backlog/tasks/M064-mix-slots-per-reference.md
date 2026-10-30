@@ -2,10 +2,10 @@
 id: M064
 title: Mix slots: store console states per reference and switch instantly (A/B/C/D…)
 stage: S5
-status: todo
-owner: -
+status: in_progress
+owner: agent-M064
 depends: [M062]
-branch: -
+branch: task/M064
 model: opus
 ---
 
@@ -51,3 +51,4 @@ to compare. This replaces the earlier A/B/X blind-test idea, at the user's reque
 ## Log
 - 2026-10-31 coordinator: created at the user's request; revised the same day from A/B/X blind test to multi-slot
   reference states.
+- 2026-10-31 agent-M064: claimed; reading actuator/surface/daemon/app code.
