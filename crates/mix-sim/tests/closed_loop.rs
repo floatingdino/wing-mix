@@ -30,7 +30,10 @@ fn solo_reaches_the_solo_tap_without_touching_main() {
         rb.tap(TapPoint::Main(1)),
         "LIVE solo must not change the main mix"
     );
-    assert!(ra.tap(TapPoint::Solo).unwrap().peak() == 0.0, "nothing soloed");
+    assert!(
+        ra.tap(TapPoint::Solo).unwrap().peak() == 0.0,
+        "nothing soloed"
+    );
     let solo = rb.tap(TapPoint::Solo).unwrap();
     assert!(solo.rms_db() > -40.0, "solo tap {} dBFS", solo.rms_db());
     assert!(rb.tap(TapPoint::Monitor(1)).unwrap().rms_db() > -40.0);
@@ -49,7 +52,10 @@ fn consecutive_renders_continue_the_input() {
     let b = two.render(1.0, &t);
     assert_eq!(b.start_frame, 48_000);
     let main = whole.tap(TapPoint::Main(1)).unwrap();
-    let (ma, mb) = (a.tap(TapPoint::Main(1)).unwrap(), b.tap(TapPoint::Main(1)).unwrap());
+    let (ma, mb) = (
+        a.tap(TapPoint::Main(1)).unwrap(),
+        b.tap(TapPoint::Main(1)).unwrap(),
+    );
     assert_eq!(&main.left[..48_000], &ma.left[..]);
     assert_eq!(&main.left[48_000..], &mb.left[..]);
     assert_eq!(two.position(), 96_000);

@@ -211,8 +211,7 @@ impl Inner {
         self.ctl.refresh(&self.store);
         let is_model = matches!(
             b.spec.class,
-            mix_surface::model::ParamClass::EqModel
-                | mix_surface::model::ParamClass::DynamicsModel
+            mix_surface::model::ParamClass::EqModel | mix_surface::model::ParamClass::DynamicsModel
         );
         if changed && is_model {
             let strip = SimStrip::from_id(&id.strip().expect("strip param")).expect("sim strip");
@@ -256,7 +255,9 @@ impl Inner {
 
     fn set_solo_raw(&mut self, strip: SimStrip, on: bool) {
         let n = self.solo_node(strip);
-        let _ = self.store.set_from(n, WValue::Int(on as i32), ORIGIN_SURFACE);
+        let _ = self
+            .store
+            .set_from(n, WValue::Int(on as i32), ORIGIN_SURFACE);
         self.ctl.refresh(&self.store);
     }
 
@@ -302,9 +303,7 @@ impl Inner {
         match t {
             TapPoint::Main(n) if (1..=MAINS).contains(&n) => mix.post(EStrip::Main(n), side),
             TapPoint::Bus(n) if (1..=BUSES).contains(&n) => mix.post(EStrip::Bus(n), side),
-            TapPoint::InputPost(n) if (1..=CHANNELS).contains(&n) => {
-                mix.post(EStrip::Ch(n), side)
-            }
+            TapPoint::InputPost(n) if (1..=CHANNELS).contains(&n) => mix.post(EStrip::Ch(n), side),
             TapPoint::Solo => Some(mix.solo_port(1, side)),
             TapPoint::Monitor(m @ 1..=2) => Some(mix.monitor_port(m as usize, side)),
             _ => None,

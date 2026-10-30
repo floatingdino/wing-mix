@@ -145,16 +145,86 @@ pub fn ground_truth() -> Vec<Delta> {
     use Fault::*;
     use Value::{Bool, Float};
     vec![
-        d(13, "fader", Float(-2.0), Float(-10.0), LevelTooLow, "vocal buried (-8 dB)"),
-        d(13, "dyn/on", Bool(true), Bool(false), NoCompression, "vocal not compressed"),
-        d(7, "fader", Float(-5.0), Float(1.0), LevelTooHigh, "bass too loud (+6 dB)"),
-        d(8, "eq/band.1.gain", Float(0.0), Float(8.0), Muddy, "keys L +8 dB at 250 Hz"),
-        d(9, "eq/band.1.gain", Float(0.0), Float(8.0), Muddy, "keys R +8 dB at 250 Hz"),
-        d(10, "filter/lowcut.on", Bool(true), Bool(false), MissingHighPass, "guitar HPF off"),
-        d(3, "fader", Float(-14.0), Float(-6.0), LevelTooHigh, "hats too loud (+8 dB)"),
-        d(2, "fader", Float(-6.0), Float(-12.0), LevelTooLow, "snare too quiet (-6 dB)"),
-        d(5, "pan", Float(-70.0), Float(0.0), NarrowImage, "OH L panned centre"),
-        d(6, "pan", Float(70.0), Float(0.0), NarrowImage, "OH R panned centre"),
+        d(
+            13,
+            "fader",
+            Float(-2.0),
+            Float(-10.0),
+            LevelTooLow,
+            "vocal buried (-8 dB)",
+        ),
+        d(
+            13,
+            "dyn/on",
+            Bool(true),
+            Bool(false),
+            NoCompression,
+            "vocal not compressed",
+        ),
+        d(
+            7,
+            "fader",
+            Float(-5.0),
+            Float(1.0),
+            LevelTooHigh,
+            "bass too loud (+6 dB)",
+        ),
+        d(
+            8,
+            "eq/band.1.gain",
+            Float(0.0),
+            Float(8.0),
+            Muddy,
+            "keys L +8 dB at 250 Hz",
+        ),
+        d(
+            9,
+            "eq/band.1.gain",
+            Float(0.0),
+            Float(8.0),
+            Muddy,
+            "keys R +8 dB at 250 Hz",
+        ),
+        d(
+            10,
+            "filter/lowcut.on",
+            Bool(true),
+            Bool(false),
+            MissingHighPass,
+            "guitar HPF off",
+        ),
+        d(
+            3,
+            "fader",
+            Float(-14.0),
+            Float(-6.0),
+            LevelTooHigh,
+            "hats too loud (+8 dB)",
+        ),
+        d(
+            2,
+            "fader",
+            Float(-6.0),
+            Float(-12.0),
+            LevelTooLow,
+            "snare too quiet (-6 dB)",
+        ),
+        d(
+            5,
+            "pan",
+            Float(-70.0),
+            Float(0.0),
+            NarrowImage,
+            "OH L panned centre",
+        ),
+        d(
+            6,
+            "pan",
+            Float(70.0),
+            Float(0.0),
+            NarrowImage,
+            "OH R panned centre",
+        ),
     ]
 }
 
@@ -197,7 +267,11 @@ impl FixturePair {
 }
 
 /// Build a console from `cfg` with `channels` = the highest channel `song` uses, load `song`, apply `scene`.
-pub fn console_with(song: &Multitrack, scene: &Scene, cfg: SimConfig) -> Result<SimSurface, String> {
+pub fn console_with(
+    song: &Multitrack,
+    scene: &Scene,
+    cfg: SimConfig,
+) -> Result<SimSurface, String> {
     let channels = song.tracks.iter().map(|t| t.channel).max().unwrap_or(1);
     let sim = SimSurface::new(SimConfig { channels, ..cfg })?;
     sim.load_inputs(song.clone())?;
@@ -238,7 +312,9 @@ mod tests {
             let spec = sim.param_spec(&param).unwrap();
             let back = sim.read(&param).unwrap();
             // floats land on the console grid (log frequency steps, fader law)
-            let tol = spec.tolerance().max(v.as_f64().map_or(0.0, |x| x.abs() * 0.01) + 0.01);
+            let tol = spec
+                .tolerance()
+                .max(v.as_f64().map_or(0.0, |x| x.abs() * 0.01) + 0.01);
             assert!(back.approx_eq(&v, tol), "{param}: {back} vs {v}");
         }
     }
@@ -284,6 +360,10 @@ mod tests {
             fixed.write(&dl.param, dl.reference.clone()).unwrap();
         }
         let fa = fixed.render(3.0, &taps);
-        assert_eq!(fa.tap(TapPoint::Main(1)).unwrap(), r, "undoing the deltas must reproduce the reference");
+        assert_eq!(
+            fa.tap(TapPoint::Main(1)).unwrap(),
+            r,
+            "undoing the deltas must reproduce the reference"
+        );
     }
 }

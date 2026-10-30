@@ -15,8 +15,8 @@ use std::f32::consts::TAU;
 
 /// Names of the 16 synthetic tracks, in channel order (channel n = index + 1).
 pub const TRACKS: [&str; 16] = [
-    "KICK", "SNARE", "HAT", "TOM", "OH L", "OH R", "BASS", "KEYS L", "KEYS R", "GTR", "PAD", "LEAD",
-    "VOX", "BV 1", "BV 2", "SHAKER",
+    "KICK", "SNARE", "HAT", "TOM", "OH L", "OH R", "BASS", "KEYS L", "KEYS R", "GTR", "PAD",
+    "LEAD", "VOX", "BV 1", "BV 2", "SHAKER",
 ];
 
 /// Channel of a named track (1-based).
@@ -261,7 +261,11 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
                     let f = 48.0 + 90.0 * (-tt / 0.03).exp();
                     ph = (ph + f / sr).fract();
                     let body = (TAU * ph).sin() * (-tt / 0.28).exp();
-                    let c = if tt < 0.003 { click.bipolar() * 0.5 } else { 0.0 };
+                    let c = if tt < 0.003 {
+                        click.bipolar() * 0.5
+                    } else {
+                        0.0
+                    };
                     vel * (body + c)
                 },
                 sr,
@@ -317,7 +321,7 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
             }
         }
         // crash at the start of every 4-bar section
-        if in_bar == 0 && bar % 4 == 0 {
+        if in_bar == 0 && bar.is_multiple_of(4) {
             let mut hp = Biquad::new(Kind::Hp, 4500.0, 0.7, sr);
             let r = &mut trng[4];
             add(
@@ -358,7 +362,8 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
                 let tt = i as f32 / sr;
                 let dt = f / sr;
                 ph = (ph + dt).fract();
-                let env = (tt / 0.004).min(1.0) * (0.75 + 0.25 * (-tt / 0.08).exp())
+                let env = (tt / 0.004).min(1.0)
+                    * (0.75 + 0.25 * (-tt / 0.08).exp())
                     * ((len - i) as f32 / (0.01 * sr)).min(1.0);
                 *x = lp.run(saw(ph, dt) + 0.6 * (TAU * ph).sin()) * env;
             }
@@ -380,7 +385,9 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
                     (2.0 * clk.beat * sr) as usize,
                     |tt, _| {
                         ph = (ph + f / sr).fract();
-                        let s = (TAU * ph).sin() + 0.3 * (2.0 * TAU * ph).sin() + 0.1 * (3.0 * TAU * ph).sin();
+                        let s = (TAU * ph).sin()
+                            + 0.3 * (2.0 * TAU * ph).sin()
+                            + 0.1 * (3.0 * TAU * ph).sin();
                         s * (-tt / 0.9).exp() * (tt / 0.003).min(1.0) * 0.33
                     },
                     sr,
@@ -396,7 +403,14 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
         for b in (0..beats).filter(|b| b % 2 == 1) {
             let bar = clk.bar_of(b);
             let c = chord(bar);
-            let notes = [c[0] + 12, c[1] + 12, c[2] + 12, c[0] + 24, c[1] + 24, c[2] + 24];
+            let notes = [
+                c[0] + 12,
+                c[1] + 12,
+                c[2] + 12,
+                c[0] + 24,
+                c[1] + 24,
+                c[2] + 24,
+            ];
             for (k, &deg) in notes.iter().enumerate() {
                 let f = midi_hz((tonic + 12 + deg) as f32);
                 let n = ((sr / f) as usize).max(2);
@@ -469,7 +483,7 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
         let mut f1 = Biquad::new(Kind::Bp, 700.0, 6.0, sr);
         let mut f2 = Biquad::new(Kind::Bp, 1200.0, 8.0, sr);
         let mut f3 = Biquad::new(Kind::Bp, 2500.0, 10.0, sr);
-        for b in 0..beats {
+        for (b, &note) in melody.iter().enumerate() {
             let bar = clk.bar_of(b);
             if bar % 4 == 3 || (only_even_phrases && (bar / 4) % 2 == 1) {
                 continue;
@@ -478,14 +492,18 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
             f1.set(Kind::Bp, v[0], 6.0, sr);
             f2.set(Kind::Bp, v[1], 8.0, sr);
             f3.set(Kind::Bp, v[2], 10.0, sr);
-            let base = midi_hz((tonic + 24 + melody[b] + interval) as f32);
+            let base = midi_hz((tonic + 24 + note + interval) as f32);
             let len = (clk.beat * sr * 0.95) as usize;
             add(
                 buf,
                 clk.beat_frame(b as f32),
                 len,
                 |tt, i| {
-                    let vib = if tt > 0.15 { 0.006 * (TAU * 5.5 * tt).sin() } else { 0.0 };
+                    let vib = if tt > 0.15 {
+                        0.006 * (TAU * 5.5 * tt).sin()
+                    } else {
+                        0.0
+                    };
                     let f = base * (1.0 + vib);
                     let dt = f / sr;
                     ph = (ph + dt).fract();
@@ -505,12 +523,12 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
         let mut lp = Biquad::new(Kind::Lp, 3000.0, 0.7, sr);
         let mut ph = 0.0f32;
         let buf = &mut t[11];
-        for b in 0..beats {
+        for (b, &note) in melody.iter().enumerate() {
             if clk.bar_of(b) % 4 != 3 {
                 continue;
             }
             for half in 0..2 {
-                let f = midi_hz((tonic + 36 + melody[b] + if half == 1 { 2 } else { 0 }) as f32);
+                let f = midi_hz((tonic + 36 + note + if half == 1 { 2 } else { 0 }) as f32);
                 let len = (clk.beat * 0.5 * sr * 0.9) as usize;
                 add(
                     buf,
@@ -547,7 +565,8 @@ pub fn generate(spec: &SongSpec) -> (Multitrack, SongFacts) {
 
     // --- level the "recordings" --------------------------------------------------------------------------------
     let peaks = [
-        -3.0, -4.0, -12.0, -6.0, -8.0, -8.0, -5.0, -9.0, -9.0, -8.0, -10.0, -9.0, -4.0, -8.0, -8.0, -14.0,
+        -3.0, -4.0, -12.0, -6.0, -8.0, -8.0, -5.0, -9.0, -9.0, -8.0, -10.0, -9.0, -4.0, -8.0, -8.0,
+        -14.0,
     ];
     let mut floor_rng = Rng::new(spec.seed ^ 0xF100);
     for (buf, p) in t.iter_mut().zip(peaks) {
@@ -613,7 +632,12 @@ mod tests {
             let peak = t.audio.iter().fold(0.0f32, |p, &x| p.max(x.abs()));
             assert!(peak <= 0.75 && peak > 0.1, "{}: peak {peak}", t.name);
             assert!(t.audio.iter().all(|x| x.is_finite()), "{}", t.name);
-            assert!(rms_db(&t.audio) > -50.0, "{}: {} dB", t.name, rms_db(&t.audio));
+            assert!(
+                rms_db(&t.audio) > -50.0,
+                "{}: {} dB",
+                t.name,
+                rms_db(&t.audio)
+            );
         }
         assert_eq!(channel_of("VOX"), Some(13));
     }

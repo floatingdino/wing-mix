@@ -10,8 +10,8 @@
 pub mod map;
 pub mod real;
 pub mod scenes;
-pub mod synth;
 pub mod surface;
+pub mod synth;
 
 pub use surface::{
     Multitrack, Rendered, SimConfig, SimSurface, TapAudio, TapPoint, Track, USB_INPUTS,

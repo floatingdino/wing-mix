@@ -92,21 +92,75 @@ pub struct Binding {
 const STATIC: &[(&str, &str, ParamClass, bool, bool)] = &[
     ("in/set/trim", "in/trim", ParamClass::Trim, true, true),
     ("in/set/bal", "in/balance", ParamClass::Balance, true, true),
-    ("in/set/inv", "in/polarity", ParamClass::Polarity, true, true),
-    ("flt/lc", "filter/lowcut.on", ParamClass::Filter, true, false),
-    ("flt/lcf", "filter/lowcut.freq", ParamClass::Filter, true, false),
-    ("flt/lcs", "filter/lowcut.slope", ParamClass::Filter, true, false),
-    ("flt/hc", "filter/highcut.on", ParamClass::Filter, true, false),
-    ("flt/hcf", "filter/highcut.freq", ParamClass::Filter, true, false),
-    ("flt/hcs", "filter/highcut.slope", ParamClass::Filter, true, false),
+    (
+        "in/set/inv",
+        "in/polarity",
+        ParamClass::Polarity,
+        true,
+        true,
+    ),
+    (
+        "flt/lc",
+        "filter/lowcut.on",
+        ParamClass::Filter,
+        true,
+        false,
+    ),
+    (
+        "flt/lcf",
+        "filter/lowcut.freq",
+        ParamClass::Filter,
+        true,
+        false,
+    ),
+    (
+        "flt/lcs",
+        "filter/lowcut.slope",
+        ParamClass::Filter,
+        true,
+        false,
+    ),
+    (
+        "flt/hc",
+        "filter/highcut.on",
+        ParamClass::Filter,
+        true,
+        false,
+    ),
+    (
+        "flt/hcf",
+        "filter/highcut.freq",
+        ParamClass::Filter,
+        true,
+        false,
+    ),
+    (
+        "flt/hcs",
+        "filter/highcut.slope",
+        ParamClass::Filter,
+        true,
+        false,
+    ),
     ("gate/on", "gate/on", ParamClass::Dynamics, true, false),
-    ("gate/mdl", "gate/model", ParamClass::DynamicsModel, true, false),
+    (
+        "gate/mdl",
+        "gate/model",
+        ParamClass::DynamicsModel,
+        true,
+        false,
+    ),
     ("gate/mix", "gate/mix", ParamClass::Dynamics, true, false),
     ("eq/on", "eq/on", ParamClass::Eq, true, true),
     ("eq/mdl", "eq/model", ParamClass::EqModel, true, true),
     ("eq/mix", "eq/mix", ParamClass::Eq, true, true),
     ("dyn/on", "dyn/on", ParamClass::Dynamics, true, true),
-    ("dyn/mdl", "dyn/model", ParamClass::DynamicsModel, true, true),
+    (
+        "dyn/mdl",
+        "dyn/model",
+        ParamClass::DynamicsModel,
+        true,
+        true,
+    ),
     ("dyn/mix", "dyn/mix", ParamClass::Dynamics, true, true),
     ("dyn/gain", "dyn/makeup", ParamClass::Dynamics, true, true),
     ("fdr", "fader", ParamClass::Fader, true, true),
@@ -435,13 +489,18 @@ mod tests {
             ValueKind::Enum { .. }
         ));
         assert_eq!(get("input.3/gate/threshold").spec.unit, Unit::Db);
-        assert_eq!(get("input.3/send/bus.16/level").spec.class, ParamClass::SendLevel);
+        assert_eq!(
+            get("input.3/send/bus.16/level").spec.class,
+            ParamClass::SendLevel
+        );
         assert_eq!(get("input.3/mute").spec.kind, ValueKind::Bool);
         assert!(get("input.3/state/mute").spec.read_only);
         let ids: BTreeSet<_> = b.iter().map(|x| x.spec.id.clone()).collect();
         assert_eq!(ids.len(), b.len(), "unique ids");
         let bus = strip_bindings(&store, SimStrip::Bus(1));
-        assert!(bus.iter().any(|x| x.spec.id.as_str() == "bus.1/eq/band.6.gain"));
+        assert!(bus
+            .iter()
+            .any(|x| x.spec.id.as_str() == "bus.1/eq/band.6.gain"));
         assert!(bus.iter().any(|x| x.spec.id.as_str() == "bus.1/mono"));
         assert!(!bus.iter().any(|x| x.spec.id.as_str().contains("gate")));
     }
@@ -453,7 +512,10 @@ mod tests {
         let find = |id: &str| b.iter().find(|x| x.spec.id.as_str() == id).unwrap();
         let ratio = find("input.1/dyn/ratio");
         write_value(&store, ratio, &Value::Enum("4.0".into()), 1).unwrap();
-        assert_eq!(read_value(&store, ratio).unwrap(), Value::Enum("4.0".into()));
+        assert_eq!(
+            read_value(&store, ratio).unwrap(),
+            Value::Enum("4.0".into())
+        );
         let lc = find("input.1/filter/lowcut.on");
         write_value(&store, lc, &Value::Bool(true), 1).unwrap();
         assert_eq!(read_value(&store, lc).unwrap(), Value::Bool(true));
