@@ -11,10 +11,19 @@
 //! - Fader/mute: broadband dB.
 //! - Pan: source power `P = M / m(pan_old)`; `M' = P·m(pan_new)`, `S' = P·s(pan_new)` with
 //!   `m = ((gL+gR)/2)²`, `s = ((gL−gR)/2)²` (the analyser's mid = (L+R)/2).
-//! - Compressor/gate: static curve over a level distribution derived from the strip's measured RMS and peak
-//!   (pre-dynamics levels are recovered by removing fader, pan and the current compressor's predicted gain); the
-//!   predicted mean power gain moves the level, peak gain − mean gain moves the crest/PLR, and the gain spread over
-//!   the short-term level range moves LRA/range.
+//! - Compressor/gate (M035): the strip's gate and compressor run over a level-process proxy fitted to the strip's
+//!   measured statistics ([`crate::proxy`]; pre-dynamics statistics recovered by removing fader/pan and inverting
+//!   the current dynamics on the proxy), through the transfer model's own blocks
+//!   ([`TransferModel::run_dynamics`]: WING detector, attack/hold/release, AUTO, gate ballistics). The proxy's
+//!   active-frame level change moves the level, its sample-peak change the peaks/PLR, frame crest and post-onset
+//!   ratio changes the band crest/attack ratio, the short-term range change the LRA/range, the all-frames RMS and
+//!   activity changes the strip's RMS/gated share. Transfer models without `run_dynamics` fall back to the M032
+//!   static curves over a Gaussian level distribution.
+//! - De-esser (`DS902`, M035): sibilant frames modelled from the air band's frame crest (duty [`SIB_DUTY`]); their
+//!   HF/total ratio sets the de-esser reduction (transfer model law), applied as its high shelf to the share of
+//!   each band's power the sibilant frames carry.
+//! - Main contribution (M035): a strip adds its all-frames power to the main (`rms_all / P_active` times its
+//!   active-frame spectrum), so sparse strips and gates are counted by the time they actually sound.
 //! - Main: band powers updated by the strip changes (floored at 5 % of the measured band); loudness change from
 //!   K-weighted band powers; `rel_db` curves, tilt (same octave-weighted least squares as the analyser, applied to
 //!   the change), side/mid width per Broad6 band, correlation (`(M−S)/(M+S)` scaled by the change), L/R balance;
@@ -24,7 +33,7 @@
 #![allow(clippy::needless_range_loop)] // per-band DSP arithmetic over parallel arrays
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use mix_core::bands::{
     erb40_centres_hz, erb40_edges_hz, BROAD6_EDGES_HZ, LOW_MONO_HZ, N_BROAD, N_ERB,
@@ -36,7 +45,15 @@ use mix_surface::model::{Block, StripKind};
 use super::state::{ConsoleState, StripSettings};
 use super::transfer::{k_weight_db, TransferModel};
 use crate::diagnosis::{window_loudness, StripTap};
+use crate::proxy::{Proxy, ProxyStats, ProxyTarget};
 
+/// Assumed share of a sibilant vocal's active frames that are sibilants ('s', 'sh', 't': ~80 ms per word).
+pub const SIB_DUTY: f64 = 0.06;
+/// Lowest frequency of the sibilant band (Hz) used by the de-esser model.
+const SIB_LO_HZ: f32 = 4000.0;
+
+/// Count strips at the main by their all-frames power (see module docs).
+const MAIN_ACTIVE_SCALING: bool = true;
 /// Floor of a predicted main band as a share of the measured band power.
 const MAIN_FLOOR: f64 = 0.05;
 /// Points of the discretised detector-level distribution.
@@ -159,6 +176,45 @@ pub struct StripDelta {
     pub dyn_mean_db: f64,
     /// Short-term level range change from the dynamics (dB).
     pub dyn_range_db: f64,
+    /// Frame crest change from the dynamics (dB).
+    pub dyn_crest_db: f64,
+    /// Post-onset (attack) ratio change from the dynamics (dB).
+    pub dyn_attack_db: f64,
+    /// All-frames RMS change from the dynamics (dB; differs from `dyn_mean_db` when a gate closes on the floor).
+    pub dyn_all_db: f64,
+    /// Change of the active-frame share (−1..1).
+    pub dyn_active: f64,
+    /// Air-band frame crest change from a de-esser (dB).
+    pub deess_crest_db: f64,
+    /// Main contribution per unit of active-frame power after the change (see `StripObs::main_k`).
+    pub main_k: f64,
+}
+
+impl StripDelta {
+    fn zero() -> Self {
+        StripDelta {
+            mid_db: [0.0; N_ERB],
+            level_db: 0.0,
+            dyn_peak_db: 0.0,
+            dyn_mean_db: 0.0,
+            dyn_range_db: 0.0,
+            dyn_crest_db: 0.0,
+            dyn_attack_db: 0.0,
+            dyn_all_db: 0.0,
+            dyn_active: 0.0,
+            deess_crest_db: 0.0,
+            main_k: 1.0,
+        }
+    }
+}
+
+/// A strip's fitted dynamics proxy: pre-dynamics proxy audio and its statistics through the measured settings.
+#[derive(Debug)]
+pub struct DynFit {
+    pub proxy: Proxy,
+    pub audio: Vec<f32>,
+    /// Statistics of the proxy through the strip's measured settings.
+    pub old: ProxyStats,
 }
 
 /// One measured strip with the settings it was measured at.
@@ -171,6 +227,10 @@ pub struct StripObs {
     side: [f64; N_ERB],
     /// Pre-dynamics detector level statistics.
     stats: LevelStats,
+    /// Main contribution per unit of active-frame power (`rms_all / P_active`, 0.02..1).
+    main_k: f64,
+    /// Lazily fitted dynamics proxy (`None`: not modelled by the transfer model / inaudible strip).
+    dynfit: OnceLock<Option<Arc<DynFit>>>,
 }
 
 /// The measured mix and strips, ready to predict.
@@ -283,6 +343,13 @@ impl<'a> MixModel<'a> {
             let settings = state.settings(&t.strip);
             let (mid, side) = band_powers(&t.features, t.gain_to_main_db as f64);
             let stats = m.pre_dyn_stats(&t.features, kind, &settings);
+            let act: f64 = mid.iter().zip(&side).map(|(a, b)| a + b).sum();
+            let all = p(t.features.loudness.rms_dbfs as f64 + t.gain_to_main_db as f64);
+            let main_k = if act > 0.0 && MAIN_ACTIVE_SCALING {
+                (all / act).clamp(0.02, 1.0)
+            } else {
+                1.0
+            };
             m.strips.push(StripObs {
                 tap: t.clone(),
                 kind,
@@ -290,6 +357,8 @@ impl<'a> MixModel<'a> {
                 mid,
                 side,
                 stats,
+                main_k,
+                dynfit: OnceLock::new(),
             });
         }
         m
@@ -359,6 +428,132 @@ impl<'a> MixModel<'a> {
         db((0..N_ERB).map(|b| o.mid[b] * p(d[b])).sum::<f64>() / tot)
     }
 
+    /// The strip's dynamics proxy (fitted on first use).
+    pub fn dyn_fit(&self, o: &StripObs) -> Option<Arc<DynFit>> {
+        o.dynfit.get_or_init(|| self.build_fit(o)).clone()
+    }
+
+    fn build_fit(&self, o: &StripObs) -> Option<Arc<DynFit>> {
+        let s = &o.settings;
+        if s.level_db() <= -100.0 {
+            return None;
+        }
+        let (_, _, gl, gr) = self.pan_factors(o.kind, s);
+        let shift = -s.level_db() - db((gl * gl + gr * gr) * 0.5) - o.tap.gain_to_main_db as f64;
+        let meas = ProxyTarget::from_features(&o.tap.features, shift);
+        let mut t = meas;
+        let fs = crate::proxy::FS;
+        let mut proxy = Proxy::fit(&t);
+        let mut x = proxy.audio();
+        let mut y = x.clone();
+        if !self.transfer.run_dynamics(s, &mut y, fs, 0.0, 0.0) {
+            return None;
+        }
+        let mut old = proxy.measure_audio(&y);
+        let active = s.dynamics.is_some_and(|d| d.on) || s.gate.is_some_and(|g| g.on);
+        if active {
+            // invert the measured dynamics: move the pre-dynamics targets until the processed proxy measures
+            // like the strip
+            for _ in 0..3 {
+                t.rms_db += meas.rms_db - old.rms_db;
+                t.crest_db = (t.crest_db + meas.crest_db - old.crest_db).max(0.0);
+                t.attack_ratio_db += meas.attack_ratio_db - old.attack_ratio_db;
+                t.active = (t.active + meas.active - old.active).clamp(0.02, 1.0);
+                t.lra_lu = (t.lra_lu + meas.lra_lu - old.lra_lu).max(0.0);
+                if let (Some(f), Some(m), Some(o2)) = (t.floor_db, meas.floor_db, old.floor_db) {
+                    t.floor_db = Some(f + m - o2);
+                }
+                proxy = Proxy::fit(&t);
+                x = proxy.audio();
+                y = x.clone();
+                self.transfer.run_dynamics(s, &mut y, fs, 0.0, 0.0);
+                old = proxy.measure_audio(&y);
+            }
+        }
+        Some(Arc::new(DynFit {
+            proxy,
+            audio: x,
+            old,
+        }))
+    }
+
+    /// De-esser effect on a strip: per-band power change (dB) and the air-band frame crest change (dB).
+    fn deesser_effect(
+        &self,
+        o: &StripObs,
+        old: &StripSettings,
+        new: &StripSettings,
+    ) -> ([f64; N_ERB], f64) {
+        let mut d = [0.0; N_ERB];
+        if old.deesser == new.deesser {
+            return (d, 0.0);
+        }
+        let centres = erb40_centres_hz();
+        let f = &o.tap.features;
+        // sibilant share of each band above SIB_LO_HZ from the air band's frame crest
+        let crest = f.dynamics.crest_db[N_BROAD - 1].max(f.dynamics.crest_db[N_BROAD - 2]) as f64;
+        let share = (SIB_DUTY * p(crest)).clamp(0.0, 0.95);
+        let total: f64 = (0..N_ERB).map(|b| o.mid[b] + o.side[b]).sum();
+        let sib: [f64; N_ERB] = std::array::from_fn(|b| {
+            if centres[b] >= SIB_LO_HZ {
+                (o.mid[b] + o.side[b]) * share / SIB_DUTY
+            } else {
+                0.0
+            }
+        });
+        let effect = |s: &StripSettings| -> ([f64; N_ERB], f64) {
+            let Some(ds) = s.deesser.filter(|x| x.on) else {
+                return ([0.0; N_ERB], 0.0);
+            };
+            // a sibilant frame: the voice's own (non-sibilant) power plus the burst; the detector's HF part is
+            // the burst above the detector frequency
+            let hf: f64 = (0..N_ERB)
+                .filter(|&b| centres[b] as f64 >= ds.freq_hz * 0.8)
+                .map(|b| sib[b])
+                .sum();
+            let frame = total * (1.0 - share.min(0.9)) + sib.iter().sum::<f64>();
+            let red = self
+                .transfer
+                .deesser_reduction_db(&ds, db(hf / frame.max(1e-30)));
+            let shelf = self.transfer.deesser_shelf_db(&ds, red);
+            let air_idx: Vec<usize> = (0..N_ERB).filter(|&b| centres[b] >= 6000.0).collect();
+            let air_sib: f64 = air_idx.iter().map(|&b| sib[b] * p(shelf[b])).sum();
+            let air_all: f64 = air_idx.iter().map(|&b| sib[b]).sum();
+            let band: [f64; N_ERB] = std::array::from_fn(|b| {
+                let x = o.mid[b] + o.side[b];
+                if x <= 0.0 {
+                    return 0.0;
+                }
+                // sibilant frames carry `share` of the band's power (bands below SIB_LO_HZ: none)
+                let sh = if centres[b] >= SIB_LO_HZ { share } else { 0.0 };
+                // the shelf acts during sibilants; between them the release tail is ignored
+                db((1.0 - sh) + sh * p(shelf[b]))
+            });
+            let crest_peak = if air_all > 0.0 {
+                db(air_sib / air_all)
+            } else {
+                0.0
+            };
+            (band, crest_peak)
+        };
+        let (a, ca) = effect(old);
+        let (b, cb) = effect(new);
+        for i in 0..N_ERB {
+            d[i] = b[i] - a[i];
+        }
+        // air crest: the max frame (a sibilant) drops by the shelf, the mean by the band change
+        let c = erb40_centres_hz();
+        let air: Vec<usize> = (0..N_ERB).filter(|&i| c[i] >= 6000.0).collect();
+        let pw_old: f64 = air.iter().map(|&i| o.mid[i] + o.side[i]).sum();
+        let pw_new: f64 = air.iter().map(|&i| (o.mid[i] + o.side[i]) * p(d[i])).sum();
+        let mean_d = if pw_old > 0.0 {
+            db(pw_new / pw_old)
+        } else {
+            0.0
+        };
+        (d, (cb - ca) - mean_d)
+    }
+
     fn cached_delta(
         &self,
         o: &StripObs,
@@ -410,8 +605,8 @@ impl<'a> MixModel<'a> {
             ln.max(-144.0) - lo
         };
 
-        // dynamics (compressor + gate): mean, peak and range gain changes
-        let (mut dyn_mean, mut dyn_peak, mut dyn_range) = (0.0, 0.0, 0.0);
+        // dynamics (compressor + gate): mean, peak, range, crest, attack and all-frames changes
+        let mut dd = StripDelta::zero();
         if old.dynamics != new.dynamics
             || old.gate != new.gate
             || eq_d.iter().any(|&x| x != 0.0)
@@ -419,35 +614,62 @@ impl<'a> MixModel<'a> {
         {
             let shift = self.pre_dyn_shift(o, &eq_d, &cut_d, &Block::Dyn);
             let gate_shift = self.pre_dyn_shift(o, &eq_d, &cut_d, &Block::Gate);
-            let amp = |s: &StripSettings, l: f64, sh: f64, gsh: f64| {
-                dyn_amp(t, s, l + sh) * gate_amp(t, s, l + gsh)
+            let has_dyn = |s: &StripSettings| {
+                s.dynamics.is_some_and(|d| d.on) || s.gate.is_some_and(|g| g.on)
             };
-            let st = &o.stats;
-            let g_old = st.mean_gain_db(0.0, |l| amp(old, l, 0.0, 0.0));
-            let g_new = st.mean_gain_db(0.0, |l| amp(new, l, shift, gate_shift));
-            dyn_mean = g_new - g_old;
-            let pk = st.peak_db - 3.0;
-            let amp_pk = |s: &StripSettings, l: f64, sh: f64, gsh: f64| {
-                dyn_amp_peak(t, s, l + sh) * gate_amp(t, s, l + gsh)
+            let fit = if has_dyn(old) || has_dyn(new) {
+                self.dyn_fit(o)
+            } else {
+                None
             };
-            let a_old = 20.0 * amp_pk(old, pk, 0.0, 0.0).max(1e-9).log10();
-            let a_new = 20.0 * amp_pk(new, pk, shift, gate_shift).max(1e-9).log10();
-            dyn_peak = a_new - a_old;
-            // half the short-term loudness range (LRA when measured, else the widest band range)
-            let sf = &o.tap.features;
-            let half = (sf
-                .loudness
-                .lra_lu
-                .unwrap_or_else(|| sf.dynamics.range_db.iter().copied().fold(0.0f32, f32::max))
-                as f64
-                * 0.5)
-                .clamp(0.5, 15.0);
-            let spread = |s: &StripSettings, sh: f64, gsh: f64| {
-                st.mean_gain_db(half, |l| amp(s, l, sh, gsh))
-                    - st.mean_gain_db(-half, |l| amp(s, l, sh, gsh))
-            };
-            dyn_range = spread(new, shift, gate_shift) - spread(old, 0.0, 0.0);
+            if let Some(fit) = fit {
+                let mut y = fit.audio.clone();
+                t.run_dynamics(new, &mut y, crate::proxy::FS, gate_shift, shift);
+                let st = fit.proxy.measure_audio(&y);
+                let old_st = &fit.old;
+                dd.dyn_mean_db = st.rms_db - old_st.rms_db;
+                dd.dyn_peak_db = st.peak_db - old_st.peak_db;
+                dd.dyn_range_db = st.lra_lu - old_st.lra_lu;
+                dd.dyn_crest_db = st.crest_db - old_st.crest_db;
+                dd.dyn_attack_db = st.attack_ratio_db - old_st.attack_ratio_db;
+                dd.dyn_all_db = st.rms_all_db - old_st.rms_all_db;
+                dd.dyn_active = st.active - old_st.active;
+            } else if has_dyn(old) || has_dyn(new) {
+                let amp = |s: &StripSettings, l: f64, sh: f64, gsh: f64| {
+                    dyn_amp(t, s, l + sh) * gate_amp(t, s, l + gsh)
+                };
+                let st = &o.stats;
+                let g_old = st.mean_gain_db(0.0, |l| amp(old, l, 0.0, 0.0));
+                let g_new = st.mean_gain_db(0.0, |l| amp(new, l, shift, gate_shift));
+                dd.dyn_mean_db = g_new - g_old;
+                let pk = st.peak_db - 3.0;
+                let amp_pk = |s: &StripSettings, l: f64, sh: f64, gsh: f64| {
+                    dyn_amp_peak(t, s, l + sh) * gate_amp(t, s, l + gsh)
+                };
+                let a_old = 20.0 * amp_pk(old, pk, 0.0, 0.0).max(1e-9).log10();
+                let a_new = 20.0 * amp_pk(new, pk, shift, gate_shift).max(1e-9).log10();
+                dd.dyn_peak_db = a_new - a_old;
+                // half the short-term loudness range (LRA when measured, else the widest band range)
+                let sf = &o.tap.features;
+                let half =
+                    (sf.loudness.lra_lu.unwrap_or_else(|| {
+                        sf.dynamics.range_db.iter().copied().fold(0.0f32, f32::max)
+                    }) as f64
+                        * 0.5)
+                        .clamp(0.5, 15.0);
+                let spread = |s: &StripSettings, sh: f64, gsh: f64| {
+                    st.mean_gain_db(half, |l| amp(s, l, sh, gsh))
+                        - st.mean_gain_db(-half, |l| amp(s, l, sh, gsh))
+                };
+                dd.dyn_range_db = spread(new, shift, gate_shift) - spread(old, 0.0, 0.0);
+                dd.dyn_crest_db = dd.dyn_peak_db - dd.dyn_mean_db;
+                dd.dyn_all_db = dd.dyn_mean_db;
+            }
         }
+        let (deess_d, deess_crest) = self.deesser_effect(o, old, new);
+        dd.deess_crest_db = deess_crest;
+        let dyn_mean = dd.dyn_mean_db;
+        let k_new = (o.main_k * p(dd.dyn_all_db - dd.dyn_mean_db)).clamp(0.0, 1.0);
 
         let (m_old, s_old, _, _) = self.pan_factors(o.kind, old);
         let (m_new, s_new, _, _) = self.pan_factors(o.kind, new);
@@ -455,7 +677,7 @@ impl<'a> MixModel<'a> {
         let mut side = [0.0; N_ERB];
         let mut mid_db = [0.0; N_ERB];
         for b in 0..N_ERB {
-            let g = p(eq_d[b] + cut_d[b] + fader_d + dyn_mean);
+            let g = p(eq_d[b] + cut_d[b] + fader_d + dyn_mean + deess_d[b]);
             if is_input(o.kind) && o.settings.pan.is_some() {
                 let src = o.mid[b] / m_old.max(1e-6);
                 mid[b] = src * m_new * g;
@@ -480,17 +702,10 @@ impl<'a> MixModel<'a> {
         } else {
             0.0
         };
-        (
-            StripDelta {
-                mid_db,
-                level_db,
-                dyn_peak_db: dyn_peak,
-                dyn_mean_db: dyn_mean,
-                dyn_range_db: dyn_range,
-            },
-            mid,
-            side,
-        )
+        dd.mid_db = mid_db;
+        dd.level_db = level_db;
+        dd.main_k = k_new;
+        (dd, mid, side)
     }
 
     /// Predict the features after `state`'s settings replace the measured ones.
@@ -509,26 +724,25 @@ impl<'a> MixModel<'a> {
             } else {
                 (
                     StripDelta {
-                        mid_db: [0.0; N_ERB],
-                        level_db: 0.0,
-                        dyn_peak_db: 0.0,
-                        dyn_mean_db: 0.0,
-                        dyn_range_db: 0.0,
+                        main_k: o.main_k,
+                        ..StripDelta::zero()
                     },
                     o.mid,
                     o.side,
                 )
             };
+            let (k0, k1) = (o.main_k, d.main_k);
             if changed {
                 for b in 0..N_ERB {
-                    mm[b] += mid[b] - o.mid[b];
-                    ms[b] += side[b] - o.side[b];
+                    mm[b] += mid[b] * k1 - o.mid[b] * k0;
+                    ms[b] += side[b] * k1 - o.side[b] * k0;
                 }
                 if is_input(o.kind) && o.settings.pan.is_some() {
                     let (m_old, _, gl0, gr0) = self.pan_factors(o.kind, &o.settings);
                     let (_, _, gl1, gr1) = self.pan_factors(o.kind, &new);
-                    let src: f64 = o.mid.iter().sum::<f64>() / m_old.max(1e-6);
-                    let g = mid.iter().sum::<f64>() / (o.mid.iter().sum::<f64>()).max(1e-300);
+                    let src: f64 = k0 * o.mid.iter().sum::<f64>() / m_old.max(1e-6);
+                    let g =
+                        k1 * mid.iter().sum::<f64>() / (k0 * o.mid.iter().sum::<f64>()).max(1e-300);
                     let (m_new, _, _, _) = self.pan_factors(o.kind, &new);
                     let g_src = g * m_old / m_new.max(1e-6);
                     l_add += src * (g_src * gl1 * gl1 - gl0 * gl0);
@@ -543,8 +757,10 @@ impl<'a> MixModel<'a> {
                 0.0
             };
             shares.push(Share {
-                band_old: std::array::from_fn(|i| self.broad[i].iter().map(|&b| o.mid[b]).sum()),
-                band_new: std::array::from_fn(|i| self.broad[i].iter().map(|&b| mid[b]).sum()),
+                band_old: std::array::from_fn(|i| {
+                    self.broad[i].iter().map(|&b| k0 * o.mid[b]).sum()
+                }),
+                band_new: std::array::from_fn(|i| self.broad[i].iter().map(|&b| k1 * mid[b]).sum()),
                 d_peak: d_rms - d.dyn_mean_db + d.dyn_peak_db,
                 obs: o,
                 delta: d.clone(),
@@ -602,6 +818,11 @@ impl<'a> MixModel<'a> {
         if d.mid_db.iter().all(|&x| x == 0.0)
             && d.dyn_peak_db == 0.0
             && d.dyn_range_db == 0.0
+            && d.dyn_crest_db == 0.0
+            && d.dyn_attack_db == 0.0
+            && d.dyn_all_db == d.dyn_mean_db
+            && d.dyn_active == 0.0
+            && d.deess_crest_db == 0.0
             && *mid == o.mid
             && *side == o.side
         {
@@ -623,10 +844,13 @@ impl<'a> MixModel<'a> {
         if let Some(i) = f.loudness.integrated_lufs.as_mut() {
             *i += dl;
         }
-        f.loudness.rms_dbfs += d_rms;
+        // all-frames RMS: the spectral (active-frame) change with the dynamics' all-frames change
+        let d_rms_all = d_rms + (d.dyn_all_db - d.dyn_mean_db) as f32;
+        f.loudness.rms_dbfs += d_rms_all;
         f.loudness.sample_peak_dbfs += d_peak;
         f.loudness.true_peak_dbtp += d_peak;
-        f.loudness.crest_db += d_peak - d_rms;
+        f.loudness.crest_db += d_peak - d_rms_all;
+        f.quality.gated_fraction = (f.quality.gated_fraction - d.dyn_active as f32).clamp(0.0, 1.0);
         f.loudness.psr_db += d_peak - dl;
         if let Some(x) = f.loudness.plr_db.as_mut() {
             *x += d_peak - dl;
@@ -634,11 +858,13 @@ impl<'a> MixModel<'a> {
         if let Some(x) = f.loudness.lra_lu.as_mut() {
             *x = (*x + d.dyn_range_db as f32).max(0.0);
         }
-        let crest_d = (d.dyn_peak_db - d.dyn_mean_db) as f32;
+        let crest_d = d.dyn_crest_db as f32;
         for i in 0..N_BROAD {
             f.dynamics.crest_db[i] += crest_d;
+            f.dynamics.attack_ratio_db[i] += d.dyn_attack_db as f32;
             f.dynamics.range_db[i] = (f.dynamics.range_db[i] + d.dyn_range_db as f32).max(0.0);
         }
+        f.dynamics.crest_db[N_BROAD - 1] += d.deess_crest_db as f32;
         let l = window_loudness(f) as f64 + t.gain_to_main_db as f64;
         for b in 0..N_ERB {
             f.spectrum.erb_mid_rel_db[b] = rel(mid[b], l);
@@ -692,6 +918,7 @@ impl<'a> MixModel<'a> {
         let mut bpk_new = [0.0f64; N_BROAD];
         let mut d_lra = 0.0;
         let mut d_range = [0.0f64; N_BROAD];
+        let mut d_attack = [0.0f64; N_BROAD];
         let new_b: [f64; N_BROAD] =
             std::array::from_fn(|i| self.broad[i].iter().map(|&b| mm[b]).sum());
         for sh in shares {
@@ -700,11 +927,20 @@ impl<'a> MixModel<'a> {
             let tp = sf.loudness.true_peak_dbtp as f64 + g;
             pk_old += p(tp);
             pk_new += p(tp + sh.d_peak);
-            let crest_d = sh.delta.dyn_peak_db - sh.delta.dyn_mean_db;
             for i in 0..N_BROAD {
+                let crest_d = sh.delta.dyn_crest_db
+                    + if i == N_BROAD - 1 {
+                        sh.delta.deess_crest_db
+                    } else {
+                        0.0
+                    };
                 let c = sf.dynamics.crest_db[i] as f64;
                 bpk_old[i] += sh.band_old[i] * p(c);
                 bpk_new[i] += sh.band_new[i] * p(c + crest_d);
+                if sh.delta.dyn_attack_db != 0.0 {
+                    let w = (sh.band_new[i] / new_b[i].max(1e-300)).min(1.0);
+                    d_attack[i] += w * sh.delta.dyn_attack_db;
+                }
                 if sh.delta.dyn_range_db != 0.0 {
                     let w = (sh.band_new[i] / new_b[i].max(1e-300)).min(1.0);
                     d_range[i] += w * sh.delta.dyn_range_db;
@@ -749,6 +985,7 @@ impl<'a> MixModel<'a> {
         }
         for i in 0..N_BROAD {
             f.dynamics.crest_db[i] += d_crest[i].clamp(-12.0, 12.0) as f32;
+            f.dynamics.attack_ratio_db[i] += d_attack[i].clamp(-12.0, 12.0) as f32;
             f.dynamics.range_db[i] =
                 (f.dynamics.range_db[i] + d_range[i].clamp(-12.0, 12.0) as f32).max(0.0);
         }

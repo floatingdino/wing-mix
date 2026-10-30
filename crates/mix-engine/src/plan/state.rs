@@ -4,8 +4,14 @@
 //! Param names follow the generic mapping (docs/research/remit.md appendix A.1, mix-sim/mix-wing): `fader`, `pan`,
 //! `filter/lowcut.{on,freq,slope}`, `filter/highcut.*`, `eq/{on,mix,model}`, `eq/{low,high}.{gain,freq,q,type}`,
 //! `eq/band.N.{gain,freq,q}`, `dyn/{on,model,threshold,ratio,knee,detector,makeup,mix}`, `gate/{on,threshold,
-//! range,ratio}`. Strips whose EQ/dynamics model is not the standard one (`STD` / `COMP`) are reported as
-//! unmodelled for that block, so the planner never proposes moves it cannot predict.
+//! range,ratio,attack,hold,release}`, `dyn/{attack,hold,release,envelope,auto}`. Strips whose EQ/dynamics model is
+//! not the standard one (`STD` / `COMP`, gate slot `GATE`) are reported as unmodelled for that block, so the planner
+//! never proposes moves it cannot predict; the one exception is the `DS902` de-esser, modelled in either dynamics
+//! slot ([`DeEsserSettings`]).
+//!
+//! Model-dependent params (M035): a WING model switch re-maps the slot's params, so a snapshot taken under `GATE`
+//! has no specs for the `DS902` leaves. [`ConsoleState::apply`] registers the specs of a model when a candidate
+//! switches to it ([`model_specs`]), so remit checks and value coercion see the params the console will have.
 
 use std::collections::BTreeMap;
 
@@ -113,8 +119,28 @@ impl ConsoleState {
     /// Apply changes (later ones win); unknown params are ignored.
     pub fn apply(&mut self, changes: &[ParamChange]) {
         for c in changes {
-            if self.specs.contains_key(&c.param) {
-                self.values.insert(c.param.clone(), c.to.clone());
+            self.apply_one(c);
+        }
+    }
+
+    /// Apply one change; a switch of a dynamics slot model the planner knows registers that model's params
+    /// (with their console defaults, unless already present).
+    pub fn apply_one(&mut self, c: &ParamChange) {
+        if !self.specs.contains_key(&c.param) {
+            return;
+        }
+        self.values.insert(c.param.clone(), c.to.clone());
+        let (Some(strip), Some(block)) = (c.param.strip(), c.param.block()) else {
+            return;
+        };
+        if c.param.leaf() == "model" && matches!(block, "gate" | "dyn") {
+            if let Some(m) = c.to.as_str() {
+                for (spec, v) in model_specs(&strip, block, m) {
+                    if !self.specs.contains_key(&spec.id) {
+                        self.values.insert(spec.id.clone(), v);
+                        self.specs.insert(spec.id.clone(), spec);
+                    }
+                }
             }
         }
     }
@@ -201,6 +227,34 @@ pub struct DynSettings {
     pub peak_detector: bool,
     /// Attack (ms): transients shorter than this pass partly uncompressed.
     pub attack_ms: f64,
+    /// Hold (ms).
+    pub hold_ms: f64,
+    /// Release (ms).
+    pub release_ms: f64,
+    /// Envelope `LIN` (constant dB rate) instead of `LOG` (one-pole).
+    pub lin_env: bool,
+    /// WING AUTO (programme-dependent dual release; attack instant with the RMS detector).
+    pub auto: bool,
+}
+
+impl DynSettings {
+    /// A compressor with WING's COMP defaults for the fields a caller does not set.
+    pub fn new(on: bool, threshold_db: f64, ratio: f64) -> Self {
+        DynSettings {
+            on,
+            threshold_db,
+            ratio,
+            knee: 3,
+            makeup_db: 0.0,
+            mix_pct: 100.0,
+            peak_detector: false,
+            attack_ms: 50.0,
+            hold_ms: 20.0,
+            release_ms: 150.0,
+            lin_env: false,
+            auto: true,
+        }
+    }
 }
 
 /// The standard gate (`GATE` model) as a downward expander/gate on the detected level.
@@ -211,6 +265,105 @@ pub struct GateSettings {
     pub range_db: f64,
     /// Expansion ratio 1:N below threshold (`f64::INFINITY` = gate).
     pub ratio: f64,
+    /// Attack, hold, release (ms, WING 10-90 % times).
+    pub attack_ms: f64,
+    pub hold_ms: f64,
+    pub release_ms: f64,
+}
+
+impl GateSettings {
+    /// A gate with WING's GATE defaults for the timing fields.
+    pub fn new(on: bool, threshold_db: f64, range_db: f64, ratio: f64) -> Self {
+        GateSettings {
+            on,
+            threshold_db,
+            range_db,
+            ratio,
+            attack_ms: 10.0,
+            hold_ms: 10.0,
+            release_ms: 200.0,
+        }
+    }
+}
+
+/// Dynamics slot holding a de-esser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynSlot {
+    Gate,
+    Dyn,
+}
+
+impl DynSlot {
+    /// Generic block name (`gate` / `dyn`).
+    pub fn block(self) -> &'static str {
+        match self {
+            DynSlot::Gate => "gate",
+            DynSlot::Dyn => "dyn",
+        }
+    }
+}
+
+/// The WING `DS902` de-esser (dbx 902 style: HF/total energy ratio, no threshold), in a dynamics slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeEsserSettings {
+    pub on: bool,
+    pub slot: DynSlot,
+    /// Detector/shelf frequency (800..8000 Hz).
+    pub freq_hz: f64,
+    /// Maximum reduction (0..12 dB).
+    pub range_db: f64,
+    /// `HF` (dynamic high shelf) or `FULL` (wide-band gain).
+    pub hf_mode: bool,
+    /// Wet/dry mix of the slot (%).
+    pub mix_pct: f64,
+}
+
+/// Model whose slot params the planner knows without a snapshot (see [`model_specs`]).
+pub const DEESSER_MODEL: &str = "DS902";
+
+/// Specs of the params a dynamics slot (`<strip>/<block>/`) has under `model`, for models the planner proposes
+/// switching to (`DS902`: `f` 800..8000 Hz, `range` 0..12 dB, `mode` FULL/HF; wing-blocks `DeEsser902`).
+pub fn model_specs(strip: &StripId, block: &str, model: &str) -> Vec<(ParamSpec, Value)> {
+    use mix_core::units::Unit;
+    use mix_surface::ParamClass;
+    if model != DEESSER_MODEL {
+        return Vec::new();
+    }
+    let id = |leaf: &str| ParamId::of(strip, &format!("{block}/{leaf}"));
+    let dep = |mut s: ParamSpec| {
+        s.model_dependent = true;
+        s
+    };
+    vec![
+        (
+            dep(ParamSpec::float(
+                id("f"),
+                ParamClass::Dynamics,
+                Unit::Hz,
+                800.0,
+                8000.0,
+            )),
+            Value::Float(5000.0),
+        ),
+        (
+            dep(ParamSpec::float(
+                id("range"),
+                ParamClass::Dynamics,
+                Unit::Db,
+                0.0,
+                12.0,
+            )),
+            Value::Float(4.0),
+        ),
+        (
+            dep(ParamSpec::enumeration(
+                id("mode"),
+                ParamClass::Dynamics,
+                &["FULL", "HF"],
+            )),
+            Value::Enum("HF".into()),
+        ),
+    ]
 }
 
 /// Everything about one strip the effect model reads.
@@ -230,6 +383,8 @@ pub struct StripSettings {
     /// `None` when absent or not the standard compressor.
     pub dynamics: Option<DynSettings>,
     pub gate: Option<GateSettings>,
+    /// A `DS902` de-esser in the gate or dynamics slot.
+    pub deesser: Option<DeEsserSettings>,
     /// Blocks in signal order (topology chain).
     pub chain: Vec<Block>,
 }
@@ -305,6 +460,10 @@ impl StripSettings {
                 mix_pct: f("dyn/mix").unwrap_or(100.0),
                 peak_detector: st.str(id, "dyn/detector") == Some("PEAK"),
                 attack_ms: f("dyn/attack").unwrap_or(10.0),
+                hold_ms: f("dyn/hold").unwrap_or(20.0),
+                release_ms: f("dyn/release").unwrap_or(150.0),
+                lin_env: st.str(id, "dyn/envelope") == Some("LIN"),
+                auto: b("dyn/auto").unwrap_or(false),
             })
         })
         .flatten();
@@ -321,9 +480,26 @@ impl StripSettings {
                         Some("1:4") => 4.0,
                         _ => f64::INFINITY,
                     },
+                    attack_ms: f("gate/attack").unwrap_or(10.0),
+                    hold_ms: f("gate/hold").unwrap_or(10.0),
+                    release_ms: f("gate/release").unwrap_or(200.0),
                 })
             })
             .flatten();
+        let deesser = [DynSlot::Gate, DynSlot::Dyn].into_iter().find_map(|slot| {
+            let blk = slot.block();
+            if st.str(id, &format!("{blk}/model")) != Some(DEESSER_MODEL) {
+                return None;
+            }
+            Some(DeEsserSettings {
+                on: b(&format!("{blk}/on"))?,
+                slot,
+                freq_hz: f(&format!("{blk}/f")).unwrap_or(5000.0),
+                range_db: f(&format!("{blk}/range")).unwrap_or(4.0),
+                hf_mode: st.str(id, &format!("{blk}/mode")) != Some("FULL"),
+                mix_pct: f(&format!("{blk}/mix")).unwrap_or(100.0),
+            })
+        });
         StripSettings {
             id: id.clone(),
             fader_db: f("fader"),
@@ -336,6 +512,7 @@ impl StripSettings {
             eq,
             dynamics,
             gate,
+            deesser,
             chain: st.strip(id).map(|s| s.chain.clone()).unwrap_or_default(),
         }
     }

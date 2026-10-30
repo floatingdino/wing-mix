@@ -701,6 +701,7 @@ dependencies = [
  "mix-knowledge",
  "mix-reference",
  "mix-sim",
+ "mix-sources",
  "mix-stems",
  "mix-surface",
  "serde",

@@ -455,6 +455,10 @@ impl Gen<'_> {
                     mix_pct: d.mix_pct,
                     peak_detector: pr.detector.as_deref() == Some("peak"),
                     attack_ms: pr.attack_ms.mid(),
+                    hold_ms: d.hold_ms,
+                    release_ms: pr.release_ms.mid(),
+                    lin_env: false,
+                    auto: false,
                 };
                 let gr = stats.mean_gain_db(0.0, |l| 10f64.powf(t.comp_gain_db(&probe, l) / 20.0));
                 let makeup = if pr.makeup.as_deref() == Some("loudness_match") {
