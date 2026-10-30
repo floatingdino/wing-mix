@@ -59,7 +59,7 @@ nothing else happens.
 | `list_roles` | | `{"key","strips":[{"strip","name","detected","effective","confidence","evidence","confirmed","needs_confirmation"}]}` |
 | `confirm_roles` | `roles` (`{"bus.5":"monitor"}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none), `scene` | `{"key","confirmed","applies":"now"}`. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
 | `set_mode` | `mode`: `observe` / `suggest` / `autopilot` | |
-| `set_live_context` | `context`: `live` (default) / `broadcast_video` / `match_record` | `{"live_context","applied":false,"note"}`: the live-context target setting (M037). **Seam:** stored, shown in `status`/`snapshot` (`live_context`) and announced as a `live_context_changed` daemon event; the target transform itself lands with M037 (`applied` turns `true` then). |
+| `set_live_context` | `context`: `live` (default) / `broadcast_video` / `match_record` | `{"live_context","applied","target"}` (M037/M054). `mix_describe::apply_context` is applied to the loaded target (reference or description) on every load and on every change, always from the raw profile (switching is an exact revert); a running controller is rebuilt and re-plans. `applied` is `true` once a target is loaded (`false` before: the setting is stored and applied on the next load); `target` is the context summary below (null without a target). Announced as a `live_context_changed {live_context, applied}` daemon event on change. Effects are recorded in the target's `applied_deltas` as `context:<name>` (so problems list it in `terms`). |
 | `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `target_objective`, `inspect`, `feedback_guard` | `{"running":true,"mode"}`; needs a console, an input and a target |
 | `stop` | | ends the loop: controller stops, actuator freezes (session kept: `undo`/`PANIC` still work; `start` resumes) |
 | `STOP` (`emergency_stop`) | | freezes every move now; the loop pauses until `resume` |
@@ -133,7 +133,9 @@ of main-tap audio analysed), `unix`, and the event's own fields.
 ## Snapshot
 
 ```text
-at_s, mode, live_context, console {kind,name}, target {kind,label,info}
+at_s, mode, live_context, live_context_applied, console {kind,name}, target {kind,label,info,context}
+           (target.context: {context, applied, plr_db, psr_p50_db, lra_lu, band_width_p50_db[6], deltas} of the effective target;
+            `deltas` counts the context's applied_deltas entries, 1 = marker only = match_record)
 loudness   {momentary_lufs, short_term_lufs, true_peak_dbtp, crest_db, tilt_db_per_oct, width_db, correlation}
 spectrum   {erb_hz[40], current_erb_rel_db, target_erb_rel_db (p50), target_erb_lo_db (p10), target_erb_hi_db (p90),
             tolerance_db, third_oct_hz[31], current_third_oct_db, target_third_oct_rel_db}
@@ -156,7 +158,7 @@ The current spectrum is the short-term (3 s) main analysis, refreshed every 0.5 
 
 `status.json` and `status`: `running`, `pid`, `version`, `updated_unix`, `uptime_s`, `state_dir`,
 `console {kind,name,key,scene}`, `input {kind,description,sample_rate,taps,dropped_frames,clock_s,stream_errors}`,
-`target {kind,label}`, `loading {what,stage,progress}`, `mode`, `live_context`, `session {running,stopped,holding,objective,distance,
+`target {kind,label}`, `loading {what,stage,progress}`, `mode`, `live_context`, `live_context_applied`, `session {running,stopped,holding,objective,distance,
 batches,pending,touched}`, `safety {status,trips,rta_feed}`, `subscribers`, `last_error`. Absent parts are `null`.
 
 ## Threads
@@ -217,7 +219,7 @@ wing-mix-cli run --console 192.168.1.20 --input WING --channels 1,2 --solo-chann
 ## Tests
 
 `tests/daemon_signals.rs` (SIGTERM during autopilot, SIGINT idle, mid-session role confirmation, live-context
-setting), `tests/rta_feed.rs` (headless wing-sim via mix-testsim: RTA claimed, frames fed, restored; skips without
+setting), `tests/daemon_sim.rs::daemon_live_context_switch_changes_target_and_problems` (M054), `tests/rta_feed.rs` (headless wing-sim via mix-testsim: RTA claimed, frames fed, restored; skips without
 the wing-sim binary), `gate.rs` unit test (a bus confirmed as monitor mid-session is refused on the next write).
 
 `cargo test -p wing-mixd`: protocol parsing, tap layouts, the socket server (round trip, stale socket, AddrInUse,

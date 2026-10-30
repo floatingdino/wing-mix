@@ -70,6 +70,9 @@ pub struct DaemonStatus {
     /// Live-context target setting (`live`, `broadcast_video`, `match_record`).
     #[serde(default)]
     pub live_context: crate::protocol::LiveContext,
+    /// The context has been applied to the loaded target (false while no target is loaded).
+    #[serde(default)]
+    pub live_context_applied: bool,
     /// `{"running":..,"stopped":..,"holding":..,"objective":..,"distance":..,"batches":..,"pending":..}` or null.
     pub session: Value,
     /// Safety monitor holds (`feedback_latched`, `feedback_suspect`, `ceiling_hold`, `stalled`), trip count and
