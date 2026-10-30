@@ -1,0 +1,64 @@
+class     path                        osc set    osc get    nat get    nat set    osc get  hash      event
+setup     /ch/1/gate/mdl                 GATE       GATE       GATE       GATE       GATE  45fcb409  no   OK
+setup     /ch/1/eq/mdl                    STD        STD        STD        STD        STD  efeb91f7  no   OK
+setup     /ch/1/dyn/mdl                  COMP       COMP       COMP       COMP       COMP  d4f3ea76  no   OK
+setup     /fx/1/mdl                      HALL       HALL       HALL       HALL       HALL  b6029705  no   OK
+trim      /ch/1/in/set/trim               2.5        2.5        2.5       -3.0       -3.0  94d5e284  yes  OK
+trim      /ch/1/in/set/inv                  1          1          1          0          0  1d3dffd7  yes  OK
+preamp    /io/in/LCL/1/g                 12.5       12.5       12.5        0.0        0.0  1cb9ce6b  yes  OK
+filter    /ch/1/flt/lc                      1          1          1          1          1  ae9ed8af  no   OK
+filter    /ch/1/flt/lcf                  80.0 80.1964263 80.1964263      120.0 119.992744  401e6cf6  yes  OK
+filter    /ch/1/flt/lcs                    18         18         18         24         24  d82e0a59  yes  OK
+filter    /ch/1/flt/hcf               12000.0 11994.4189 11994.4189     9000.0 8992.49414  a0426589  yes  OK
+filter    /ch/1/flt/tf                      1          1          1          0          0  1645ae3b  yes  OK
+gate      /ch/1/gate/on                     1          1          1          1          1  a8ddb867  no   OK
+gate      /ch/1/gate/thr                -35.0      -35.0      -35.0      -50.0      -50.0  8ba01d2c  yes  OK
+gate      /ch/1/gate/range               30.0       30.0       30.0       20.0       20.0  5cb3da79  yes  OK
+gate      /ch/1/gate/rel                150.0 150.334960 150.334960      300.0 299.957672  e44b71e2  yes  OK
+eq        /ch/1/eq/on                       1          1          1          1          1  ca1125d7  no   OK
+eq        /ch/1/eq/2g                    -4.0       -4.0       -4.0        3.0        3.0  f78f9e44  yes  OK
+eq        /ch/1/eq/2f                   350.0 350.574249 350.574249     2500.0 2499.79858  6185d2de  yes  OK
+eq        /ch/1/eq/2q                     2.0 1.99588191 1.99588191        0.7 0.70568180  a80f3da0  yes  OK
+eq        /ch/1/eq/leq                    PEQ        PEQ        PEQ        SHV        SHV  a98c037e  yes  OK
+dyn       /ch/1/dyn/on                      1          1          1          1          1  14464334  no   OK
+dyn       /ch/1/dyn/thr                 -20.0      -20.0      -20.0      -15.0      -15.0  104b1346  yes  OK
+dyn       /ch/1/dyn/ratio                 4.0        4.0        4.0        2.0        2.0  e04e3c9d  yes  OK
+dyn       /ch/1/dyn/att                  10.0       10.0       10.0       25.0       25.0  c058697c  yes  OK
+dyn       /ch/1/dyn/rel                 100.0 100.475456 100.475456      250.0 252.382934  24fa0d3d  yes  OK
+dyn       /ch/1/dyn/gain                  3.0        3.0        3.0        2.0        2.0  73dbae79  yes  OK
+insert    /ch/1/preins/ins                FX1        FX1        FX1        FX1        FX1  d8614367  no   OK
+insert    /ch/1/preins/on                   1          1          1          1          1  a4bbda02  no   OK
+insert    /ch/1/postins/ins               FX9        FX9        FX9       NONE       NONE  ef82f6ab  yes  OK
+fx        /fx/1/fxmix                    80.0       80.0       80.0      100.0      100.0  c6e0dcff  yes  OK
+fx        /fx/1/dcy                       2.0 2.03023719 2.03023719        1.5 1.51961016  b3068843  yes  OK
+fx        /fx/1/pdel                       20         20         20         30         30  26100d75  yes  OK
+send      /ch/1/send/1/on                   1          1          1          1          1  e8ee1755  no   OK
+send      /ch/1/send/1/lvl               -6.0       -6.0       -6.0      -10.0      -10.0  b46c4564  yes  OK
+send      /ch/1/send/1/mode              POST       POST       POST        PRE        PRE  b323907b  yes  OK
+send      /ch/1/send/1/pan              -30.0      -30.0      -30.0        0.0        0.0  7c48e000  yes  OK
+send      /ch/1/main/1/lvl               -2.0       -2.0       -2.0        0.0        0.0  bb0475cf  yes  OK
+send      /ch/1/main/1/on                   0          0          0          1          1  3682885e  yes  OK
+fader     /ch/1/fdr                      -5.0       -5.0       -5.0        0.0        0.0  38ae75c2  yes  OK
+pan       /ch/1/pan                      25.0       25.0       25.0      -40.0      -40.0  377bd1d2  yes  OK
+pan       /ch/1/wid                      80.0       80.0       80.0      100.0      100.0  2a3ec0a1  yes  OK
+mute      /ch/1/mute                        1          1          1          0          0  f50f69f8  yes  OK
+bus       /bus/1/fdr                     -4.0       -4.0       -4.0        0.0        0.0  815b19bb  yes  OK
+bus       /bus/1/eq/on                      1          1          1          1          1  285fdb82  no   OK
+bus       /bus/1/dyn/on                     1          1          1          0          0  ffd7074b  yes  OK
+main      /main/1/fdr                    -1.0       -1.0       -1.0        0.0        0.0  db1f6068  yes  OK
+main      /main/1/dyn/on                    1          1          1          0          0  bd56f50b  yes  OK
+mtx       /mtx/1/fdr                     -6.0       -6.0       -6.0        0.0        0.0  5099be86  yes  OK
+dca       /dca/1/fdr                     -3.0       -3.0       -3.0        0.0        0.0  3f634b8f  yes  OK
+solo      /cfg/solo/chtap                 AFL        AFL        AFL        PFL        PFL  8ed6cf59  yes  OK
+solo      /ch/1/$solo                       1          1          1          0          0  078508f7  yes  OK
+monitor   /cfg/mon/1/src                BUS.1      BUS.1      BUS.1     MAIN.1     MAIN.1  26cf4038  yes  OK
+rta       /cfg/rta/rtasrc                   1          1          1          2          2  2f381cec  yes  OK
+rta       /cfg/rta/rtatap              POSTEQ     POSTEQ     POSTEQ      PREEQ      PREEQ  f23ce8bd  yes  OK
+topology  /ch/1/name                  Kick In    Kick In    Kick In       Kick       Kick  c6ad548d  yes  OK
+topology  /ch/1/col                         3          3          3          5          5  5a46d1bc  yes  OK
+topology  /ch/1/tags                      #D1        #D1        #D1    #D1,#M2    #D1,#M2  24d89685  yes  OK
+topology  /bus/1/name                 IEM Vox    IEM Vox    IEM Vox   Drum Bus   Drum Bus  b8a2cec5  yes  OK
+topology  /io/out/LCL/1/grp               BUS        BUS        BUS       MAIN       MAIN  acb750db  yes  OK
+topology  /io/out/LCL/1/in                  3          3          3          1          1  a26cf540  yes  OK
+
+61/61 round trips OK
