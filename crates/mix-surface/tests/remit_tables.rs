@@ -232,6 +232,34 @@ fn confirmed_pairs_override_detection() {
     assert_eq!(pan(&ctx, "input.1", -100.0), "input-pair-spread");
     assert_eq!(pan(&ctx, "input.12", 100.0), "input-pair-spread");
     assert_eq!(pan(&ctx, "input.11", -100.0), "input-level-pan");
+    // a pair confirmed in the session (planner proposal accepted by the user): unnamed channels 1 + 9
+    let mut confirmed = RemitSession::default();
+    confirmed.confirm(RemitSession::pair_key(&id("input.9"), &id("input.30")));
+    let pan_s = |session: &RemitSession, strip: &str, to: f64| {
+        let req = WriteRequest::new(ParamId::new(format!("{strip}/pan")), ParamClass::Pan)
+            .change(0.0, to);
+        evaluate(&policy, &ctx, session, &req)
+    };
+    assert_eq!(
+        pan_s(&confirmed, "input.9", -100.0).rule.unwrap(),
+        "input-pair-spread"
+    );
+    assert_eq!(
+        pan_s(&confirmed, "input.9", 100.0).rule.unwrap(),
+        "input-level-pan"
+    );
+    // input.30 has a post-pan wedge send: still capped by coupling
+    let d = pan_s(&confirmed, "input.30", 100.0);
+    assert_eq!(
+        (d.rule.unwrap(), d.class.as_str()),
+        ("input-pair-spread".to_string(), "conditional")
+    );
+    // a monitor strip stays locked whatever the session says
+    confirmed.confirm(RemitSession::pair_key(&id("input.32"), &id("input.9")));
+    assert_eq!(
+        pan_s(&confirmed, "input.32", -100.0).class.as_str(),
+        "forbidden"
+    );
     ctx.unpair(&id("input.12"));
     assert_eq!(pan(&ctx, "input.1", -100.0), "input-level-pan");
     assert_eq!(pan(&ctx, "input.12", 100.0), "input-level-pan");

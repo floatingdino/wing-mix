@@ -273,6 +273,37 @@ pub struct RemitSession {
 }
 
 impl RemitSession {
+    /// Session key that confirms `left`/`right` as a stereo pair (M039): `pair:<left>+<right>`. Confirming it gives
+    /// both strips the pair's rules (`stereo_pair`) for this session, over any name-based detection.
+    pub fn pair_key(left: &StripId, right: &StripId) -> String {
+        format!("pair:{left}+{right}")
+    }
+
+    /// The stereo pair the session confirmed for `strip` (see [`RemitSession::pair_key`]).
+    pub fn confirmed_pair(&self, strip: &StripId) -> Option<StereoPair> {
+        use super::pairs::PairSide;
+        self.confirmed.iter().find_map(|k| {
+            let (l, r) = k.strip_prefix("pair:")?.split_once('+')?;
+            let (l, r) = (StripId::parse(l)?, StripId::parse(r)?);
+            if l == r {
+                return None;
+            }
+            if &l == strip {
+                Some(StereoPair {
+                    partner: r,
+                    side: PairSide::Left,
+                })
+            } else if &r == strip {
+                Some(StereoPair {
+                    partner: l,
+                    side: PairSide::Right,
+                })
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn confirm(&mut self, key: impl Into<String>) {
         self.confirmed.insert(key.into());
     }
@@ -498,7 +529,7 @@ pub fn evaluate(
     let matching: Vec<&Rule> = policy
         .rules
         .iter()
-        .filter(|r| rule_matches(r, strip, dest, &hosts, req))
+        .filter(|r| rule_matches(r, strip, dest, &hosts, req, session))
         .collect();
     let Some(top) = matching.iter().map(|r| r.priority).max() else {
         return Decision::deny(
@@ -585,6 +616,7 @@ fn rule_matches(
     dest: Option<&RemitStrip>,
     hosts: &[&RemitStrip],
     req: &WriteRequest,
+    session: &RemitSession,
 ) -> bool {
     let (param, class) = (&req.param, req.class);
     fn ok<T: PartialEq>(sel: &Option<Vec<T>>, v: &T) -> bool {
@@ -608,14 +640,21 @@ fn rule_matches(
         && (r.fx_host_roles.is_none()
             || (!hosts.is_empty() && hosts.iter().all(|h| ok(&r.fx_host_roles, &h.role))))
         && r.stereo_pair
-            .is_none_or(|want| stereo_pair_matches(strip, req) == want)
+            .is_none_or(|want| stereo_pair_matches(strip, req, session) == want)
 }
 
-/// `stereo_pair = true` selector (M039): the strip is a member of a stereo pair and, for a pan write, the requested
-/// value lies on the strip's own side (centre included). A pan write without a value cannot be checked and does
-/// not match (fail safe: the mono envelope applies).
-fn stereo_pair_matches(strip: &RemitStrip, req: &WriteRequest) -> bool {
-    let Some(pair) = &strip.pair else {
+/// `stereo_pair = true` selector (M039): the strip is a member of a stereo pair (confirmed this session, else
+/// detected) and, for a pan write, the requested value lies on the strip's own side (centre included). A pan write
+/// without a value cannot be checked and does not match (fail safe: the mono envelope applies). Only input/aux
+/// strips pair.
+fn stereo_pair_matches(strip: &RemitStrip, req: &WriteRequest, session: &RemitSession) -> bool {
+    if !matches!(strip.kind, StripKind::Input | StripKind::Aux) {
+        return false;
+    }
+    let Some(pair) = session
+        .confirmed_pair(&strip.id)
+        .or_else(|| strip.pair.clone())
+    else {
         return false;
     };
     if req.class != ParamClass::Pan {

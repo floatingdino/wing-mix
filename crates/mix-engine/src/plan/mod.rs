@@ -484,6 +484,22 @@ fn check_remit(
     let allow_conditional = cfg.allow_conditional;
     let mut clamped = false;
     let mut confirm = Vec::new();
+    // M039: confirmations the candidate assumes (a stereo pair the planner identified): checked as if confirmed
+    // and flagged, like any conditional move (without conditional moves the remit's own view applies)
+    let assumed: RemitSession;
+    let session = if allow_conditional && !c.assume.is_empty() {
+        let mut s = remit.session.clone();
+        for k in &c.assume {
+            if !s.is_confirmed(k) {
+                s.confirm(k.clone());
+                confirm.push(k.clone());
+            }
+        }
+        assumed = s;
+        &assumed
+    } else {
+        remit.session
+    };
     let mut kept = Vec::new();
     // a model switch re-maps the slot: later changes are checked against the console after the switch
     let mut scratch: Option<ConsoleState> = None;
@@ -497,7 +513,7 @@ fn check_remit(
         let mut req = WriteRequest::new(ch.param.clone(), spec.class);
         req.from = from.clone();
         req.to = Some(ch.to.clone());
-        let d = evaluate(remit.policy, remit.ctx, remit.session, &req);
+        let d = evaluate(remit.policy, remit.ctx, session, &req);
         match d.class {
             Verdict::Forbidden => return Err(format!("{}: forbidden ({})", ch.param, d.detail)),
             Verdict::Conditional if !allow_conditional => {
@@ -555,7 +571,7 @@ fn check_remit(
         if to != ch.to {
             let mut req2 = req.clone();
             req2.to = Some(to.clone());
-            if evaluate(remit.policy, remit.ctx, remit.session, &req2).class == Verdict::Forbidden {
+            if evaluate(remit.policy, remit.ctx, session, &req2).class == Verdict::Forbidden {
                 return Err(format!("{}: forbidden after envelope clamp", ch.param));
             }
         }
@@ -670,6 +686,14 @@ pub fn plan_with(
                     .max(s0),
             )
         };
+        let remit_pair = |a: &StripId, b: &StripId| {
+            input
+                .remit
+                .session
+                .confirmed_pair(a)
+                .or_else(|| input.remit.ctx.get(a).and_then(|x| x.pair.clone()))
+                .is_some_and(|p| &p.partner == b)
+        };
         let gen = candidates::Gen {
             kb,
             state: &state,
@@ -679,6 +703,7 @@ pub fn plan_with(
             source_of: &src_fn,
             stems: &stems,
             raise_to: &raise_fn,
+            remit_pair: &remit_pair,
         };
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut cands: Vec<Checked> = Vec::new();
@@ -1149,6 +1174,11 @@ fn annotate(
 }
 
 /// Group by phase (a move never runs before an earlier-selected move on the same param), insert inspect steps.
+/// A main-bus EQ move answering a mix tonal problem (candidates `main_eq`, rule `bus_master_eq`).
+fn is_voicing(m: &PlannedMove) -> bool {
+    m.rules.iter().any(|r| r == "bus_master_eq")
+}
+
 fn order(
     chosen: &[(usize, PlannedMove)],
     kb: &KnowledgeBase,
@@ -1170,7 +1200,18 @@ fn order(
         }
         eff.push((p, i, m));
     }
-    eff.sort_by_key(|x| (x.0, x.1));
+    // M039: main-bus voicing EQ (a mix-wide tonal deviation: room/PA voicing, `bus_master_eq`) runs first when it
+    // is the plan's biggest single gain: live engineers voice the system before balancing, and the loop re-plans
+    // after drifts and reverts, so a last-phase move with the largest benefit was rarely reached
+    let best_other = eff
+        .iter()
+        .filter(|x| !is_voicing(x.2))
+        .map(|x| x.2.benefit)
+        .fold(0.0f64, f64::max);
+    eff.sort_by_key(|x| {
+        let promoted = is_voicing(x.2) && x.2.benefit >= best_other;
+        (if promoted { 0 } else { x.0 + 1 }, x.1)
+    });
     let eff = split_moves(merge_moves(eff, input.state, cfg.max_changes), input, cfg);
     let orders: BTreeMap<String, u32> = kb
         .phases()

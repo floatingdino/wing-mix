@@ -70,6 +70,42 @@ fn render_main(sim: &SimSurface, frames: usize, sr: u32) -> Features {
     session(&t.left[..frames], &t.right[..frames], sr)
 }
 
+/// Per-strip end state (M039 diagnostics): source, level at the main relative to the main, stereo position, the
+/// console's fader/pan, and the strip's band shares.
+fn strip_report(sim: &SimSurface, strips: &[TapSpec], frames: usize, sr: u32, main: &Features) {
+    use mix_surface::Surface;
+    let kb = KnowledgeBase::embedded();
+    let taps: Vec<TapPoint> = strips.iter().map(|s| TapPoint::InputPost(s.ch)).collect();
+    sim.seek(0);
+    let r = sim.render_frames(frames, &taps);
+    let main_l = mix_engine::diagnosis::window_loudness(main);
+    for s in strips {
+        let t = r.tap(TapPoint::InputPost(s.ch)).unwrap();
+        let f = session(&t.left[..frames], &t.right[..frames], sr);
+        let id = mix_core::ids::StripId::new("input", s.ch as u32);
+        let tap = mix_engine::diagnosis::StripTap::new(id.clone(), &s.name, f.clone(), kb);
+        let v = |p: &str| {
+            sim.read(&mix_core::ids::ParamId::of(&id, p))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(f64::NAN)
+        };
+        let st = f.stereo.as_ref();
+        eprintln!(
+            "  {:9} {:8} {:16} rel {:+6.1} act {:.2} | fader {:+5.1} pan {:+4.0} | width {:+6.1} bal {:+5.1}",
+            id.as_str(),
+            s.name,
+            tap.source.clone().unwrap_or_default(),
+            mix_engine::diagnosis::window_loudness(&f) - main_l,
+            1.0 - f.quality.gated_fraction,
+            v("fader"),
+            v("pan"),
+            st.map_or(f32::NAN, |x| x.width_db),
+            st.map_or(f32::NAN, |x| x.balance_db),
+        );
+    }
+}
+
 /// One song's result: (start, closed loop, FOH) main-bus distances to the live target, feedback trips, refusals.
 struct SongRun {
     song: &'static str,
@@ -145,13 +181,42 @@ fn run_song(fx: &Fixture, id: &'static str, cache: &ProfileCache) -> Option<Song
     cfg.window_s = dur;
     cfg.max_batches = 24;
     let sim = console_with(&ex.multitrack, &scene, SimConfig::default()).unwrap();
-    let mut r = Rig::new(sim, dur, strips, target.clone(), cfg, default_policy());
+    let mut r = Rig::new(
+        sim,
+        dur,
+        strips.clone(),
+        target.clone(),
+        cfg,
+        default_policy(),
+    );
     // the operator accepts the conditional suggestions (compressors, gates)
     r.auto_confirm = true;
     r.run_until(30.0 * (dur + 4.0), |r| {
         r.ctl.holding().is_some() && !r.ctl.is_busy()
     });
     r.print_report(&format!("{id}, rough start, live target"));
+    if std::env::var("M039_LOAD").is_ok() {
+        if let Some(d) = r.ctl.diagnosis() {
+            let mut v: Vec<_> = d.problems.iter().collect();
+            v.sort_by(|a, b| b.score().total_cmp(&a.score()));
+            for p in v.iter().take(40) {
+                eprintln!(
+                    "  load {:52} score {:5.2} sev {:5.2} conf {:.2} | {}",
+                    p.id,
+                    p.score(),
+                    p.severity,
+                    p.confidence,
+                    p.explanation.chars().take(110).collect::<String>()
+                );
+            }
+        }
+    }
+    if std::env::var("M039_ACT").is_ok() {
+        for (t, e) in &r.act_log {
+            let s = format!("{e:?}");
+            eprintln!("  act {t:7.1} {}", &s[..s.len().min(400)]);
+        }
+    }
 
     let start = console_with(&ex.multitrack, &scene, SimConfig::default()).unwrap();
     let f_start = render_main(&start, frames, sr);
@@ -166,6 +231,9 @@ fn run_song(fx: &Fixture, id: &'static str, cache: &ProfileCache) -> Option<Song
             mix_engine::diagnosis::window_loudness(&f_start),
             mix_engine::diagnosis::window_loudness(&f_ctl)
         );
+    }
+    if std::env::var("M039_STRIPS").is_ok() {
+        strip_report(&r.sim, &strips, frames, sr, &f_ctl);
     }
     let (d_start, _) = main_score(&f_start, &target);
     let (d_ctl, _) = main_score(&f_ctl, &target);

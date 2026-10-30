@@ -360,20 +360,25 @@ struct Hit {
     trip: bool,
 }
 
+/// Peak-to-neighbouring-power ratio (dB) of band `b` against the two bands on each side: the band's level over the
+/// **power** mean of its neighbours (PNPR, the usual howling-detection feature). M039: the mean was taken in dB, so
+/// one neighbour falling silent (a bass note ending next to the next note) inflated a musical peak's prominence by
+/// 10 dB and more; in power the loudest neighbours dominate, as they do for the ear. Flat neighbours give the same
+/// value as before.
 fn prominence(frame: &[f32], b: usize) -> f64 {
     let lo = b.saturating_sub(2);
     let hi = (b + 2).min(frame.len() - 1);
     let (mut sum, mut n) = (0.0, 0.0);
     for (i, v) in frame.iter().enumerate().take(hi + 1).skip(lo) {
         if i != b {
-            sum += *v as f64;
+            sum += 10f64.powf(*v as f64 / 10.0);
             n += 1.0;
         }
     }
-    if n < 2.0 {
+    if n < 2.0 || sum <= 0.0 {
         return 0.0;
     }
-    frame[b] as f64 - sum / n
+    frame[b] as f64 - 10.0 * (sum / n).log10()
 }
 
 /// Third-octave band offsets of the partials of a tone in band `b`: 1/3, 1/2, 2, 3 and 4 times its frequency
@@ -1016,6 +1021,42 @@ mod tests {
         }
         assert!(m.take_trips().is_empty());
         assert!(!m.status().feedback_latched);
+    }
+
+    /// M039 (holy-forever closed loop, 80 Hz): a bass line moving from ~50 Hz to ~80 Hz. The new note swells 10 dB
+    /// over 2 s while the old note's band falls silent; with a dB mean of the neighbours the hole made the new note
+    /// look 12 dB prominent. The power mean (PNPR) sees the louder neighbour above it.
+    #[test]
+    fn bass_note_change_next_to_a_silent_band_does_not_trip() {
+        let m = SafetyMonitor::new(SafetyConfig::without_watchdog());
+        // the 0.6 s frames the loop fed: band 6 (80 Hz) and its neighbours 4, 5, 7, 8
+        let frames: [[f32; 5]; 8] = [
+            [-48.9, -45.5, -43.5, -38.2, -42.6],
+            [-56.2, -47.5, -45.9, -40.6, -44.1],
+            [-57.2, -48.3, -46.2, -40.3, -42.4],
+            [-60.2, -54.1, -46.4, -39.3, -52.6],
+            [-56.7, -48.0, -42.0, -34.6, -50.8],
+            [-44.3, -47.0, -39.0, -36.1, -44.8],
+            [-61.1, -48.5, -36.0, -37.0, -46.0],
+            [-61.1, -48.5, -34.5, -37.0, -46.0],
+        ];
+        for (i, f) in frames.iter().enumerate() {
+            let mut v = vec![-50.0f32; 31];
+            v[4..9].copy_from_slice(f);
+            m.feed_spectrum_at("main", i as f64 * 0.6, &v, &[]);
+        }
+        assert!(m.take_trips().is_empty());
+        // the same rise as a pure tone over steady neighbours still trips
+        let m = SafetyMonitor::new(SafetyConfig::without_watchdog());
+        for i in 0..8 {
+            let mut v = vec![-50.0f32; 31];
+            v[6] = -49.0 + 2.0 * i as f32;
+            m.feed_spectrum_at("main", i as f64 * 0.6, &v, &[]);
+        }
+        assert!(
+            matches!(m.take_trips().as_slice(), [Trip::Feedback { band: 6, .. }]),
+            "pure tone"
+        );
     }
 
     /// M036: what music does that the M041 detector took for feedback.
