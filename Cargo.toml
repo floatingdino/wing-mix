@@ -36,6 +36,9 @@ serde_json = "1"
 toml = "0.8"
 cpal = "0.15"
 hound = "3"
+realfft = "3.5"
+ebur128 = "0.1.11"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # [patch."https://github.com/floatingdino/wing-simulator"]
 # wing-proto = { path = "../wing-simulator/crates/wing-proto" }
@@ -50,6 +53,16 @@ opt-level = 2
 [profile.dev.package.wing-dsp]
 opt-level = 2
 [profile.dev.package.wing-engine]
+opt-level = 2
+
+# Analysis tests run FFTs and BS.1770 filters over tens of seconds of audio; unoptimised they are too slow.
+[profile.dev.package.mix-analysis]
+opt-level = 2
+[profile.dev.package.rustfft]
+opt-level = 2
+[profile.dev.package.realfft]
+opt-level = 2
+[profile.dev.package.ebur128]
 opt-level = 2
 
 [profile.release]

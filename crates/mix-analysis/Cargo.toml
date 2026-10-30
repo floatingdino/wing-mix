@@ -6,4 +6,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mix-core = { path = "../mix-core" }
+realfft = { workspace = true }
+ebur128 = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+serde_json = { workspace = true }
+
+[[bench]]
+name = "analysis"
+harness = false
