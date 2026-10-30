@@ -1,0 +1,16 @@
+/cfg/rta/$src  int [1 .. 76] = 1
+/cfg/rta/$tap  list [IN, POST, FILT, PREEQ, POSTEQ, PREFDR, GATEK, DYNK, DYNXO, PRETAP, SOLO, MON.PH, MON.SPK, FXIN, FXOUT] = IN
+/cfg/rta/$dec  list [SLOW, MED, FAST] = MED
+/cfg/rta/$det  list [PEAK, RMS] = PEAK
+/cfg/rta/rtasrc  int [0 .. 76] = 0
+/cfg/rta/rtatap  list [IN, POST, FILT, PREEQ, POSTEQ, PREFDR, GATEK, DYNK, DYNXO, PRETAP, SOLO, MON.PH, MON.SPK, FXIN, FXOUT] = IN
+/cfg/rta/rtadecay  list [SLOW, MED, FAST] = MED
+/cfg/rta/rtadet  list [PEAK, RMS, AVG] = PEAK
+/cfg/rta/rtarange  flist [30.0, 60.0] = 30
+/cfg/rta/rtagain  lin [-5 .. 50 dB], 56 steps = 0
+/cfg/rta/rtaauto  int [0 .. 1] = 1
+/cfg/rta/eqdecay  list [SLOW, MED, FAST] = MED
+/cfg/rta/eqdet  list [PEAK, RMS, AVG] = PEAK
+/cfg/rta/eqrange  flist [30.0, 60.0] = 30
+/cfg/rta/eqgain  lin [-5 .. 50 dB], 56 steps = 0
+/cfg/rta/eqauto  int [0 .. 1] = 1

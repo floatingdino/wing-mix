@@ -1,0 +1,6 @@
+81 packets in 4.0 s, 159 words (expected 159)
+ch1: inL=-25.9 inR=-26.6 outL=-25.9 outR=-26.6 gKey=-28.9 gGain=0.0 gLED=0 dKey=-28.9 dGain=0.0 dState=0 amix=0.0
+ch2: inL=-17.6 inR=-18.3 outL=-27.6 outR=-28.3 gKey=-20.6 gGain=0.0 gLED=0 dKey=-20.6 dGain=0.0 dState=0 amix=0.0
+ch40: inL=-38.1 inR=-38.8 outL=-128.0 outR=-128.0 gKey=-41.1 gGain=0.0 gLED=0 dKey=-41.1 dGain=0.0 dState=0 amix=0.0
+monitor: soloL/R mon1L/R mon2L/R dB = [-17.7, -17.7, -17.7, -17.7, -17.7, -17.7]
+rta: 120 bands, A4 (440 Hz, idx 53) = -35.3 dB; first 6 = [-55.2, -56.6, -57.8, -58.8, -59.4, -59.4]

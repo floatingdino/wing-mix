@@ -1,0 +1,9 @@
+/dca/1/name  str [maxlen 16] =
+/dca/1/col  int [1 .. 18] = 1
+/dca/1/icon  int [0 .. 999] = 0
+/dca/1/led  int [0 .. 1] = 0
+/dca/1/mute  int [0 .. 1] = 0
+/dca/1/fdr  fader [-144 .. 10 dB], 1024 steps = -144
+/dca/1/$solo  int [0 .. 1] = 0
+/dca/1/$sololed  int [0 .. 2] = 0
+/dca/1/mon  list [A, B, A+B] = A
