@@ -112,7 +112,10 @@ fn connected_batch_moves_together_and_jobs_run_one_at_a_time() {
         unreachable!()
     };
     assert_eq!((params.len(), *kind), (3, JobKind::Move));
-    assert!((duration_s - PI).abs() < 1e-9, "slowest param sets the pace");
+    assert!(
+        (duration_s - PI).abs() < 1e-9,
+        "slowest param sets the pace"
+    );
 
     let fq = r.writes_of("input.1/eq/band.1.freq");
     let gn = r.writes_of("input.1/eq/band.1.gain");
@@ -121,7 +124,10 @@ fn connected_batch_moves_together_and_jobs_run_one_at_a_time() {
     assert_eq!(fq[0].0, q[0].0);
     assert_eq!(fq.last().unwrap().0, gn.last().unwrap().0);
     assert_eq!(fq.last().unwrap().0, q.last().unwrap().0);
-    assert!(peak_rate(&fq, f64::log2, (0.0, 500.0)) < 0.6, "freq eased over the batch duration");
+    assert!(
+        peak_rate(&fq, f64::log2, (0.0, 500.0)) < 0.6,
+        "freq eased over the batch duration"
+    );
     assert!(peak_rate(&gn, |v| v, (0.0, 0.0)) <= 3.0 + 0.25 / r.dt);
     // gain quantised to 0.25 dB: every write is on the grid.
     assert!(gn.iter().all(|(_, v)| (v * 4.0).fract() == 0.0));
@@ -215,7 +221,8 @@ fn never_ramps_across_a_model_change() {
     assert!(r.a.write_log().is_empty());
 
     // The engineer changes the model while a gain ramps: abort, nothing written after.
-    let id = r.a.submit(mv("gain", &[("input.1/eq/band.1.gain", f(-6.0))]));
+    let id =
+        r.a.submit(mv("gain", &[("input.1/eq/band.1.gain", f(-6.0))]));
     r.run_for(0.5);
     let n = r.a.write_log().len();
     assert!(n > 0);
@@ -230,9 +237,10 @@ fn never_ramps_across_a_model_change() {
 
 #[test]
 fn malformed_batches_are_refused() {
-    let mut cfg = ActuatorConfig::default();
-    cfg.max_batch = 2;
-    let mut r = Rig::new(cfg);
+    let mut r = Rig::new(ActuatorConfig {
+        max_batch: 2,
+        ..Default::default()
+    });
     let empty = r.a.submit(Action::new("empty"));
     let big = r.a.submit(mv(
         "big",
@@ -314,16 +322,15 @@ fn undo_ramps_the_last_move_back() {
     assert!(r.done(id));
     assert_eq!(r.readf("input.1/eq/band.2.gain"), 0.0);
     assert!(r.a.write_log().len() > n + 2, "ramped, not stepped");
-    let labels: Vec<String> = r
-        .a
-        .journal()
-        .entries()
-        .iter()
-        .filter_map(|l| match &l.entry {
-            mix_surface::journal::Entry::Applied { batch } => Some(batch.label.clone()),
-            _ => None,
-        })
-        .collect();
+    let labels: Vec<String> =
+        r.a.journal()
+            .entries()
+            .iter()
+            .filter_map(|l| match &l.entry {
+                mix_surface::journal::Entry::Applied { batch } => Some(batch.label.clone()),
+                _ => None,
+            })
+            .collect();
     assert_eq!(labels, ["cut", "undo: cut"]);
 }
 

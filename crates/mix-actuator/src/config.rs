@@ -135,11 +135,29 @@ mod tests {
             ramp_for(&fader, &r, -80.0),
             Some((Space::Level { floor: -80.0 }, 6.0))
         );
-        let f = ParamSpec::float("input.1/eq/band.1.freq", ParamClass::Eq, Unit::Hz, 20.0, 2e4);
+        let f = ParamSpec::float(
+            "input.1/eq/band.1.freq",
+            ParamClass::Eq,
+            Unit::Hz,
+            20.0,
+            2e4,
+        );
         assert_eq!(ramp_for(&f, &r, -80.0), Some((Space::Log2, 1.0)));
-        let g = ParamSpec::float("input.1/eq/band.1.gain", ParamClass::Eq, Unit::Db, -15.0, 15.0);
+        let g = ParamSpec::float(
+            "input.1/eq/band.1.gain",
+            ParamClass::Eq,
+            Unit::Db,
+            -15.0,
+            15.0,
+        );
         assert_eq!(ramp_for(&g, &r, -80.0), Some((Space::Linear, 3.0)));
-        let att = ParamSpec::float("input.1/dyn/attack", ParamClass::Dynamics, Unit::Ms, 0.0, 120.0);
+        let att = ParamSpec::float(
+            "input.1/dyn/attack",
+            ParamClass::Dynamics,
+            Unit::Ms,
+            0.0,
+            120.0,
+        );
         assert_eq!(ramp_for(&att, &r, -80.0), Some((Space::Linear, 30.0)));
         let on = ParamSpec::boolean("input.1/eq/on", ParamClass::Eq);
         assert_eq!(ramp_for(&on, &r, -80.0), None);

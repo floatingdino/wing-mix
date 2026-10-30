@@ -15,9 +15,7 @@ use mix_core::value::Value;
 use mix_surface::journal::{Change, Conflict, Journal};
 use mix_surface::model::ParamClass;
 use mix_surface::remit::{Decision, InspectionKind, Reason, Verdict, WriteRequest};
-use mix_surface::surface::{
-    Origin, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent,
-};
+use mix_surface::surface::{Origin, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -550,11 +548,7 @@ impl Actuator {
         })
     }
 
-    fn plan_track(
-        &self,
-        c: &ParamChange,
-        restoring: bool,
-    ) -> Result<Option<Track>, Refusal> {
+    fn plan_track(&self, c: &ParamChange, restoring: bool) -> Result<Option<Track>, Refusal> {
         let surf = |e: SurfaceError| Refusal::Surface {
             param: c.param.clone(),
             error: e.to_string(),
@@ -622,12 +616,9 @@ impl Actuator {
             SoloTarget::Listen { .. } => InspectionKind::Listen,
         };
         let d = self.gate.check_inspection(kind, req.target.strip_id());
-        let saved = self
-            .surface
-            .solo_state()
-            .map_err(|e| Refusal::Inspection {
-                detail: e.to_string(),
-            })?;
+        let saved = self.surface.solo_state().map_err(|e| Refusal::Inspection {
+            detail: e.to_string(),
+        })?;
         if saved.is_destructive() {
             return Err(Refusal::DestructiveSolo);
         }
@@ -970,11 +961,7 @@ impl Actuator {
         if res.is_err() {
             let _ = self.surface.set_solo(&i.target, false);
         }
-        let exact = res.is_ok()
-            && self
-                .surface
-                .solo_state()
-                .is_ok_and(|s| s.active == want);
+        let exact = res.is_ok() && self.surface.solo_state().is_ok_and(|s| s.active == want);
         self.journal.note(format!(
             "{}: solo restored to {:?} (exact: {exact})",
             i.id, want

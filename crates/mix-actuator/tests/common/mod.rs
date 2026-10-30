@@ -13,7 +13,8 @@ use std::time::Duration;
 
 pub fn policy() -> Policy {
     Policy::load(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/remit/wing-default.toml"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/remit/wing-default.toml"),
     )
     .unwrap()
 }

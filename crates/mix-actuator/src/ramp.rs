@@ -81,7 +81,13 @@ pub struct Pending {
 }
 
 impl Track {
-    pub fn new(spec: ParamSpec, from: Value, to: Value, ramp: Option<(Space, f64)>, t0: f64) -> Self {
+    pub fn new(
+        spec: ParamSpec,
+        from: Value,
+        to: Value,
+        ramp: Option<(Space, f64)>,
+        t0: f64,
+    ) -> Self {
         let (x0, x1) = match (ramp, from.as_f64(), to.as_f64()) {
             (Some((s, _)), Some(a), Some(b)) => (s.to_x(a), s.to_x(b)),
             _ => (0.0, 0.0),
@@ -203,7 +209,13 @@ mod tests {
 
     #[test]
     fn track_reaches_exact_target() {
-        let spec = ParamSpec::float("input.1/eq/band.1.freq", ParamClass::Eq, Unit::Hz, 20.0, 2e4);
+        let spec = ParamSpec::float(
+            "input.1/eq/band.1.freq",
+            ParamClass::Eq,
+            Unit::Hz,
+            20.0,
+            2e4,
+        );
         let mut tr = Track::new(
             spec,
             Value::Float(500.0),

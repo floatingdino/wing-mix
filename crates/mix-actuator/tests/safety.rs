@@ -4,8 +4,7 @@ mod common;
 
 use common::*;
 use mix_actuator::{
-    AbortReason, ActuatorConfig, ActuatorEvent, InspectRequest, Job, PolicyGate, Refusal,
-    RemitGate,
+    AbortReason, ActuatorConfig, ActuatorEvent, InspectRequest, Job, PolicyGate, Refusal, RemitGate,
 };
 use mix_core::action::{Action, ParamChange};
 use mix_core::ids::{ParamId, StripId};
@@ -139,18 +138,17 @@ fn inspect_restores_the_exact_prior_solo_state() {
         r.s.set_solo(t, true).unwrap();
     }
     let saved = r.s.solo_state().unwrap();
-    let seen: Arc<Mutex<Vec<(f64, Vec<SoloTarget>)>>> = Arc::default();
+    type Seen = Vec<(f64, Vec<SoloTarget>)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
     let seen2 = seen.clone();
     let id = r.a.submit(Job::Inspect(
-        InspectRequest::strip(strip("input.1"), Duration::from_millis(1500)).measure(
-            move |v| {
-                seen2
-                    .lock()
-                    .unwrap()
-                    .push((v.now_s, v.surface.solo_state().unwrap().active));
-                vec![Action::new("trim fader").with(ParamChange::new("input.1/fader", -2.0))]
-            },
-        ),
+        InspectRequest::strip(strip("input.1"), Duration::from_millis(1500)).measure(move |v| {
+            seen2
+                .lock()
+                .unwrap()
+                .push((v.now_s, v.surface.solo_state().unwrap().active));
+            vec![Action::new("trim fader").with(ParamChange::new("input.1/fader", -2.0))]
+        }),
     ));
     r.tick();
     assert_eq!(
@@ -185,13 +183,15 @@ fn inspect_restores_the_exact_prior_solo_state() {
 #[test]
 fn inspect_keeps_solos_the_engineer_added_meanwhile() {
     let mut r = Rig::new(ActuatorConfig::default());
-    r.s.set_solo(&SoloTarget::strip(strip("bus.3")), true).unwrap();
+    r.s.set_solo(&SoloTarget::strip(strip("bus.3")), true)
+        .unwrap();
     r.a.submit(Job::Inspect(InspectRequest::strip(
         strip("input.1"),
         Duration::from_secs(2),
     )));
     r.run_for(0.5);
-    r.s.set_solo(&SoloTarget::strip(strip("input.4")), true).unwrap();
+    r.s.set_solo(&SoloTarget::strip(strip("input.4")), true)
+        .unwrap();
     r.run_idle(10.0);
     assert_eq!(
         r.s.solo_state().unwrap().active,
@@ -205,7 +205,8 @@ fn inspect_keeps_solos_the_engineer_added_meanwhile() {
 #[test]
 fn destructive_solo_mode_refuses_or_aborts_inspection() {
     let mut r = Rig::new(ActuatorConfig::default());
-    r.s.set_solo(&SoloTarget::strip(strip("bus.3")), true).unwrap();
+    r.s.set_solo(&SoloTarget::strip(strip("bus.3")), true)
+        .unwrap();
     r.s.set_solo_mode(SoloMode::Destructive);
     let id = r.a.submit(Job::Inspect(InspectRequest::strip(
         strip("input.1"),
@@ -269,11 +270,18 @@ fn engineer_move_pauses_the_batch_and_yields_the_param() {
     assert!(r
         .find(|e| matches!(e, ActuatorEvent::Yielded { param, .. } if *param == p("input.1/fader")))
         .is_some());
-    assert!(r.find(|e| matches!(e, ActuatorEvent::Paused { .. })).is_some());
-    assert!(r.find(|e| matches!(e, ActuatorEvent::Resumed { .. })).is_some());
+    assert!(r
+        .find(|e| matches!(e, ActuatorEvent::Paused { .. }))
+        .is_some());
+    assert!(r
+        .find(|e| matches!(e, ActuatorEvent::Resumed { .. }))
+        .is_some());
     // The engineer's value wins; no write of that param after the touch.
     assert_eq!(r.readf("input.1/fader"), -1.0);
-    assert!(r.writes_of("input.1/fader").iter().all(|(t, _)| *t <= t_ext));
+    assert!(r
+        .writes_of("input.1/fader")
+        .iter()
+        .all(|(t, _)| *t <= t_ext));
     // The rest of the batch held still during the cool-down, then finished.
     let w2 = r.writes_of("input.2/fader");
     assert!(w2
@@ -308,14 +316,13 @@ fn stop_freezes_in_place() {
             .is_some());
     }
     // Partial move is journaled (undoable).
-    assert_eq!(
-        r.a.journal().baseline(&p("input.1/fader")),
-        Some(&f(0.0))
-    );
+    assert_eq!(r.a.journal().baseline(&p("input.1/fader")), Some(&f(0.0)));
     let c = r.a.submit(mv("pan", "input.2/pan", 50.0));
     r.tick();
     assert!(r
-        .find(|e| matches!(e, ActuatorEvent::Refused { id, reason: Refusal::Stopped, .. } if *id == c))
+        .find(
+            |e| matches!(e, ActuatorEvent::Refused { id, reason: Refusal::Stopped, .. } if *id == c)
+        )
         .is_some());
     r.a.resume();
     let d = r.a.submit(mv("pan", "input.2/pan", 50.0));
@@ -326,7 +333,8 @@ fn stop_freezes_in_place() {
 #[test]
 fn stop_during_inspection_restores_solo() {
     let mut r = Rig::new(ActuatorConfig::default());
-    r.s.set_solo(&SoloTarget::strip(strip("bus.3")), true).unwrap();
+    r.s.set_solo(&SoloTarget::strip(strip("bus.3")), true)
+        .unwrap();
     let saved = r.s.solo_state().unwrap();
     r.a.submit(Job::Inspect(InspectRequest::strip(
         strip("input.1"),
@@ -381,7 +389,15 @@ fn panic_ramps_everything_back_to_baseline() {
             > 3
     );
     assert!(r.a.is_stopped());
-    assert!(r.find(|e| matches!(e, ActuatorEvent::Aborted { reason: AbortReason::Panic, .. })).is_some());
+    assert!(r
+        .find(|e| matches!(
+            e,
+            ActuatorEvent::Aborted {
+                reason: AbortReason::Panic,
+                ..
+            }
+        ))
+        .is_some());
 }
 
 #[test]
