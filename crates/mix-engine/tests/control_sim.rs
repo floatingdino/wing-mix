@@ -331,6 +331,37 @@ fn autopilot_first_batches_reduce_objective() {
     );
 }
 
+/// M067: a tight per-minute rate paces the loop (`paced`, measuring meanwhile) instead of stopping it, and a tight
+/// net limit skips the moves that would exceed it and holds on the budget only when nothing else fits. Fast variant:
+/// the `control::budget` unit tests.
+#[test]
+#[ignore = "slow: run with make check-full"]
+fn change_budget_paces_and_limits_net_deviation() {
+    let fx = fixture();
+    let mut c = config(Mode::Autopilot);
+    c.max_db_per_min = 2.0;
+    c.max_net_db = 6.0;
+    let mut r = rig(&fx.pair.degraded, c.clone());
+    r.run_until(10.0 * SECONDS, |r| {
+        r.count(|e| matches!(e, ControlEvent::Paced { .. })) >= 1 && r.ctl.records().len() >= 2
+    });
+    let paced = r.count(|e| matches!(e, ControlEvent::Paced { .. }));
+    assert!(paced >= 1, "{:?}", r.ctl.records());
+    let starts: Vec<f64> = r
+        .log
+        .iter()
+        .filter_map(|(t, e)| matches!(e, ControlEvent::BatchStarted { .. }).then_some(*t))
+        .collect();
+    assert!(starts.len() >= 2, "{starts:?}");
+    let st = r.ctl.budget_status();
+    assert!(st.net_db <= c.max_net_db + 3.0 + 1e-6, "{st:?}");
+    assert_ne!(
+        r.ctl.holding(),
+        Some(HoldReason::NoProgress),
+        "pacing counted as no progress"
+    );
+}
+
 #[test]
 #[ignore = "slow: run with make check-full"]
 fn stationary_matched_mix_does_not_hunt() {
