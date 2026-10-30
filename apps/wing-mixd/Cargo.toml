@@ -37,3 +37,4 @@ mix-sim = { path = "../../crates/mix-sim" }
 mix-capture = { path = "../../crates/mix-capture" }
 serde_json = { workspace = true }
 mix-testsim = { path = "../../crates/mix-testsim" }
+mix-fixtures = { path = "../../crates/mix-fixtures" }

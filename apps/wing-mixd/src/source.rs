@@ -1,10 +1,13 @@
 //! Audio sources feeding the capture ring: a live device (cpal callback, mix-capture), a WAV file played in real
-//! time ([`mix_capture::FileSource`], looped) or the embedded sim console (rendered on its own thread).
+//! time ([`mix_capture::FileSource`], looped), a raw f32 TCP stream ([`Source::stream`]) or the embedded sim console
+//! (rendered on its own thread).
 //!
 //! Every source writes one interleaved ring ([`mix_capture::ring`]) whose channel layout is a [`TapLayout`]. The
 //! device callback only copies into the ring (no alloc/lock/syscall); the file and sim threads are ordinary
 //! threads.
 
+use std::io::Read;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -130,6 +133,93 @@ impl Source {
         ))
     }
 
+    /// Read raw interleaved little-endian f32 frames (`channels` per frame, default: the highest tap channel) from a
+    /// TCP stream at `addr` (the daemon connects). Live semantics: frames that do not fit the ring are dropped and
+    /// counted; EOF or an error ends the source (the stall watchdog notices).
+    pub fn stream(
+        addr: &str,
+        channels: Option<usize>,
+        sample_rate: u32,
+        layout: TapLayout,
+    ) -> Result<(Source, Consumer), String> {
+        let need = layout.selection.iter().max().map_or(1, |m| m + 1);
+        let channels = channels.unwrap_or(need);
+        if channels < need {
+            return Err(format!("stream has {channels} channels, taps need {need}"));
+        }
+        let sock = addr
+            .to_socket_addrs()
+            .map_err(|e| format!("{addr}: {e}"))?
+            .next()
+            .ok_or_else(|| format!("{addr}: no address"))?;
+        let mut tcp = TcpStream::connect_timeout(&sock, Duration::from_secs(5))
+            .map_err(|e| format!("stream {addr}: {e}"))?;
+        tcp.set_read_timeout(Some(Duration::from_millis(100)))
+            .map_err(|e| e.to_string())?;
+        let (mut producer, consumer) = ring::channel(
+            (RING_SECONDS * sample_rate as f64) as usize,
+            layout.ring_channels,
+        );
+        let stats = producer.stats();
+        let stop = Arc::new(AtomicBool::new(false));
+        let produced = Arc::new(AtomicU64::new(0));
+        let (st, pr) = (stop.clone(), produced.clone());
+        let map = layout.selection.clone();
+        let join = std::thread::Builder::new()
+            .name("mixd-stream".into())
+            .spawn(move || {
+                let frame_bytes = 4 * channels;
+                let mut buf = vec![0u8; frame_bytes * 1024];
+                let mut fill = 0usize;
+                let mut samples: Vec<f32> = Vec::with_capacity(channels * 1024);
+                while !st.load(Ordering::Relaxed) {
+                    match tcp.read(&mut buf[fill..]) {
+                        Ok(0) => break,
+                        Ok(n) => fill += n,
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            continue
+                        }
+                        Err(_) => break,
+                    }
+                    let whole = fill / frame_bytes * frame_bytes;
+                    if whole == 0 {
+                        continue;
+                    }
+                    samples.clear();
+                    samples.extend(
+                        buf[..whole]
+                            .chunks_exact(4)
+                            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+                    );
+                    producer.push_mapped(&samples, channels, &map);
+                    pr.fetch_add((whole / frame_bytes) as u64, Ordering::Relaxed);
+                    buf.copy_within(whole..fill, 0);
+                    fill -= whole;
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok((
+            Source {
+                description: format!("stream {addr} ({channels} ch)"),
+                sample_rate,
+                stats,
+                produced,
+                layout,
+                kind: Kind::Thread {
+                    stop,
+                    join: Some(join),
+                    detach: false,
+                },
+            },
+            consumer,
+        ))
+    }
+
     /// Render the embedded sim: main 1, solo bus and `inputs` post fader, looping its multitrack every
     /// `loop_frames`. `speed`: 1 = real time, N = N x, 0 = as fast as the ring drains.
     pub fn sim(
@@ -234,5 +324,53 @@ fn sim_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::TapSel;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    #[test]
+    fn stream_source_maps_tap_channels() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let layout = TapLayout::from_selection(&[
+            TapSel {
+                tap: "main".into(),
+                channels: vec![1, 2],
+            },
+            TapSel {
+                tap: "solo".into(),
+                channels: vec![4],
+            },
+        ])
+        .unwrap();
+        let writer = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            // 4 channels per frame: value = 10 * frame + channel
+            let bytes: Vec<u8> = (0..100)
+                .flat_map(|f| (0..4).map(move |c| (10 * f + c) as f32))
+                .flat_map(f32::to_le_bytes)
+                .collect();
+            // split mid-frame to exercise reassembly
+            c.write_all(&bytes[..37]).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            c.write_all(&bytes[37..]).unwrap();
+        });
+        let (src, mut cons) = Source::stream(&addr, Some(4), 48_000, layout).unwrap();
+        writer.join().unwrap();
+        let t0 = Instant::now();
+        while cons.available_frames() < 100 && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut out = vec![0f32; 300];
+        assert_eq!(cons.pop(&mut out), 100);
+        assert_eq!(&out[..6], &[0.0, 1.0, 3.0, 10.0, 11.0, 13.0]);
+        assert_eq!(src.produced.load(Ordering::Relaxed), 100);
+        assert!(Source::stream(&addr, Some(1), 48_000, src.layout.clone()).is_err());
     }
 }
