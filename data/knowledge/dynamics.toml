@@ -1,0 +1,480 @@
+# Wing Mix knowledge base: gate/expander, compressor, de-esser starting points and dynamics rules.
+# Rationale and citations: docs/research/mix-knowledge.md (section "dynamics.toml").
+# Feature names, blocks, condition/action grammar: data/knowledge/workflow.toml.
+
+[schema]
+version = 1
+file = "dynamics"
+description = "Presets referenced by sources.toml (gate_preset, dyn_preset, deess_preset) and conditional rules that adjust dynamics from measured features."
+
+[schema.preset_fields]
+id                  = "string, unique within its preset kind"
+kind                = "gate_preset: gate | expander ; comp_preset: compressor | limiter ; deess_preset: deesser"
+threshold_rel       = "statistic the threshold is relative to: noise_floor_dbfs | rms_dbfs | peak_dbfs | lufs_s (strip)"
+threshold_offset_db = "[lo, hi] dB added to threshold_rel; the planner starts mid-range then refines towards target_gr_db"
+threshold_clamp     = "optional { max_rel = stat, max_offset_db = n } upper bound, e.g. gate threshold must stay >= 10 dB below peak"
+target_gr_db        = "[lo, hi] gain reduction on the 95th-percentile peaks the setting should produce (compressors), or on sibilants (de-esser)"
+ratio               = "[lo, hi] N:1 (compressor) ; expander_ratio = [lo, hi] meaning 1:N below threshold"
+range_db            = "[lo, hi] maximum attenuation (gate/expander/de-esser)"
+attack_ms, hold_ms, release_ms = "[lo, hi] ms. Attack/release are 'time to reach ~63 %' (Giannoulis 2012 convention); console definitions vary, so M032 predicts with the adapter's own block model"
+knee_db             = "[lo, hi] soft-knee width in dB"
+detector            = "peak | rms"
+makeup              = "rule: loudness_match (set makeup so strip lufs_s is unchanged) | none"
+mix_pct             = "[lo, hi] wet/dry for parallel compression, default 100"
+sidechain_hpf_hz, sidechain_lpf_hz = "optional key filter range"
+freq_hz             = "de-esser/dynamic EQ centre or split frequency range"
+confidence, sources = "as in sources.toml"
+
+[schema.rule_fields]
+id         = "string"
+applies_to = "list of source ids (sources.toml) or families, or [\"*\"] for any strip, [\"mix\"] for the main bus"
+when       = "conditions (AND); when_any (OR)"
+adjust     = "list of { param, by = [lo, hi] (relative change) | to = [lo, hi] (absolute) } applied to the strip's current Dyn/Gate block"
+action     = "alternatively a full block action (insert a block when absent)"
+priority   = "1 (highest) .. 5; ties broken by severity"
+confidence, sources, note = "as above"
+
+# ======================================= GATES / EXPANDERS =====================================================
+# Threshold is placed between the idle (bleed/noise) level and the source's hits: start noise_floor + offset,
+# never closer than 10-12 dB below the peaks or soft hits will be chopped.
+[[gate_preset]]
+id = "kick_gate"
+kind = "gate"
+threshold_rel = "noise_floor_dbfs"
+threshold_offset_db = [6.0, 12.0]
+threshold_clamp = { max_rel = "peak_dbfs", max_offset_db = -12.0 }
+range_db = [15.0, 40.0]
+attack_ms = [0.0, 1.0]
+hold_ms = [20.0, 80.0]
+release_ms = [50.0, 200.0]
+sidechain_hpf_hz = [30.0, 40.0]
+sidechain_lpf_hz = [100.0, 200.0]
+confidence = "high"
+sources = ["senior2011", "sos_gates", "owsinski2017"]
+note = "key LPF stops snare/cymbal bleed opening the gate; release short enough to close before the next hit at the song tempo"
+
+[[gate_preset]]
+id = "tom_gate"
+kind = "gate"
+threshold_rel = "noise_floor_dbfs"
+threshold_offset_db = [8.0, 15.0]
+threshold_clamp = { max_rel = "peak_dbfs", max_offset_db = -12.0 }
+range_db = [15.0, 40.0]
+attack_ms = [0.0, 1.0]
+hold_ms = [50.0, 150.0]
+release_ms = [150.0, 500.0]
+sidechain_hpf_hz = [50.0, 80.0]
+sidechain_lpf_hz = [300.0, 1000.0]
+confidence = "high"
+sources = ["senior2011", "sos_gates"]
+note = "release follows the tom's natural decay; too short sounds choked"
+
+[[gate_preset]]
+id = "snare_expander"
+kind = "expander"
+threshold_rel = "noise_floor_dbfs"
+threshold_offset_db = [6.0, 10.0]
+threshold_clamp = { max_rel = "peak_dbfs", max_offset_db = -15.0 }
+expander_ratio = [2.0, 3.0]
+range_db = [6.0, 15.0]
+attack_ms = [0.0, 1.0]
+hold_ms = [30.0, 80.0]
+release_ms = [80.0, 200.0]
+sidechain_hpf_hz = [150.0, 300.0]
+confidence = "medium"
+sources = ["senior2011", "sos_gates"]
+note = "ghost notes matter: expansion with limited range, not a hard gate; key HPF avoids kick triggering"
+
+[[gate_preset]]
+id = "amp_noise_expander"
+kind = "expander"
+threshold_rel = "noise_floor_dbfs"
+threshold_offset_db = [4.0, 8.0]
+threshold_clamp = { max_rel = "peak_dbfs", max_offset_db = -20.0 }
+expander_ratio = [1.5, 2.0]
+range_db = [6.0, 15.0]
+attack_ms = [1.0, 5.0]
+hold_ms = [50.0, 200.0]
+release_ms = [150.0, 500.0]
+confidence = "medium"
+sources = ["senior2011", "sos_gates"]
+note = "hum/hiss between phrases of high-gain amps; long release keeps sustained notes natural"
+
+[[gate_preset]]
+id = "vocal_expander"
+kind = "expander"
+threshold_rel = "noise_floor_dbfs"
+threshold_offset_db = [6.0, 10.0]
+threshold_clamp = { max_rel = "peak_dbfs", max_offset_db = -25.0 }
+expander_ratio = [1.5, 2.0]
+range_db = [3.0, 10.0]
+attack_ms = [1.0, 5.0]
+hold_ms = [50.0, 150.0]
+release_ms = [200.0, 500.0]
+confidence = "medium"
+sources = ["senior2011", "shure_mics"]
+note = "live: reduces drum/monitor bleed in open vocal mics; gentle so breaths and soft words survive"
+
+# ======================================= COMPRESSORS ===========================================================
+[[comp_preset]]
+id = "kick_comp"
+kind = "compressor"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-12.0, -6.0]
+target_gr_db = [3.0, 6.0]
+ratio = [3.0, 6.0]
+knee_db = [0.0, 6.0]
+attack_ms = [10.0, 30.0]
+release_ms = [50.0, 150.0]
+detector = "peak"
+makeup = "loudness_match"
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+note = "attack long enough to pass the beater click (punch), release fast enough to recover between hits"
+
+[[comp_preset]]
+id = "snare_comp"
+kind = "compressor"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-12.0, -6.0]
+target_gr_db = [3.0, 6.0]
+ratio = [3.0, 5.0]
+knee_db = [0.0, 6.0]
+attack_ms = [5.0, 20.0]
+release_ms = [80.0, 200.0]
+detector = "peak"
+makeup = "loudness_match"
+confidence = "high"
+sources = ["senior2011", "owsinski2017"]
+
+[[comp_preset]]
+id = "tom_comp"
+kind = "compressor"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-12.0, -6.0]
+target_gr_db = [3.0, 6.0]
+ratio = [3.0, 4.0]
+knee_db = [0.0, 6.0]
+attack_ms = [10.0, 30.0]
+release_ms = [100.0, 300.0]
+detector = "peak"
+makeup = "loudness_match"
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[comp_preset]]
+id = "overhead_comp"
+kind = "compressor"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-8.0, -4.0]
+target_gr_db = [1.0, 3.0]
+ratio = [2.0, 3.0]
+knee_db = [3.0, 10.0]
+attack_ms = [20.0, 50.0]
+release_ms = [100.0, 300.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+note = "optional; heavy OH compression pumps cymbals"
+
+[[comp_preset]]
+id = "room_crush"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [-15.0, -8.0]
+target_gr_db = [8.0, 15.0]
+ratio = [8.0, 20.0]
+knee_db = [0.0, 3.0]
+attack_ms = [1.0, 5.0]
+release_ms = [50.0, 200.0]
+detector = "peak"
+makeup = "loudness_match"
+mix_pct = [30.0, 70.0]
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+note = "deliberate effect: sustain/room character; balance via fader or mix_pct"
+
+[[comp_preset]]
+id = "bass_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [-4.0, 2.0]
+target_gr_db = [3.0, 8.0]
+ratio = [3.0, 8.0]
+knee_db = [3.0, 6.0]
+attack_ms = [5.0, 30.0]
+release_ms = [80.0, 250.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+note = "evens out note-to-note level; release too short (< 1 cycle of the lowest note, ~25 ms at 41 Hz) causes distortion"
+
+[[comp_preset]]
+id = "acoustic_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [-2.0, 4.0]
+target_gr_db = [2.0, 5.0]
+ratio = [2.0, 4.0]
+knee_db = [3.0, 6.0]
+attack_ms = [10.0, 30.0]
+release_ms = [100.0, 250.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+
+[[comp_preset]]
+id = "keys_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [0.0, 6.0]
+target_gr_db = [1.0, 4.0]
+ratio = [2.0, 3.0]
+knee_db = [3.0, 10.0]
+attack_ms = [10.0, 30.0]
+release_ms = [100.0, 300.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "low"
+sources = ["senior2011", "practice"]
+
+[[comp_preset]]
+id = "vocal_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [-2.0, 4.0]
+target_gr_db = [3.0, 8.0]
+ratio = [3.0, 4.0]
+knee_db = [3.0, 6.0]
+attack_ms = [2.0, 15.0]
+release_ms = [50.0, 200.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+note = "if > 8 dB GR is needed, split into two stages (fast peak catcher 6-10:1 at 1-5 ms + slower leveler 2-3:1) rather than one heavy stage; live feedback margin drops by the makeup gain"
+
+[[comp_preset]]
+id = "bv_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [-4.0, 2.0]
+target_gr_db = [4.0, 10.0]
+ratio = [4.0, 6.0]
+knee_db = [0.0, 6.0]
+attack_ms = [3.0, 10.0]
+release_ms = [50.0, 150.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "medium"
+sources = ["senior2011", "owsinski2017"]
+note = "BVs compressed harder than lead so the stack sits steadily behind it"
+
+[[comp_preset]]
+id = "speech_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [-2.0, 4.0]
+target_gr_db = [3.0, 6.0]
+ratio = [2.5, 4.0]
+knee_db = [3.0, 6.0]
+attack_ms = [5.0, 15.0]
+release_ms = [100.0, 250.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "medium"
+sources = ["shure_mics", "practice"]
+
+[[comp_preset]]
+id = "brass_comp"
+kind = "compressor"
+threshold_rel = "rms_dbfs"
+threshold_offset_db = [0.0, 6.0]
+target_gr_db = [2.0, 6.0]
+ratio = [3.0, 4.0]
+knee_db = [3.0, 6.0]
+attack_ms = [10.0, 30.0]
+release_ms = [100.0, 250.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "low"
+sources = ["owsinski2017", "practice"]
+
+[[comp_preset]]
+id = "drum_bus"
+kind = "compressor"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-10.0, -4.0]
+target_gr_db = [2.0, 4.0]
+ratio = [3.0, 4.0]
+knee_db = [0.0, 6.0]
+attack_ms = [10.0, 30.0]
+release_ms = [100.0, 200.0]
+detector = "peak"
+makeup = "loudness_match"
+mix_pct = [40.0, 100.0]
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+
+[[comp_preset]]
+id = "mix_bus_glue"
+kind = "compressor"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-8.0, -3.0]
+target_gr_db = [1.0, 3.0]
+ratio = [1.5, 2.0]
+knee_db = [6.0, 10.0]
+attack_ms = [10.0, 30.0]
+release_ms = [100.0, 400.0]
+detector = "rms"
+makeup = "loudness_match"
+confidence = "medium"
+sources = ["senior2011", "katz2015"]
+note = "main bus is `conditional` in the remit; never more than ~3 dB GR live"
+
+[[comp_preset]]
+id = "main_peak_limiter"
+kind = "limiter"
+threshold_rel = "peak_dbfs"
+threshold_offset_db = [-3.0, -1.0]
+target_gr_db = [0.0, 2.0]
+ratio = [20.0, 100.0]
+knee_db = [0.0, 0.0]
+attack_ms = [0.0, 1.0]
+release_ms = [50.0, 200.0]
+detector = "peak"
+makeup = "none"
+confidence = "high"
+sources = ["katz2015", "ebu_r128"]
+note = "safety only: catches overs; should almost never act"
+
+# ======================================= DE-ESSERS =============================================================
+[[deess_preset]]
+id = "vocal_deess"
+kind = "deesser"
+freq_hz = [5000.0, 8500.0]
+range_db = [3.0, 6.0]
+target_gr_db = [2.0, 6.0]
+mode = "split_band"
+note = "male voices toward 4.5-7 kHz, female toward 6-9 kHz: tune freq_hz to the measured peak of the sibilance band; GR only on 's/sh/t' events"
+confidence = "high"
+sources = ["senior2011", "owsinski2017", "izhaki2018"]
+
+[[deess_preset]]
+id = "bv_deess"
+kind = "deesser"
+freq_hz = [5000.0, 8500.0]
+range_db = [4.0, 8.0]
+target_gr_db = [3.0, 8.0]
+mode = "split_band"
+confidence = "medium"
+sources = ["senior2011"]
+
+# ======================================= RULES =================================================================
+[[rule]]
+id = "dyn_too_dynamic"
+applies_to = ["*"]
+when = [ { feature = "crest_db", op = ">", value = 3.0 } ]
+when_any = [ { feature = "lra_lu", op = ">", value = 3.0 } ]
+feature_basis = "deviation from target: crest_db and lra_lu here are (strip value - TargetProfile/preset expectation)"
+adjust = [ { param = "target_gr_db", by = [1.0, 3.0] }, { param = "ratio", by = [0.5, 1.0] } ]
+action = { block = "Dyn", kind = "compressor", preset = "from_source" }
+priority = 2
+confidence = "high"
+sources = ["senior2011", "giannoulis2012"]
+note = "insert the source's dyn_preset if no compressor is active; otherwise deepen GR in steps of <= 3 dB"
+
+[[rule]]
+id = "dyn_squashed"
+applies_to = ["*"]
+when = [ { feature = "crest_db", op = "<", value = -3.0 } ]
+adjust = [ { param = "target_gr_db", by = [-3.0, -1.0] }, { param = "ratio", by = [-1.0, -0.5] } ]
+priority = 2
+confidence = "high"
+sources = ["senior2011", "katz2015"]
+note = "less compression; if no compressor, the source is inherently dense (playback) - do nothing"
+
+[[rule]]
+id = "dyn_lost_punch"
+applies_to = ["drums", "bass", "electric_guitar", "acoustic_guitar"]
+when = [ { feature = "transient_db", op = "<", value = -2.0 }, { feature = "gr_db", op = ">", value = 2.0 } ]
+adjust = [ { param = "attack_ms", by = [5.0, 15.0] } ]
+priority = 3
+confidence = "high"
+sources = ["senior2011", "izhaki2018", "giannoulis2012"]
+note = "too-fast attack shaves transients; lengthen attack before reducing GR"
+
+[[rule]]
+id = "dyn_too_spiky"
+applies_to = ["*"]
+when = [ { feature = "transient_db", op = ">", value = 3.0 } ]
+adjust = [ { param = "attack_ms", by = [-15.0, -3.0] } ]
+priority = 4
+confidence = "medium"
+sources = ["senior2011"]
+
+[[rule]]
+id = "dyn_pumping"
+applies_to = ["*"]
+when = [ { feature = "gr_db", op = ">", value = 6.0 } ]
+when_any = [ { feature = "band_dev_db.sub", op = ">", value = 3.0 } ]
+adjust = [ { param = "release_ms", by = [50.0, 200.0] }, { param = "sidechain_hpf_hz", to = [80.0, 150.0] } ]
+priority = 4
+confidence = "medium"
+sources = ["senior2011", "izhaki2018"]
+note = "audible pumping when LF content drives the detector; key-HPF or longer release"
+
+[[rule]]
+id = "gate_chatter"
+applies_to = ["*"]
+when = [ { feature = "noise_floor_dbfs", op = ">", value = -12.0 } ]
+feature_basis = "noise_floor_dbfs relative to the gate threshold (noise within 12 dB below threshold)"
+adjust = [ { param = "threshold_offset_db", by = [2.0, 4.0] }, { param = "hold_ms", by = [20.0, 50.0] } ]
+priority = 3
+confidence = "medium"
+sources = ["sos_gates"]
+
+[[rule]]
+id = "gate_when_useful"
+applies_to = ["drums", "electric_guitar"]
+when = [ { feature = "activity_pct", op = "<", value = 60.0 } ]
+feature_basis = "also requires peak_dbfs - noise_floor_dbfs >= 20 dB"
+action = { block = "Gate", preset = "from_source" }
+priority = 3
+confidence = "medium"
+sources = ["senior2011", "sos_gates"]
+note = "gating needs contrast; with < 20 dB between hits and bleed the gate either chops or stays open"
+
+[[rule]]
+id = "deess_when_sibilant"
+applies_to = ["lead_vocal", "backing_vocal", "speech"]
+when = [ { feature = "sibilance_db", op = ">", value = 3.0 } ]
+action = { block = "Dyn", kind = "deesser", preset = "from_source" }
+priority = 2
+confidence = "high"
+sources = ["senior2011", "owsinski2017"]
+note = "de-ess before any high-shelf air boost (eq.toml boost order)"
+
+[[rule]]
+id = "makeup_after_change"
+applies_to = ["*"]
+when = [ { feature = "gr_db", op = ">", value = 0.5 } ]
+adjust = [ { param = "makeup_db", to = "loudness_match" } ]
+priority = 1
+confidence = "high"
+sources = ["senior2011", "katz2015"]
+note = "always judge a dynamics change loudness-matched; otherwise 'louder' masquerades as 'better' and the balance shifts"
+
+[[rule]]
+id = "mix_bus_too_dynamic"
+applies_to = ["mix"]
+when = [ { feature = "plr_db", op = ">", value = 3.0 } ]
+feature_basis = "plr_db minus target (reference PLR or targets.delivery)"
+action = { block = "Dyn", kind = "compressor", preset = "mix_bus_glue" }
+priority = 5
+confidence = "medium"
+sources = ["katz2015", "senior2011"]
+note = "main bus processing is conditional in the remit; prefer fixing individual strips first"

@@ -28,6 +28,9 @@ fields = { feature = "string, a name from [features] (with optional .band suffix
 #   `threshold_rel` names a measured statistic and `threshold_offset_db` the offset from it (dB), so thresholds are
 #   expressed relative to signal statistics, never as absolute console values.
 [schema.action]
+symbolic_values = "A param may be a string naming a measured/derived value instead of a number: resonance_hz, masking_peak_hz (peak of the masking spectrum), band_center (geometric centre of the band in the condition), useful_range_hz.hi|lo (sources.toml), loudness_match (makeup), from_source (use the strip's preset from sources.toml), <self>/<other>/<yielding>/<keeping> (masking targets)."
+applies_to = "Rules' applies_to lists hold source ids (sources.toml), family names (drums, bass, guitar, keys, vocal, playback, ambience, speech, brass_strings), \"*\" (any strip) or \"mix\" (main bus)."
+feature_basis = "Optional free-text clarification of how a rule's condition features are normalised (e.g. deviation from target); M031 implements it, tests pin it."
 fields = { block = "string, a name from [blocks]", param_suffixes = "_hz Hz (log), _db dB, _ms ms, _pct %, _s s, _oct octaves, q dimensionless (RBJ bandwidth Q)", max_change_per_step = "optional, the largest single move the planner should make before re-measuring" }
 
 # ---------------------------------------------------------------------------------------------------------------
