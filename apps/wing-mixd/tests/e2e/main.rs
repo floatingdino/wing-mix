@@ -165,6 +165,11 @@ fn report(title: &str, runs: &[RunResult]) {
         if !dr.ceiling.is_empty() {
             let _ = writeln!(s, "- mains ceiling drill: {}", dr.ceiling);
             let _ = writeln!(s, "- feedback drill: {}", dr.feedback);
+            let _ = writeln!(
+                s,
+                "- other safety trips during autopilot (resumed): {:?}",
+                dr.other_trips
+            );
         }
         if let Some(ok) = dr.panic_restored {
             let _ = writeln!(

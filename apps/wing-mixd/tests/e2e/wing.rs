@@ -104,6 +104,8 @@ pub struct Drills {
     pub ceiling_tripped: bool,
     pub feedback: String,
     pub feedback_reverted: bool,
+    /// Safety trips during autopilot besides the feedback drill's (resumed by the harness).
+    pub other_trips: Vec<String>,
     pub panic_restored: Option<bool>,
     pub panic_residual: Vec<String>,
 }
@@ -495,6 +497,16 @@ pub fn run(
                     std::thread::sleep(Duration::from_secs(2));
                     d.req(json!({"cmd": "resume"}));
                     eprintln!("[{}] {}; resumed", o.name, dr.feedback);
+                }
+                "safety" => {
+                    // any other trip during autopilot: the operator acknowledges it and resumes
+                    dr.other_trips.push(e.v["trip"].to_string());
+                    std::thread::sleep(Duration::from_secs(2));
+                    let _ = d.try_req(json!({"cmd": "resume"}));
+                    eprintln!(
+                        "[{}] safety trip {} during autopilot; resumed",
+                        o.name, e.v["trip"]
+                    );
                 }
                 "yielded" => dr.yielded = true,
                 "engineer_moved" if dr.yield_param.as_deref() == e.v["param"].as_str() => {
