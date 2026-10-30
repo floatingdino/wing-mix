@@ -22,3 +22,4 @@ scaffolding/IO/GUI (see `model:` in each task), (6) update this file.
 - 2026-10-30: mix-core analysis types (bands/features/profile) owned by M020; surface/unit types by M010 (separate files).
 - 2026-10-30: main history rewritten (user approved) to drop fixture peaks/RPP, pushed to origin. Branches task/M011, M012, M016, M023, M040 are based on the OLD history (which contains the files): integrate them with `git cherry-pick $(git merge-base task/<ID> pre-rewrite-main)..task/<ID>` on main (local tag pre-rewrite-main = a6fa319b7c07184e975dc342eb7a6f010f6b9091, the old main tip; never push that tag), never a normal or squash merge (squash gives spurious conflicts), then verify `git ls-tree -r --name-only HEAD | grep fixtures/` shows only README.md before pushing. Push main after each merge.
 - 2026-10-30: M031 (diagnosis) and M025 (source ID) held back to cap concurrency at 5; dispatch next.
+- 2026-10-30: M017 queued until M016 merges (both edit mix-fixtures).
