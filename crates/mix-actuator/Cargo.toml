@@ -6,4 +6,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mix-core = { path = "../mix-core" }
+mix-surface = { path = "../mix-surface" }
+serde = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+serde_json = { workspace = true }
+
+[[bench]]
+name = "tick"
+harness = false
