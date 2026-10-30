@@ -1867,11 +1867,29 @@ dependencies = [
  "mix-reference",
  "mix-stems",
  "serde_json",
+ "wing-mixd",
 ]
 
 [[package]]
 name = "wing-mixd"
 version = "0.1.0"
+dependencies = [
+ "mix-actuator",
+ "mix-analysis",
+ "mix-capture",
+ "mix-core",
+ "mix-describe",
+ "mix-engine",
+ "mix-knowledge",
+ "mix-llm",
+ "mix-reference",
+ "mix-sim",
+ "mix-stems",
+ "mix-surface",
+ "mix-wing",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "wing-model"

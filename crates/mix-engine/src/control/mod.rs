@@ -344,6 +344,12 @@ impl<'k> Controller<'k> {
         });
     }
 
+    /// Moves of the current plan not yet started, in order (for display; suggest mode also publishes them as
+    /// `Suggested`).
+    pub fn planned(&self) -> Vec<MoveSummary> {
+        self.plan.iter().map(Batch::summary).collect()
+    }
+
     /// Moves waiting for a remit confirmation.
     pub fn pending(&self) -> &[Pending] {
         &self.pending

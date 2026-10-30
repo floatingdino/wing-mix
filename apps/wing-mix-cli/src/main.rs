@@ -1,7 +1,11 @@
 //! Wing Mix headless CLI (analyse, match, dry-run against the simulator).
 //!
 //! Subcommands so far: `devices` (list audio input devices), `fixture info|excerpt|scan|align` (real multitrack
-//! fixture; `align` locates the fixtures/mixes references in the show), `profile <file>` (reference file -> TargetProfile JSON), `describe` (mix description -> TargetProfile).
+//! fixture; `align` locates the fixtures/mixes references in the show), `profile <file>` (reference file -> TargetProfile JSON), `describe` (mix description -> TargetProfile),
+//! `run` (headless daemon: console + input + reference/description + mode, events on stdout) and `ctl` (one
+//! request to a running wing-mixd, docs/control-protocol.md).
+
+mod daemon_cmds;
 
 use mix_capture::list_input_devices;
 
@@ -464,12 +468,16 @@ fn main() {
         Some("fixture") => fixture(&args.collect::<Vec<_>>()),
         Some("profile") => profile(&args.collect::<Vec<_>>()),
         Some("describe") => describe(&args.collect::<Vec<_>>()),
+        Some("run") => daemon_cmds::run(&args.collect::<Vec<_>>()),
+        Some("ctl") => daemon_cmds::ctl(&args.collect::<Vec<_>>()),
         Some("--version") | None => {
             println!("wing-mix-cli {}", env!("CARGO_PKG_VERSION"));
             0
         }
         Some(other) => {
-            eprintln!("unknown command '{other}' (try: devices, fixture, profile, describe)");
+            eprintln!(
+                "unknown command '{other}' (try: devices, fixture, profile, describe, run, ctl)"
+            );
             2
         }
     };

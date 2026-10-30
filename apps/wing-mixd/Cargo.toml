@@ -4,3 +4,32 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "wing-mixd"
+path = "src/main.rs"
+
+[dependencies]
+mix-core = { path = "../../crates/mix-core" }
+mix-surface = { path = "../../crates/mix-surface" }
+mix-wing = { path = "../../crates/mix-wing" }
+mix-sim = { path = "../../crates/mix-sim" }
+mix-analysis = { path = "../../crates/mix-analysis" }
+mix-capture = { path = "../../crates/mix-capture" }
+mix-reference = { path = "../../crates/mix-reference" }
+mix-stems = { path = "../../crates/mix-stems" }
+mix-describe = { path = "../../crates/mix-describe" }
+mix-llm = { path = "../../crates/mix-llm" }
+mix-knowledge = { path = "../../crates/mix-knowledge" }
+mix-engine = { path = "../../crates/mix-engine" }
+mix-actuator = { path = "../../crates/mix-actuator" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+mix-sim = { path = "../../crates/mix-sim" }
+mix-capture = { path = "../../crates/mix-capture" }
+serde_json = { workspace = true }
