@@ -48,6 +48,7 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M033 | mix-engine: closed-loop controller | M032, M040 | opus |
 | M034 | Diagnosis calibration: no false positives on a matched mix | M032 | opus |
 | M035 | Planner: gate + de-esser candidates, comp timing | M034 | opus |
+| M036 | Engine tuning pass (safety-aware planning, accuracy, feedback guard) | M034, M035 | opus |
 
 ## S4 — Actuation & safety
 

@@ -2,7 +2,7 @@
 id: M033
 title: mix-engine: closed-loop controller
 stage: S3
-status: review
+status: done
 owner: agent-M033
 depends: [M032, M040]
 branch: task/M033
@@ -81,3 +81,4 @@ Run plan step → actuator → wait for settle → re-measure → keep/revert; c
     OH pans, keys +8 dB mud and vocal compression faults were never proposed. (4) mix-sim `flat_scene` starts
     faders at 0 dB, leaving no boost headroom under the safety ceiling; start at -10 dB or gain-stage with trim.
     (5) M050: wire `Controller` with `ActuatorHandle` and a capture-backed `MixMeter` (solo bus tap for inspections).
+- 2026-10-31 coordinator: merged, make check passes. done. Tuning follow-ups → M036.
