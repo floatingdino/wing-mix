@@ -2,10 +2,10 @@
 id: M003
 title: Research: analysis & reference-matching techniques and libraries
 stage: S0
-status: todo
-owner: -
+status: review
+owner: agent-M003
 depends: []
-branch: -
+branch: task/M003
 model: opus
 ---
 
@@ -18,3 +18,10 @@ Write docs/research/analysis.md: survey and choose Rust crates (realfft/rustfft,
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M003: started; worktree .worktrees/M003. Next: read wing-simulator dsp-reuse/rta, verify crate versions/licences, write docs/research/analysis.md.
+- 2026-10-30 agent-M003: research done (crates.io versions/licences, Demucs/open-unmix licences, weight sizes via HEAD:
+  htdemucs 84.1 MB, htdemucs_ft 4x84 MB, htdemucs_6s 55 MB, umxhq 4x35.6 MB MIT on Zenodo 3370489). Writing
+  docs/research/analysis.md was refused by the agent harness (subagents may not write report .md files), so the full
+  document was handed back to the coordinator in the agent report. Next: coordinator (or a top-level session) writes
+  docs/research/analysis.md on task/M003 from that report, then sets status review.
+- 2026-10-30 coordinator: committed docs/research/analysis.md from the agent's final text (harness blocked the agent's write).
