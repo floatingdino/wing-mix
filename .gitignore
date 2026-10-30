@@ -3,6 +3,8 @@ target/
 *.wav
 *.flac
 *.mp3
-/build/
 .venv/
 .worktrees/
+build/
+.build/
+.swiftpm/
