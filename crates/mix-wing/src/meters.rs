@@ -299,12 +299,24 @@ fn run(sock: UdpSocket, port: u16, client: Arc<NativeClient>, eng: std::sync::We
     let mut last_packet = Instant::now();
     let mut last_define = Instant::now();
     let mut last_renew = Instant::now();
+    let mut was_down = false;
     loop {
         let Some(e) = eng.upgrade() else { break };
-        if e.stop.load(Relaxed) || !client.is_alive() {
+        if e.stop.load(Relaxed) || client.is_stopped() {
             break;
         }
         drop(e);
+        if !client.is_alive() {
+            // link down: wait for the reconnect, then redefine the report (packets are stale by then)
+            was_down = true;
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        if std::mem::take(&mut was_down) {
+            let _ = client.meter_define(port, REPORT_ID, &selections());
+            last_define = Instant::now();
+            last_renew = last_define;
+        }
         if let Ok((n, _)) = sock.recv_from(&mut buf) {
             if let Ok(p) = MeterPacket::parse(&buf[..n]) {
                 if p.report_id == REPORT_ID {

@@ -174,3 +174,144 @@ fn wing_sim_meter_renewal_and_keepalive() {
         Value::Float(-3.0)
     );
 }
+
+fn wait_event(
+    rx: &std::sync::mpsc::Receiver<mix_surface::SurfaceEvent>,
+    want: fn(&mix_surface::SurfaceEvent) -> bool,
+    timeout: Duration,
+) -> bool {
+    let end = std::time::Instant::now() + timeout;
+    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(ev) if want(&ev) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Acceptance (M018): kill + restart the daemon; the surface reports `Disconnected`, fails calls while the link is
+/// down, reconnects by itself, resyncs the mirror (the restarted console is at factory defaults), emits
+/// `Reconnected`, and meters keep flowing.
+#[test]
+fn wing_sim_auto_reconnect_after_daemon_restart() {
+    use mix_surface::SurfaceEvent as E;
+    let Some(mut d) = daemon_or_skip("wing_sim_auto_reconnect_after_daemon_restart") else {
+        return;
+    };
+    let s = WingSurface::connect(
+        d.addr,
+        &ConnectOptions {
+            discovery_port: None,
+            reconnect: Some(mix_wing::ReconnectPolicy {
+                initial: Duration::from_millis(50),
+                max: Duration::from_millis(400),
+            }),
+            ..ConnectOptions::default()
+        },
+    )
+    .unwrap();
+    let rx = s.subscribe();
+    let p = ParamId::new("input.5/eq/band.2.gain");
+    let default = s.read(&p).unwrap();
+    s.write(&p, Value::Float(-4.3)).unwrap();
+    assert_eq!(s.read(&p).unwrap(), Value::Float(-4.3));
+    // meters run before the outage
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while s.meters().is_err() {
+        assert!(std::time::Instant::now() < deadline, "no meters");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    d.kill();
+    assert!(
+        wait_event(
+            &rx,
+            |e| matches!(e, E::Disconnected),
+            Duration::from_secs(5)
+        ),
+        "Disconnected event"
+    );
+    assert_eq!(
+        s.write(&p, Value::Float(1.0)).unwrap_err(),
+        SurfaceError::Disconnected
+    );
+    assert_eq!(s.read(&p).unwrap(), Value::Float(-4.3), "mirror kept");
+
+    assert!(d.restart(), "daemon restarts on the same port");
+    assert!(
+        wait_event(
+            &rx,
+            |e| matches!(e, E::Reconnected),
+            Duration::from_secs(30)
+        ),
+        "Reconnected event"
+    );
+    assert!(
+        wait_event(
+            &rx,
+            |e| matches!(e, E::TopologyChanged),
+            Duration::from_secs(2)
+        ),
+        "topology refresh follows"
+    );
+    // resynced from the restarted (factory default) console
+    assert_eq!(s.read(&p).unwrap(), default);
+    // writes work again and reach the console
+    s.write(&p, Value::Float(-2.5)).unwrap();
+    assert_eq!(d.connect().read(&p).unwrap(), Value::Float(-2.5));
+    // external changes flow again
+    let other = d.connect();
+    other.write(&p, Value::Float(3.0)).unwrap();
+    assert!(wait_event(
+        &rx,
+        |e| matches!(e, E::ParamChanged { value: Value::Float(v), .. } if (*v - 3.0).abs() < 0.01),
+        Duration::from_secs(2)
+    ));
+    // meters resume (the receiver redefines the report on the new connection)
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut last = None;
+    while std::time::Instant::now() < deadline {
+        let f = s.meters().ok();
+        if let (Some(a), Some(b)) = (&last, &f) {
+            if a != b {
+                return;
+            }
+        }
+        last = f.or(last);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("meters did not resume after reconnect");
+}
+
+#[test]
+fn wing_sim_stays_disconnected_without_reconnect_policy() {
+    use mix_surface::SurfaceEvent as E;
+    let Some(mut d) = daemon_or_skip("wing_sim_stays_disconnected_without_reconnect_policy") else {
+        return;
+    };
+    let s = WingSurface::connect(
+        d.addr,
+        &ConnectOptions {
+            discovery_port: None,
+            reconnect: None,
+            ..ConnectOptions::default()
+        },
+    )
+    .unwrap();
+    let rx = s.subscribe();
+    d.kill();
+    assert!(wait_event(
+        &rx,
+        |e| matches!(e, E::Disconnected),
+        Duration::from_secs(5)
+    ));
+    assert!(d.restart());
+    assert!(!wait_event(
+        &rx,
+        |e| matches!(e, E::Reconnected),
+        Duration::from_secs(1)
+    ));
+    assert_eq!(s.topology().unwrap_err(), SurfaceError::Disconnected);
+}

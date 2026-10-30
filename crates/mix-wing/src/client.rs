@@ -78,6 +78,8 @@ pub struct NativeClient {
     syncing: Arc<AtomicBool>,
     peer: SocketAddr,
     reader: Mutex<Option<JoinHandle<()>>>,
+    /// Sender cloned into each (re)started reader thread.
+    tx: Mutex<Sender<ClientMsg>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -135,15 +137,74 @@ impl NativeClient {
             syncing,
             peer: addr,
             reader: Mutex::new(None),
+            tx: Mutex::new(tx),
         });
-        let weak = Arc::downgrade(&client);
-        let shared = client.shared.clone();
-        let store = client.store.clone();
+        client.spawn_reader(rd)?;
+        Ok((client, rx))
+    }
+
+    fn spawn_reader(self: &Arc<Self>, rd: TcpStream) -> io::Result<()> {
+        let weak = Arc::downgrade(self);
+        let shared = self.shared.clone();
+        let store = self.store.clone();
+        let tx = lock(&self.tx).clone();
         let handle = std::thread::Builder::new()
             .name("wing-native-rx".into())
             .spawn(move || reader_loop(rd, store, shared, weak, tx))?;
-        *lock(&client.reader) = Some(handle);
-        Ok((client, rx))
+        *lock(&self.reader) = Some(handle);
+        Ok(())
+    }
+
+    /// Re-establish a lost connection in place: a fresh TCP connection, a full resync of the mirror (silent: no
+    /// change messages, the caller announces the reconnect) and a restarted reader/keepalive. The mirror, the
+    /// message channel and every `Arc<NativeClient>` stay valid. No-op when the connection is alive; fails when the
+    /// client was [`closed`](Self::close) or the console is unreachable (call again to retry).
+    pub fn reconnect(
+        self: &Arc<Self>,
+        timeout: Duration,
+        sync_timeout: Duration,
+    ) -> io::Result<()> {
+        if self.is_stopped() {
+            return Err(dead());
+        }
+        if self.is_alive() {
+            return Ok(());
+        }
+        // the previous reader has finished (it is what marked the link dead)
+        if let Some(h) = lock(&self.reader).take() {
+            if h.thread().id() != std::thread::current().id() {
+                let _ = h.join();
+            }
+        }
+        let stream = TcpStream::connect_timeout(&self.peer, timeout)?;
+        stream.set_nodelay(true)?;
+        let rd = stream.try_clone()?;
+        rd.set_read_timeout(Some(Duration::from_millis(100)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        {
+            let mut g = lock(&self.writer);
+            let w = &mut *g;
+            let _ = w.stream.shutdown(Shutdown::Both);
+            w.stream = stream;
+            w.enc = NrpEncoder::new();
+            w.buf.clear();
+            w.de_sent = 0;
+            w.enc.select(CH_CONTROL, &mut w.buf);
+            w.flush()?;
+            *lock(&self.shared.des) = 0;
+            self.shared.alive.store(true, SeqCst);
+        }
+        self.spawn_reader(rd)?;
+        if let Err(e) = self.sync(sync_timeout) {
+            let _ = lock(&self.writer).stream.shutdown(Shutdown::Both);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Whether [`Self::close`] (or drop) ended this client for good.
+    pub fn is_stopped(&self) -> bool {
+        self.shared.stop.load(Acquire)
     }
 
     /// The mirror store (read-only use; writes go through [`Self::set_local`]).

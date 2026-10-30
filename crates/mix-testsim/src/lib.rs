@@ -69,12 +69,42 @@ fn free_port(salt: u32) -> u16 {
     }
 }
 
+fn spawn_child(
+    bin: &Path,
+    port: u16,
+    shm: &str,
+    extra: &[&str],
+    state_dir: &Path,
+) -> Option<Child> {
+    Command::new(bin)
+        .args(["--name", "WMTEST", "--port", &port.to_string()])
+        .args(["--discovery-port", &port.to_string()])
+        .args(["--osc-port", &(port + 1).to_string()])
+        .args(["--no-hostio", "--shm-name", shm, "--no-autosave"])
+        .args(extra)
+        .arg("--state-dir")
+        .arg(state_dir)
+        .stdout(Stdio::null())
+        .stderr(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(state_dir.join("wing-sim.log"))
+                .map(Stdio::from)
+                .unwrap_or_else(|_| Stdio::null()),
+        )
+        .spawn()
+        .ok()
+}
+
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// A headless wing-sim on private ports with a private shm name and temp state dir. Without a driver attached to
 /// the shm name the daemon free-runs on its own clock (no input audio).
 pub struct SimDaemon {
     child: Child,
+    bin: PathBuf,
+    extra: Vec<String>,
     addr: SocketAddr,
     state_dir: PathBuf,
     shm: String,
@@ -110,46 +140,61 @@ impl SimDaemon {
         let port = free_port(n);
         assert!(port != 2222 && port != 2223);
         assert_ne!(shm, wing_shm::SHM_NAME, "never the default shm name");
-        let child = Command::new(bin)
-            .args(["--name", "WMTEST", "--port", &port.to_string()])
-            .args(["--discovery-port", &port.to_string()])
-            .args(["--osc-port", &(port + 1).to_string()])
-            .args(["--no-hostio", "--shm-name", &shm, "--no-autosave"])
-            .args(extra)
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .stdout(Stdio::null())
-            .stderr(
-                std::fs::File::create(state_dir.join("wing-sim.log"))
-                    .map(Stdio::from)
-                    .unwrap_or_else(|_| Stdio::null()),
-            )
-            .spawn()
-            .ok()?;
+        let child = spawn_child(bin, port, &shm, extra, &state_dir)?;
         let addr: SocketAddr = ([127, 0, 0, 1], port).into();
         let mut d = SimDaemon {
             child,
+            bin: bin.to_path_buf(),
+            extra: extra.iter().map(|s| s.to_string()).collect(),
             addr,
             state_dir,
             shm,
         };
+        d.wait_ready().then_some(d)
+    }
+
+    fn wait_ready(&mut self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
-            if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                return Some(d);
+            if std::net::TcpStream::connect_timeout(&self.addr, Duration::from_millis(200)).is_ok()
+            {
+                return true;
             }
-            if let Ok(Some(st)) = d.child.try_wait() {
-                let log = d.log();
-                eprintln!("wing-sim exited ({st}):\n{log}");
-                return None;
+            if let Ok(Some(st)) = self.child.try_wait() {
+                eprintln!("wing-sim exited ({st}):\n{}", self.log());
+                return false;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
         eprintln!(
             "wing-sim did not accept connections within 20 s:\n{}",
-            d.log()
+            self.log()
         );
-        None
+        false
+    }
+
+    /// Kill the daemon process (connections drop; the ports are free again). Idempotent.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    /// Kill (if running) and start a fresh daemon on the *same* ports, shm name and state dir: the console comes
+    /// back with factory defaults. `false` when it did not come up.
+    pub fn restart(&mut self) -> bool {
+        self.kill();
+        let extra: Vec<&str> = self.extra.iter().map(String::as_str).collect();
+        let port = self.addr.port();
+        for _ in 0..20 {
+            match spawn_child(&self.bin, port, &self.shm, &extra, &self.state_dir) {
+                Some(c) => {
+                    self.child = c;
+                    return self.wait_ready();
+                }
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        false
     }
 
     /// Native-protocol TCP address.

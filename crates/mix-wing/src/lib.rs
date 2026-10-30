@@ -20,4 +20,4 @@ pub mod meters;
 pub mod surface;
 pub mod topology;
 
-pub use surface::{ConnectOptions, RtaClaim, WingSurface};
+pub use surface::{ConnectOptions, ReconnectPolicy, RtaClaim, WingSurface};
