@@ -315,9 +315,18 @@ impl LlmBridge {
             .stderr(Stdio::piped());
 
         let start = Instant::now();
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LlmError::Cli(format!("spawn: {e}")))?;
+        // ETXTBSY: on Linux a just-written executable can be briefly busy while another thread's fork still
+        // holds its write fd; retry a few times instead of failing.
+        let mut tries = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Err(e) if e.raw_os_error() == Some(26) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                r => break r.map_err(|e| LlmError::Cli(format!("spawn: {e}")))?,
+            }
+        };
         // Drain pipes on threads so a chatty child cannot deadlock on a full pipe.
         let out = drain(child.stdout.take());
         let err = drain(child.stderr.take());
