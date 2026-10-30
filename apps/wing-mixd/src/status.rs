@@ -85,6 +85,9 @@ pub struct DaemonStatus {
     /// External tools: `{"uv":{"path":..|null,"for":..},"claude":{..}}` (null path = not found on PATH).
     #[serde(default)]
     pub tools: Value,
+    /// Mix slots (M064): `{"count","active","comparing","live_confirmation_needed"}`.
+    #[serde(default)]
+    pub slots: Value,
 }
 
 /// Settings that survive a daemon restart (`<state-dir>/settings.json`; missing or unreadable = defaults).
