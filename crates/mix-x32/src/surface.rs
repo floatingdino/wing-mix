@@ -12,8 +12,8 @@ use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
 use mix_surface::model::{Block, ParamSpec, SendInfo, SendTap, Strip, StripKind, Topology};
 use mix_surface::surface::{
-    Capabilities, Origin, SoloMode, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent,
-    SurfaceInfo, SurfaceResult,
+    Capabilities, Origin, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent, SurfaceInfo,
+    SurfaceResult,
 };
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -289,7 +289,7 @@ impl X32Surface {
     ) -> Option<SendInfo> {
         let on = matches!(self.inner.mirrored(on_addr)?, Arg::Int(i) if i != 0);
         let tap_after = match tap {
-            SendTap::Pre => Block::Eq,
+            SendTap::Pre | SendTap::Unknown => Block::Eq,
             _ if d.chain.contains(&Block::Pan) && dest.kind_name() == "main" => Block::Pan,
             _ => Block::Fader,
         };
@@ -364,11 +364,11 @@ impl Surface for X32Surface {
                 .collect();
             if d.is_input {
                 for m in 1..=N_BUSES {
-                    // Unknown tap fails safe: Pre looks like a monitor feed, so the bus stays protected.
                     let tap = match inn.mirrored(&send_tap_addr(d, m)) {
                         Some(Arg::Int(4)) => SendTap::Post,
                         Some(Arg::Int(5)) => SendTap::Group,
-                        _ => SendTap::Pre,
+                        Some(Arg::Int(3)) => SendTap::Pre,
+                        _ => SendTap::Unknown,
                     };
                     let level = inn
                         .table
@@ -467,22 +467,16 @@ impl Surface for X32Surface {
         rx
     }
 
-    /// The X32 has no remote solo here (`capabilities.solo = false`), but the engine and the actuator's policy gate
-    /// call `solo_state()` unconditionally to decide whether solo is destructive, and fail closed if it errors. So:
-    /// report "non-destructive, nothing active"; `set_solo` is what refuses. (docs/adapters.md, assumption A1.)
+    /// No solo through this adapter (`capabilities.solo = false`); consumers consult the capability first.
     fn solo_state(&self) -> SurfaceResult<SoloState> {
-        Ok(SoloState {
-            mode: SoloMode::NonDestructive,
-            active: Vec::new(),
-        })
+        Err(SurfaceError::Unsupported("solo"))
     }
 
     fn set_solo(&self, _target: &SoloTarget, _on: bool) -> SurfaceResult<()> {
         Err(SurfaceError::Unsupported("solo"))
     }
 
-    /// Nothing can be soloed through this adapter, so there is nothing to clear.
     fn clear_solo(&self) -> SurfaceResult<()> {
-        Ok(())
+        Err(SurfaceError::Unsupported("solo"))
     }
 }

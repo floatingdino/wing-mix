@@ -843,6 +843,8 @@ version = "0.1.0"
 dependencies = [
  "mix-actuator",
  "mix-core",
+ "mix-engine",
+ "mix-knowledge",
  "mix-surface",
 ]
 
@@ -1901,6 +1903,7 @@ dependencies = [
  "mix-surface",
  "mix-testsim",
  "mix-wing",
+ "mix-x32",
  "serde",
  "serde_json",
 ]

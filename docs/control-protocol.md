@@ -52,7 +52,7 @@ nothing else happens.
 | `status` | | the status document |
 | `list_devices` | | `{"devices":[{"name","default","max_channels","min_sample_rate","max_sample_rate","default_sample_rate"}], "sim":{"taps":[..]}?, "error"?}` |
 | `list_consoles` | `discover` (bool, default true: UDP broadcast `WING?` to port 2222), `wait_ms` (800), `probe` (`ip[:port]`, unicast) | `{"consoles":[{"kind":"sim"},{"kind":"wing","ip","name","model","serial","firmware"}]}` |
-| `connect_console` | `console`: `sim`, `wing` (+`ip`) or an IP; `port` (2222); `scene` (role key, default `default`); `sim`: see below | `{"kind","name","key","scene","inputs"}`. Replaces any previous console (ends its session; a sim input is dropped with it). |
+| `connect_console` | `console`: `sim`, `wing` (+`ip`), `x32` (+`ip`, port default 10023; M061) or an IP (= wing); `port` (2222); `scene` (role key, default `default`); `sim`: see below | `{"kind","name","key","scene","inputs"}`. Replaces any previous console (ends its session; a sim input is dropped with it). The remit policy is the console's own default (`data/remit/<surface>-default.toml`) or `--policy`; a policy whose `surface` does not match the console is refused (the connect fails). `wing-mixd --console sim\|wing:<ip>[:port]\|x32:<ip>[:port]` connects at start. |
 | `disconnect_console` | | |
 | `select_input` | `source`: `device` / `file` / `sim`; `device` (name or unique substring; default input), `path` (WAV, `file`), `sample_rate`, `taps` | `{"kind","description","sample_rate","taps"}` |
 | `load_reference` | `path` (audio file, or a TargetProfile `.json`), `section` (index), `stems` (bool), `wait` (bool) | `{"loading":true}` at once, or with `wait` the loaded target `{"kind":"reference","label","info"}` |
@@ -192,8 +192,8 @@ baseline are kept; the controller's move history restarts, as after a target cha
 
 ## Console RTA feed
 
-With a WING connected and the feedback guard on (default for a WING), a session claims the console RTA
-(`WingSurface::claim_rta`, main bus post) and feeds every new meter frame's 120 bands to
+With a console that has an RTA (`capabilities.rta`: a WING) connected and the feedback guard on (default for a real
+console), a session claims the console RTA (`Surface::claim_rta`, main bus post) and feeds every new meter frame's 120 bands to
 `SafetyMonitor::feed_spectrum` under the label `rta:<strip>` (`rta_feed {frames, source}` in `status`/`snapshot`).
 The previous `rtasrc`/`rtatap` come back exactly when the session ends (`stop` keeps it, `disconnect_console`, `quit`
 or a signal release it). An inspection that re-points the RTA is restored to ours afterwards; frames are labelled by

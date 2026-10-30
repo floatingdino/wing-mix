@@ -36,6 +36,7 @@
 //! accuracy vs SimSurface renders in `tests/dyn_sim.rs` (M035 log).
 
 pub mod candidates;
+mod generic_transfer;
 pub mod predict;
 pub mod state;
 pub mod transfer;
@@ -66,6 +67,7 @@ use crate::diagnosis::{
     StripTap, Subject,
 };
 pub use candidates::{Candidate, CandidateConfig, PHASES};
+pub use generic_transfer::{transfer_for_surface, GenericTransfer};
 pub use predict::{MixModel, Prediction, StripDelta};
 pub use state::{ConsoleState, StripSettings};
 pub use transfer::{TransferModel, WingTransfer};
@@ -1192,7 +1194,11 @@ fn order(
             .state
             .strip(&m.strip)
             .is_none_or(|s| matches!(s.kind, StripKind::Input | StripKind::Aux));
-        if SOLO_PHASES.contains(&ph) && is_input && inspected.insert((ph, m.strip.clone())) {
+        if SOLO_PHASES.contains(&ph)
+            && is_input
+            && input.remit.ctx.solo_available
+            && inspected.insert((ph, m.strip.clone()))
+        {
             let d = evaluate_inspection(
                 input.remit.policy,
                 input.remit.ctx,

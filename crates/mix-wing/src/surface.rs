@@ -887,6 +887,12 @@ impl Surface for WingSurface {
         Ok(rta_strip(n, fx).map(|strip| RtaSource { strip, tap }))
     }
 
+    /// Exact restore of the raw `rtasrc`/`rtatap` (see the inherent [`WingSurface::claim_rta`]).
+    fn claim_rta(&self, source: &RtaSource) -> SurfaceResult<mix_surface::surface::RtaGuard<'_>> {
+        let claim = WingSurface::claim_rta(self, source)?;
+        Ok(mix_surface::surface::RtaGuard::new(move || drop(claim)))
+    }
+
     fn set_rta_source(&self, source: Option<&RtaSource>) -> SurfaceResult<()> {
         let (a, b) = self.rta_nodes()?;
         match source {

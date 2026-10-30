@@ -75,7 +75,8 @@ fn bus_evidence(
         {
             n += 1;
             match x.tap {
-                SendTap::Pre => pre += 1,
+                // an unknown tap fails safe: it counts as a pre-fader (monitor-looking) feed
+                SendTap::Pre | SendTap::Unknown => pre += 1,
                 SendTap::Group => grp += 1,
                 SendTap::Post => {}
             }
