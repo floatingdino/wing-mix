@@ -59,6 +59,9 @@ pub struct StripConfig {
     pub min_gap_s: f64,
     /// A measurement older than this is due for a fresh one (s).
     pub max_age_s: f64,
+    /// A measurement from before the last section change is due for a fresh one once it is this old (s): a new
+    /// section changes a strip's level and tone less than its arrangement role, so not every chorus re-sweeps.
+    pub section_stale_s: f64,
     /// No sweep starts this long after a section change (s), nor while a jump is pending.
     pub section_quiet_s: f64,
     /// A strip found silent in solo is tried again after this long (s).
@@ -82,6 +85,7 @@ impl Default for StripConfig {
             max_per_min: 8,
             min_gap_s: 2.0,
             max_age_s: 600.0,
+            section_stale_s: 120.0,
             section_quiet_s: 6.0,
             silent_retry_s: 120.0,
             respect_engineer_solo: true,
@@ -460,7 +464,8 @@ pub enum Due {
     Never,
     /// Its processing changed since the measurement.
     Changed,
-    /// Measured before the last section change, or longer ago than `max_age_s`.
+    /// Measured longer ago than `max_age_s`, or before the last section change and longer ago than
+    /// `section_stale_s`.
     Stale,
     /// Silent in solo last time, retry time reached.
     Retry,
@@ -538,7 +543,11 @@ pub fn candidates(
                 match book.get(&e.strip) {
                     None => Due::Never,
                     Some(m) if processing_changed(&m.values, now) => Due::Changed,
-                    Some(m) if m.section != book.section || now_s - m.at_s > cfg.max_age_s => {
+                    Some(m)
+                        if now_s - m.at_s > cfg.max_age_s
+                            || (m.section != book.section
+                                && now_s - m.at_s > cfg.section_stale_s) =>
+                    {
                         Due::Stale
                     }
                     Some(_) => return None,
@@ -821,7 +830,7 @@ mod tests {
         );
         let ids: Vec<u32> = c.iter().map(|c| c.strip.index().unwrap()).collect();
         assert_eq!(ids, vec![6, 4, 5]);
-        // staleness: after a section change or max_age the vocal is due again (below the never-measured ones)
+        // staleness: after a section change (once section_stale_s old) or max_age the vocal is due again
         book.section_changed(20.0);
         let c = candidates(
             &cfg,
@@ -830,7 +839,19 @@ mod tests {
             &eligible,
             &tapped,
             &st,
-            30.0,
+            cfg.section_stale_s - 1.0,
+            &none,
+            &BTreeSet::new(),
+        );
+        assert!(!c.iter().any(|c| c.strip.index() == Some(1)));
+        let c = candidates(
+            &cfg,
+            kb(),
+            &book,
+            &eligible,
+            &tapped,
+            &st,
+            cfg.section_stale_s + 1.0,
             &none,
             &BTreeSet::new(),
         );
