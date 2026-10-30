@@ -747,7 +747,6 @@ fn band_kinds_come_from_the_type_param() {
     }
     let topo = Topology {
         strips: vec![Strip::new(id.clone(), StripKind::Input, "x")],
-        ..Default::default()
     };
     let eq = ConsoleState::from_parts(topo, params)
         .settings(&id)
