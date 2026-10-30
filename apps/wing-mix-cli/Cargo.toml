@@ -7,3 +7,4 @@ publish.workspace = true
 
 [dependencies]
 mix-capture = { path = "../../crates/mix-capture" }
+mix-fixtures = { path = "../../crates/mix-fixtures" }

@@ -2,10 +2,10 @@
 id: M014
 title: Real multitrack fixture loader (REAPER RPP + excerpts)
 stage: S1
-status: todo
-owner: -
+status: review
+owner: task-agent-M014
 depends: [M001]
-branch: -
+branch: task/M014
 model: sonnet
 ---
 
@@ -27,3 +27,6 @@ and record them in fixtures/README.md (via the rule-10 fallback if needed). Put 
 
 ## Log
 - 2026-10-30 coordinator: created after the user supplied the multitrack.
+- 2026-10-30 task-agent: implemented `crates/mix-fixtures` (rpp.rs parser; Fixture::open/excerpt/loudness_map/Excerpt::write_wavs; channel parsing from file names; WINDOWS) and CLI `wing-mix-cli fixture info|excerpt|scan`. Added `hound = "3"` workspace dep. Real fixture: 28 audio tracks, 48 kHz, 5720 s; excerpt 30 s x 28 = 0.15 s release; full scan (10 s bins, 22 GB) ~3.5 s release. Windows documented in fixtures/README.md: quiet-verse 1500-1530, full-band 3900-3930, vocal-forward 3420-3450, no-vocals 4080-4110. Note: music starts ~190 s, not exactly 180.
+- Files changed: Cargo.toml, Cargo.lock, crates/mix-fixtures/**, apps/wing-mix-cli/{Cargo.toml,src/main.rs}, fixtures/README.md, this file.
+- Test: `cargo test -p mix-fixtures` (real-fixture test skips when absent; `-- --include-ignored` for the timing test), `make check`.
