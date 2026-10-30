@@ -2,10 +2,10 @@
 id: M025
 title: Channel source identification
 stage: S2
-status: todo
-owner: -
+status: in_progress
+owner: agent-M025
 depends: [M020, M010]
-branch: -
+branch: task/M025
 model: opus
 ---
 
@@ -19,3 +19,4 @@ Classify each input channel's source type (kick, snare, vocal, bass...) from str
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M025: started in .worktrees/M025. Plan: new crate crates/mix-sources (name/tag/icon heuristics -> SourceType, explainable feature classifier over mix-core Features, combine + override API); tests on mix-sim synth + #[ignore] real fixture.
