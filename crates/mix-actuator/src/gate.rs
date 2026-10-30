@@ -20,6 +20,13 @@ pub trait RemitGate: Send {
     /// value the param had before the session first touched it.
     fn check_write(&self, req: &WriteRequest, baseline: &Value) -> Decision;
 
+    /// As [`check_write`](RemitGate::check_write) for a write that *restores* a value the session or the engineer
+    /// had before (undo, PANIC, safety revert). Defaults to `check_write`; the safety layer relaxes its size limits
+    /// here (never its holds).
+    fn check_restore(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        self.check_write(req, baseline)
+    }
+
     /// Decision for a solo/listen of `strip`.
     fn check_inspection(&self, kind: InspectionKind, strip: &StripId) -> Decision;
 

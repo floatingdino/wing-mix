@@ -42,6 +42,7 @@ struct State {
     meters: MeterFrame,
     rta: Option<RtaSource>,
     models: Vec<ModelBinding>,
+    offline: bool,
 }
 
 impl State {
@@ -80,6 +81,7 @@ impl FakeSurface {
                 meters: MeterFrame::default(),
                 rta: None,
                 models: Vec::new(),
+                offline: false,
             }),
         }
     }
@@ -157,6 +159,20 @@ impl FakeSurface {
             origin: Origin::External,
         });
         Ok(stored)
+    }
+
+    /// Simulate a lost (`false`) or restored (`true`) connection: reads and writes fail with `Disconnected` while
+    /// offline, and `Disconnected` / `Reconnected` is emitted on each change.
+    pub fn set_connected(&self, connected: bool) {
+        let mut st = self.st();
+        if st.offline == connected {
+            st.offline = !connected;
+            st.emit(if connected {
+                SurfaceEvent::Reconnected
+            } else {
+                SurfaceEvent::Disconnected
+            });
+        }
     }
 
     /// Console-side solo mode change (e.g. the engineer switched to solo-in-place).
@@ -698,8 +714,11 @@ impl Surface for FakeSurface {
     }
 
     fn read(&self, param: &ParamId) -> SurfaceResult<Value> {
-        self.st()
-            .values
+        let st = self.st();
+        if st.offline {
+            return Err(SurfaceError::Disconnected);
+        }
+        st.values
             .get(param)
             .cloned()
             .ok_or_else(|| SurfaceError::UnknownParam(param.clone()))
@@ -707,6 +726,9 @@ impl Surface for FakeSurface {
 
     fn write(&self, param: &ParamId, value: Value) -> SurfaceResult<Value> {
         let mut st = self.st();
+        if st.offline {
+            return Err(SurfaceError::Disconnected);
+        }
         let stored = Self::store(&mut st, param, value, false)?;
         st.writes.push((param.clone(), stored.clone()));
         Ok(stored)

@@ -9,13 +9,16 @@ use crate::event::{
 };
 use crate::gate::RemitGate;
 use crate::ramp::{Pending, Track};
+use crate::safety::{SafetyMonitor, Trip};
 use mix_core::action::{Action, ParamChange};
 use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
 use mix_surface::journal::{Change, Conflict, Journal};
 use mix_surface::model::ParamClass;
 use mix_surface::remit::{Decision, InspectionKind, Reason, Verdict, WriteRequest};
-use mix_surface::surface::{Origin, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent};
+use mix_surface::surface::{
+    Origin, RtaSource, SoloState, SoloTarget, Surface, SurfaceError, SurfaceEvent,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -55,6 +58,15 @@ struct Inspect {
     measured: bool,
     adjust: VecDeque<(MoveId, Action)>,
     current: Option<Ramp>,
+    /// RTA inspection: `(source we selected, source to restore)`.
+    rta: Option<(RtaSource, Option<RtaSource>)>,
+}
+
+/// Restores that could not be done because the link was down; retried on reconnect.
+#[derive(Default)]
+struct Deferred {
+    solo: Option<(MoveId, SoloState, SoloTarget)>,
+    rta: Option<(MoveId, RtaSource, Option<RtaSource>)>,
 }
 
 enum Active {
@@ -69,6 +81,7 @@ enum Step {
 }
 
 struct History {
+    at: f64,
     label: String,
     changes: Vec<Change>,
 }
@@ -95,6 +108,16 @@ pub struct Actuator {
     write_log: Vec<WriteRecord>,
     refresh_needed: bool,
     solo_changed: bool,
+    write_log_dropped: u64,
+    safety: Option<SafetyMonitor>,
+    /// Connection to the console is down (everything frozen).
+    link_down: bool,
+    /// STOP was caused by the link loss only: reconnecting lifts it again.
+    stopped_by_link: bool,
+    /// A write/restore failed with `Disconnected`: handle the link loss at the end of the tick.
+    link_lost: bool,
+    resync_needed: bool,
+    deferred: Deferred,
 }
 
 fn permitted(d: &Decision, restoring: bool) -> bool {
@@ -138,6 +161,13 @@ impl Actuator {
             write_log: Vec::new(),
             refresh_needed: false,
             solo_changed: false,
+            write_log_dropped: 0,
+            safety: None,
+            link_down: false,
+            stopped_by_link: false,
+            link_lost: false,
+            resync_needed: false,
+            deferred: Deferred::default(),
         }
     }
 
@@ -172,12 +202,13 @@ impl Actuator {
 
     pub fn submit_with_id(&mut self, id: MoveId, job: Job) {
         let label = job.label();
-        if self.stopped {
-            self.emit(ActuatorEvent::Refused {
-                id,
-                label,
-                reason: Refusal::Stopped,
-            });
+        if self.link_down || self.stopped {
+            let reason = if self.link_down {
+                Refusal::Disconnected
+            } else {
+                Refusal::Stopped
+            };
+            self.emit(ActuatorEvent::Refused { id, label, reason });
             return;
         }
         self.emit(ActuatorEvent::Queued { id, label });
@@ -191,7 +222,28 @@ impl Actuator {
     pub fn stop(&mut self) {
         self.cancel_all(AbortReason::Stopped);
         self.stopped = true;
+        self.stopped_by_link = false;
         self.emit(ActuatorEvent::Stopped);
+    }
+
+    /// Attach the safety monitor: it is ticked with the scheduler clock, its trips STOP (and revert) the actuator,
+    /// and `resume` clears its latches. Pair it with a [`SafetyGate`](crate::SafetyGate) built on the same monitor.
+    pub fn set_safety(&mut self, monitor: SafetyMonitor) {
+        self.safety = Some(monitor);
+    }
+
+    pub fn safety(&self) -> Option<&SafetyMonitor> {
+        self.safety.as_ref()
+    }
+
+    /// The console connection is down (frozen until it is back).
+    pub fn is_link_down(&self) -> bool {
+        self.link_down
+    }
+
+    /// Write records dropped from the front of `write_log` because of `write_log_cap`.
+    pub fn write_log_dropped(&self) -> u64 {
+        self.write_log_dropped
     }
 
     /// PANIC: cancel everything, then ramp every param this session touched back to its baseline (at
@@ -242,6 +294,12 @@ impl Actuator {
 
     /// Lift STOP.
     pub fn resume(&mut self) {
+        if self.link_down {
+            return; // nothing to resume until the console is back
+        }
+        if let Some(m) = &self.safety {
+            m.clear_latches();
+        }
         if self.stopped {
             self.stopped = false;
             self.emit(ActuatorEvent::Ready);
@@ -266,9 +324,18 @@ impl Actuator {
         self.now = t;
         self.tokens = (self.tokens + dt * self.cfg.max_writes_per_s).min(self.capacity());
         self.drain_surface_events();
-        if self.refresh_needed {
+        if self.refresh_needed && !self.link_down {
             self.refresh_needed = false;
             self.gate.refresh(&*self.surface);
+        }
+        if self.resync_needed {
+            self.resync();
+        }
+        if let Some(m) = self.safety.clone() {
+            m.advance(t);
+            for trip in m.take_trips() {
+                self.on_trip(trip, m.config().revert_window_s);
+            }
         }
         self.cooldowns.retain(|_, until| *until > t);
         if self.active.is_none() {
@@ -276,6 +343,9 @@ impl Actuator {
         }
         if let Some(active) = self.active.take() {
             self.active = self.step_active(active);
+        }
+        if std::mem::take(&mut self.link_lost) {
+            self.on_disconnected();
         }
     }
 
@@ -353,9 +423,12 @@ impl Actuator {
                     origin: Origin::External,
                 } => self.on_external(param, value),
                 SurfaceEvent::ParamsRemapped { strip, block, .. } => self.on_remap(&strip, &block),
-                SurfaceEvent::TopologyChanged | SurfaceEvent::Reconnected => {
-                    self.refresh_needed = true
+                SurfaceEvent::Disconnected => self.on_disconnected(),
+                SurfaceEvent::Reconnected => {
+                    self.refresh_needed = true;
+                    self.resync_needed = true;
                 }
+                SurfaceEvent::TopologyChanged => self.refresh_needed = true,
                 SurfaceEvent::SoloChanged => {
                     self.refresh_needed = true;
                     self.solo_changed = true;
@@ -401,6 +474,94 @@ impl Actuator {
                     block: block.to_string(),
                 });
             }
+        }
+    }
+
+    /// The safety monitor tripped: report it; feedback and true peak STOP and ramp the last (recent) move back,
+    /// an analysis stop only STOPs, holds are enforced by the gate.
+    fn on_trip(&mut self, trip: Trip, revert_window_s: f64) {
+        if self.link_down {
+            return;
+        }
+        let mut revert = None;
+        let mut ramp = None;
+        if trip.stops() {
+            self.stop();
+            self.journal.note(format!("safety: {trip:?}"));
+            let recent = self
+                .history
+                .last()
+                .is_some_and(|h| self.now - h.at <= revert_window_s);
+            if trip.reverts() && recent {
+                let id = self.next_id();
+                if let Ok(r) = self.plan_undo(id) {
+                    revert = Some(id);
+                    ramp = Some(r);
+                }
+            }
+        }
+        self.emit(ActuatorEvent::Safety {
+            trip,
+            reverted: revert,
+        });
+        if let Some(r) = ramp {
+            self.start_ramp(r);
+        }
+    }
+
+    /// Connection lost: freeze, drop everything queued, never resume a ramp (its endpoints are stale).
+    fn on_disconnected(&mut self) {
+        if self.link_down {
+            return;
+        }
+        self.link_down = true;
+        self.stopped_by_link = !self.stopped;
+        self.cancel_all(AbortReason::Disconnected);
+        self.stopped = true;
+        self.emit(ActuatorEvent::LinkLost);
+    }
+
+    /// Connection back: re-read everything we touched. Params that changed on the console meanwhile are yielded to
+    /// the engineer (cool-down) and left as they are; deferred solo/RTA restores are retried; STOP is lifted if
+    /// the link loss was its only cause.
+    fn resync(&mut self) {
+        self.resync_needed = false;
+        if !self.link_down {
+            return;
+        }
+        let mut drifted = Vec::new();
+        let touched: Vec<(ParamId, Value)> = self
+            .last_written
+            .iter()
+            .map(|(p, v)| (p.clone(), v.clone()))
+            .collect();
+        for (param, ours) in touched {
+            match self.surface.read(&param) {
+                Ok(cur) => {
+                    if !cur.approx_eq(&ours, self.tolerance(&param)) {
+                        self.cooldowns
+                            .insert(param.clone(), self.now + self.cfg.external_cooldown_s);
+                        self.journal.note_external(param.clone(), cur);
+                        drifted.push(param);
+                    }
+                }
+                Err(SurfaceError::Disconnected) => return, // flapping: stay frozen
+                Err(_) => {}
+            }
+        }
+        self.link_down = false;
+        self.refresh_needed = false;
+        self.gate.refresh(&*self.surface);
+        if let Some((id, saved, target)) = self.deferred.solo.take() {
+            self.restore_solo_state(id, &saved, &target);
+        }
+        if let Some((id, ours, prior)) = self.deferred.rta.take() {
+            self.restore_rta(id, &ours, &prior);
+        }
+        self.emit(ActuatorEvent::LinkRestored { drifted });
+        if std::mem::take(&mut self.stopped_by_link) {
+            self.stopped = false;
+            self.emit(ActuatorEvent::Ready);
         }
     }
 
@@ -568,9 +729,12 @@ impl Actuator {
             from: Some(from.clone()),
             to: Some(to.clone()),
         };
-        let d = self
-            .gate
-            .check_write(&req, self.baseline.get(&c.param).unwrap_or(&from));
+        let base = self.baseline.get(&c.param).unwrap_or(&from);
+        let d = if restoring {
+            self.gate.check_restore(&req, base)
+        } else {
+            self.gate.check_write(&req, base)
+        };
         if !permitted(&d, restoring) {
             return Err(Refusal::Remit {
                 param: c.param.clone(),
@@ -638,11 +802,42 @@ impl Actuator {
                 },
             });
         }
+        // RTA: save the console's RTA source, select ours (the engineer's RTA view is restored afterwards).
+        let mut rta = None;
+        if let Some(src) = req.rta.clone() {
+            let rd = self.gate.check_inspection(InspectionKind::Rta, &src.strip);
+            let prior = self.surface.rta_source();
+            let selected = match (rd.class == Verdict::Allowed, prior) {
+                (false, _) => Err(Refusal::Inspection { detail: rd.detail }),
+                (true, Err(e)) => Err(Refusal::Inspection {
+                    detail: e.to_string(),
+                }),
+                (true, Ok(prior)) => self
+                    .surface
+                    .set_rta_source(Some(&src))
+                    .map(|_| (src, prior))
+                    .map_err(|e| Refusal::Inspection {
+                        detail: e.to_string(),
+                    }),
+            };
+            match selected {
+                Ok(pair) => rta = Some(pair),
+                Err(r) => {
+                    let _ = self.surface.restore_solo(&saved);
+                    return Err(r);
+                }
+            }
+        }
         self.solo_changed = false;
         self.journal.note(format!(
             "{id} {}: solo saved {:?}, soloed {:?}",
             req.label, saved.active, req.target
         ));
+        if let Some((ours, prior)) = &rta {
+            self.journal.note(format!(
+                "{id}: RTA source saved {prior:?}, selected {ours:?}"
+            ));
+        }
         let dwell = req.dwell.as_secs_f64();
         self.emit(ActuatorEvent::Started {
             id,
@@ -665,6 +860,7 @@ impl Actuator {
             measured: false,
             adjust: VecDeque::new(),
             current: None,
+            rta,
         })
     }
 
@@ -751,7 +947,11 @@ impl Actuator {
                 to: Some(w.value.clone()),
             };
             let base = self.baseline.get(&tr.spec.id).unwrap_or(&tr.from);
-            let d = self.gate.check_write(&req, base);
+            let d = if r.restoring {
+                self.gate.check_restore(&req, base)
+            } else {
+                self.gate.check_write(&req, base)
+            };
             if !permitted(&d, r.restoring) {
                 return Step::Aborted(AbortReason::Remit {
                     param: tr.spec.id.clone(),
@@ -774,6 +974,17 @@ impl Actuator {
                         param,
                         value: stored,
                     });
+                    let cap = self.cfg.write_log_cap;
+                    if cap > 0 && self.write_log.len() > cap {
+                        // drop a quarter at a time: amortised O(1) per write
+                        let n = self.write_log.len() - cap + cap / 4;
+                        self.write_log.drain(..n);
+                        self.write_log_dropped += n as u64;
+                    }
+                }
+                Err(SurfaceError::Disconnected) => {
+                    self.link_lost = true;
+                    return Step::Aborted(AbortReason::Disconnected);
                 }
                 Err(e) => {
                     return Step::Aborted(AbortReason::Surface {
@@ -811,9 +1022,15 @@ impl Actuator {
                 if !changes.is_empty() {
                     self.journal.record(r.label.clone(), changes.clone());
                     self.history.push(History {
+                        at: self.now,
                         label: r.label.clone(),
                         changes: changes.clone(),
                     });
+                    let cap = self.cfg.history_cap;
+                    if cap > 0 && self.history.len() > cap {
+                        let n = self.history.len() - cap;
+                        self.history.drain(..n);
+                    }
                 }
             }
             RampKind::Undo | RampKind::Panic => {
@@ -949,24 +1166,62 @@ impl Actuator {
 
     /// Restore the solo state saved before the inspection, keeping any solo the engineer added meanwhile.
     fn restore_solo(&mut self, i: &Inspect) {
-        let mut want: BTreeSet<SoloTarget> = i.saved.active.iter().cloned().collect();
+        self.restore_solo_state(i.id, &i.saved, &i.target);
+        if let Some((ours, prior)) = &i.rta {
+            self.restore_rta(i.id, ours, prior);
+        }
+    }
+
+    fn restore_solo_state(&mut self, id: MoveId, saved: &SoloState, target: &SoloTarget) {
+        let mut want: BTreeSet<SoloTarget> = saved.active.iter().cloned().collect();
         if let Ok(cur) = self.surface.solo_state() {
-            want.extend(cur.active.into_iter().filter(|t| *t != i.target));
+            want.extend(cur.active.into_iter().filter(|t| t != target));
         }
         let want: Vec<SoloTarget> = want.into_iter().collect();
         let res = self.surface.restore_solo(&SoloState {
-            mode: i.saved.mode,
+            mode: saved.mode,
             active: want.clone(),
         });
+        if matches!(res, Err(SurfaceError::Disconnected)) {
+            // Link down: leave the console as it is, finish the restore on reconnect.
+            self.link_lost = true;
+            self.deferred.solo = Some((id, saved.clone(), target.clone()));
+            return;
+        }
         if res.is_err() {
-            let _ = self.surface.set_solo(&i.target, false);
+            let _ = self.surface.set_solo(target, false);
         }
         let exact = res.is_ok() && self.surface.solo_state().is_ok_and(|s| s.active == want);
-        self.journal.note(format!(
-            "{}: solo restored to {:?} (exact: {exact})",
-            i.id, want
-        ));
-        self.emit(ActuatorEvent::SoloRestored { id: i.id, exact });
+        self.journal
+            .note(format!("{id}: solo restored to {want:?} (exact: {exact})"));
+        self.emit(ActuatorEvent::SoloRestored { id, exact });
+    }
+
+    /// Put the RTA source back, unless the engineer selected something else since we did.
+    fn restore_rta(&mut self, id: MoveId, ours: &RtaSource, prior: &Option<RtaSource>) {
+        match self.surface.rta_source() {
+            Ok(cur) if cur.as_ref() == Some(ours) => {
+                let res = self.surface.set_rta_source(prior.as_ref());
+                if matches!(res, Err(SurfaceError::Disconnected)) {
+                    self.link_lost = true;
+                    self.deferred.rta = Some((id, ours.clone(), prior.clone()));
+                    return;
+                }
+                let exact = res.is_ok() && self.surface.rta_source().is_ok_and(|s| s == *prior);
+                self.journal.note(format!(
+                    "{id}: RTA source restored to {prior:?} (exact: {exact})"
+                ));
+                self.emit(ActuatorEvent::RtaRestored { id, exact });
+            }
+            Ok(cur) => self.journal.note(format!(
+                "{id}: RTA source left on {cur:?} (changed by someone else)"
+            )),
+            Err(SurfaceError::Disconnected) => {
+                self.link_lost = true;
+                self.deferred.rta = Some((id, ours.clone(), prior.clone()));
+            }
+            Err(_) => {}
+        }
     }
 
     fn cancel_all(&mut self, reason: AbortReason) {

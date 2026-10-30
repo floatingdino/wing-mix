@@ -11,6 +11,8 @@ mix-surface = { path = "../mix-surface" }
 serde = { workspace = true }
 
 [dev-dependencies]
+mix-sim = { path = "../mix-sim" }
+mix-analysis = { path = "../mix-analysis" }
 criterion = { workspace = true }
 serde_json = { workspace = true }
 
