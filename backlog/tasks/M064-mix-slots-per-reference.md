@@ -2,7 +2,7 @@
 id: M064
 title: Mix slots: store console states per reference and switch instantly (A/B/C/D…)
 stage: S5
-status: review
+status: done
 owner: agent-M064
 depends: [M062]
 branch: task/M064
@@ -96,3 +96,4 @@ to compare. This replaces the earlier A/B/X blind-test idea, at the user's reque
     ms); (2) recall refuses big boosts past the session's +6 dB limit when the engineer cut a lot since a slot: maybe
     offer "re-base the session" explicitly; (3) the controller's move log restarts on each recall (target rebuild):
     keep the curve per slot; (4) per-param keep/apply choice in the GUI (protocol has the bool only).
+- 2026-10-31 coordinator: merged; make check + make app pass; CI green on branch. done. Follow-ups listed in log (recall boost limit vs re-base, per-param keep in GUI).
