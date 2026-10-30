@@ -30,6 +30,8 @@ wing-model = { git = "https://github.com/floatingdino/wing-simulator", rev = "95
 wing-dsp = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 wing-blocks = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
 wing-engine = { git = "https://github.com/floatingdino/wing-simulator", rev = "957b4061e6f75412b5c5b731c46e518199ac6ae3" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # [patch."https://github.com/floatingdino/wing-simulator"]
 # wing-proto = { path = "../wing-simulator/crates/wing-proto" }
