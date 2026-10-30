@@ -22,3 +22,4 @@ Coordinator note (from M004): capture the session-start baseline of every touche
 ## Log
 - 2026-10-30 coordinator: created.
 - 2026-10-30 agent-M040: started on task/M040 (.worktrees/M040). Plan: core Actuator (virtual-clock tick), ramp math, RemitGate/PolicyGate, thread runner, FakeSurface tests, tick bench.
+- 2026-10-30 agent-M040: core + runner committed; tests/moves.rs green (10). Gotcha: x0+(x1-x0)*1.0 != x1 in f64, final step snaps to x1 explicitly. Input eq model is coupled->forbidden on the demo fake. Next: safety tests (remit at write time, solo, yield, STOP/PANIC), runner smoke, bench.
