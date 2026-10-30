@@ -754,6 +754,7 @@ dependencies = [
  "mix-core",
  "mix-fixtures",
  "mix-surface",
+ "mix-wing-map",
  "wing-engine",
  "wing-model",
  "wing-sim",

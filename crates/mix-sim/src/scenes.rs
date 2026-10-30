@@ -119,9 +119,9 @@ pub fn reference_scene() -> Scene {
         w.push((p(ch, "eq/band.1.q"), Value::Float(1.0)));
         w.push((p(ch, "eq/band.1.gain"), Value::Float(0.0)));
     }
-    for (ch, thr, ratio) in [(1, -18.0, "4.0"), (7, -20.0, "4.0"), (13, -12.0, "3.0")] {
+    for (ch, thr, ratio) in [(1, -18.0, 4.0), (7, -20.0, 4.0), (13, -12.0, 3.0)] {
         w.push((p(ch, "dyn/threshold"), Value::Float(thr)));
-        w.push((p(ch, "dyn/ratio"), Value::Enum(ratio.into())));
+        w.push((p(ch, "dyn/ratio"), Value::Float(ratio)));
         w.push((p(ch, "dyn/attack"), Value::Float(10.0)));
         w.push((p(ch, "dyn/release"), Value::Float(120.0)));
         w.push((p(ch, "dyn/on"), Value::Bool(true)));
