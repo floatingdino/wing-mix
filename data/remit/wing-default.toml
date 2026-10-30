@@ -45,7 +45,8 @@ name_hit_protects = true                  # any monitor/comms name token -> prot
 
 [detection.names]
 # Matched as whole tokens after upper-casing and splitting on non-alphanumerics and letter/digit boundaries
-# ("IEM3" -> IEM, 3). `phrases` are matched against the name with all non-letters removed.
+# ("IEM3" -> IEM, 3). `*_phrases` match as consecutive tokens of the same tokenisation ("IN EAR" matches
+# "In-Ear 2"; remit.md 6.2), not as substrings.
 monitor = ["IEM", "IEMS", "INEAR", "EAR", "EARS", "MON", "MONS", "MONITOR", "MONITORS", "WEDGE", "WEDGES", "WDG",
            "FOLDBACK", "FB", "SIDEFILL", "DRUMFILL", "CUE", "PHONES", "HP", "HEADPHONE", "HEADPHONES", "PERS",
            "PERSONAL", "STAGE", "CLICK"]

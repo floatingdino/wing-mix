@@ -243,7 +243,7 @@ impl WingSurface {
                     }),
                     external_fx_models: map::EXTERNAL_FX_MODELS
                         .iter()
-                        .map(|s| format!("{s}"))
+                        .map(|s| s.to_string())
                         .collect(),
                 },
             },

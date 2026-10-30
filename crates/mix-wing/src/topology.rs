@@ -119,10 +119,8 @@ fn kind_of(generic: &str) -> StripKind {
 /// Strip of a WING source/destination token (`BUS.5`, `CH40`, `AUX.8`, `MAIN.1`, `MTX.2`).
 pub fn strip_of_token(tok: &str) -> Option<StripId> {
     let t = tok.to_ascii_uppercase();
-    let (pre, num) = match t.find(|c: char| c.is_ascii_digit()) {
-        Some(i) => (t[..i].trim_end_matches('.'), &t[i..]),
-        None => return None,
-    };
+    let i = t.find(|c: char| c.is_ascii_digit())?;
+    let (pre, num) = (t[..i].trim_end_matches('.'), &t[i..]);
     let n: u32 = num.parse().ok()?;
     let kind = match pre {
         "CH" => "input",

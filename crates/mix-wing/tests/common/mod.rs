@@ -106,18 +106,19 @@ pub fn wing_sim_bin() -> Option<PathBuf> {
     None
 }
 
-fn free_port() -> u16 {
-    // a port free for both TCP and UDP
+/// A port pair (p, p+1) free for TCP and UDP, outside the OS ephemeral range (other tests' sockets live there).
+fn free_port(salt: u32) -> u16 {
+    let mut x = (std::process::id() ^ salt.wrapping_mul(0x9E37_79B9)) as u64;
     loop {
-        let t = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = t.local_addr().unwrap().port();
-        if UdpSocket::bind(("127.0.0.1", port)).is_ok()
-            && UdpSocket::bind(("127.0.0.1", port + 1)).is_ok()
-        {
-            if let Ok(t2) = TcpListener::bind(("127.0.0.1", port + 1)) {
-                drop(t2);
-                return port;
-            }
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let port = 20_000 + ((x >> 33) % 14_000) as u16 * 2;
+        let ok = |p: u16| {
+            TcpListener::bind(("0.0.0.0", p)).is_ok() && UdpSocket::bind(("0.0.0.0", p)).is_ok()
+        };
+        if port != 2222 && ok(port) && ok(port + 1) {
+            return port;
         }
     }
 }
@@ -134,33 +135,40 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// `None` (test should skip) when the binary is missing.
+    /// `None` (test should skip) when the binary is missing or does not start (retries on port clashes).
     pub fn start() -> Option<Daemon> {
+        Self::start_with(&["--idle-timeout", "0"])
+    }
+
+    /// Like [`Daemon::start`] with extra daemon arguments.
+    pub fn start_with(extra: &[&str]) -> Option<Daemon> {
         let bin = wing_sim_bin()?;
+        (0..5).find_map(|_| Self::start_once(&bin, extra))
+    }
+
+    fn start_once(bin: &Path, extra: &[&str]) -> Option<Daemon> {
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();
         let state_dir = std::env::temp_dir().join(format!("wingmix-test-{pid}-{n}"));
         let _ = std::fs::remove_dir_all(&state_dir);
         std::fs::create_dir_all(&state_dir).unwrap();
-        let port = free_port();
+        let port = free_port(n);
         assert_ne!(port, 2222);
         let shm = format!("/wingmix-test-{pid}-{n}");
-        let child = Command::new(&bin)
+        let child = Command::new(bin)
             .args(["--name", "WMTEST", "--port", &port.to_string()])
             .args(["--discovery-port", &port.to_string()])
             .args(["--osc-port", &(port + 1).to_string()])
-            .args([
-                "--no-hostio",
-                "--shm-name",
-                &shm,
-                "--idle-timeout",
-                "0",
-                "--no-autosave",
-            ])
+            .args(["--no-hostio", "--shm-name", &shm, "--no-autosave"])
+            .args(extra)
             .arg("--state-dir")
             .arg(&state_dir)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(
+                std::fs::File::create(state_dir.join("wing-sim.log"))
+                    .map(Stdio::from)
+                    .unwrap_or_else(|_| Stdio::null()),
+            )
             .spawn()
             .ok()?;
         let addr: SocketAddr = ([127, 0, 0, 1], port).into();
@@ -175,12 +183,16 @@ impl Daemon {
             if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
                 return Some(d);
             }
-            if let Ok(Some(_)) = d.child.try_wait() {
+            if let Ok(Some(st)) = d.child.try_wait() {
+                let log =
+                    std::fs::read_to_string(d.state_dir.join("wing-sim.log")).unwrap_or_default();
+                eprintln!("wing-sim exited ({st}):\n{log}");
                 return None;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        let _ = d.child.kill();
+        let log = std::fs::read_to_string(d.state_dir.join("wing-sim.log")).unwrap_or_default();
+        eprintln!("wing-sim did not accept connections within 20 s:\n{log}");
         None
     }
 
