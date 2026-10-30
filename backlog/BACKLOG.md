@@ -82,3 +82,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M064 | Mix slots: store console states per reference, instant A/B/C/D recall | M062 | opus |
 | M065 | Bus role detection (multi-hop, FX buses) + bulk remit editing | M061 | opus |
 | M066 | Make CI green on macOS and Linux | - | sonnet |
+| M067 | Change budget pacing + meter-based strip estimates | M062 | opus |

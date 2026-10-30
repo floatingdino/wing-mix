@@ -2,7 +2,7 @@
 id: M062
 title: Solo-based per-strip measurement when only a stereo tap is available
 stage: S3
-status: review
+status: done
 owner: agent-M062
 depends: [M052, M039]
 branch: task/M062
@@ -83,3 +83,4 @@ instead of proposing nothing. Also: per-strip taps from USB (≤24) as an option
     priors and set their levels before any sweep (no-solo consoles); (3) the change budget (120 dB) ends every
     real run before convergence (compressor thresholds/makeups count fully, M039 follow-up 3); (4) GUI: show
     `session.strips` coverage and `strip_measured` in WingMix.app; (5) multichannel e2e re-baseline after M039.
+- 2026-10-31 coordinator: merged (doc conflict + Topology.context test fix); make check + make app pass. done. Follow-ups → M067.
