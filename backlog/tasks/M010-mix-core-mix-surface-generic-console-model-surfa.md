@@ -2,10 +2,10 @@
 id: M010
 title: mix-core + mix-surface: generic console model, Surface trait, Remit engine, journal
 stage: S1
-status: todo
-owner: -
+status: in_progress
+owner: agent-M010
 depends: [M001, M004]
-branch: -
+branch: task/M010
 model: opus
 ---
 
@@ -20,3 +20,6 @@ Implement shared types in mix-core (units, Value, Features/TargetProfile skeleto
 
 ## Log
 - 2026-10-30 coordinator: created.
+- 2026-10-30 agent-M010: started in .worktrees/M010. Plan: mix-core ids/value/units/action (separate files; M020 owns
+  bands/features/profile); mix-surface model + Surface trait + remit (policy loader, evaluator, detection) + journal +
+  testkit (FakeSurface, conformance suite); data/remit/tests tables driven as unit tests.
