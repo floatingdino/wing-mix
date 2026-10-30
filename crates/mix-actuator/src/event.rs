@@ -5,7 +5,8 @@ use mix_core::ids::{ParamId, StripId};
 use mix_core::value::Value;
 use mix_surface::journal::{Change, Conflict};
 use mix_surface::remit::{Reason, Verdict};
-use mix_surface::surface::{SoloState, SoloTarget, Surface};
+use crate::safety::Trip;
+use mix_surface::surface::{RtaSource, SoloState, SoloTarget, Surface};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
@@ -39,6 +40,9 @@ pub struct InspectRequest {
     pub target: SoloTarget,
     pub dwell: Duration,
     pub measure: Option<MeasureFn>,
+    /// Point the console RTA at this source for the inspection; the prior RTA source is restored afterwards
+    /// (unless the engineer changed it meanwhile).
+    pub rta: Option<RtaSource>,
 }
 
 impl InspectRequest {
@@ -48,11 +52,18 @@ impl InspectRequest {
             target,
             dwell,
             measure: None,
+            rta: None,
         }
     }
 
     pub fn strip(strip: StripId, dwell: Duration) -> Self {
         Self::new(SoloTarget::strip(strip), dwell)
+    }
+
+    /// Also select the console RTA source for the inspection (saved and restored like the solo state).
+    pub fn with_rta(mut self, source: RtaSource) -> Self {
+        self.rta = Some(source);
+        self
     }
 
     pub fn measure(
@@ -127,6 +138,8 @@ pub enum Refusal {
     /// Solo mode is destructive (solo-in-place): inspecting would mute the PA.
     DestructiveSolo,
     NothingToUndo,
+    /// The connection to the console is down: nothing is accepted until it is back.
+    Disconnected,
 }
 
 /// Why a running job ended early. Params already written stay where they are (journaled, undoable).
@@ -153,6 +166,8 @@ pub enum AbortReason {
     },
     /// Solo mode became destructive during an inspection.
     DestructiveSolo,
+    /// The connection to the console was lost (the move is not resumed on reconnect).
+    Disconnected,
 }
 
 /// Kind of a started job.
@@ -233,6 +248,24 @@ pub enum ActuatorEvent {
         conflicts: Vec<Conflict>,
         /// Params not restored because the remit or the surface refused them now.
         skipped: Vec<Refusal>,
+    },
+    /// Inspection: RTA source restored (`exact`: read back equal to the expected source). Not emitted when the
+    /// engineer selected another source meanwhile (that choice is left alone).
+    RtaRestored {
+        id: MoveId,
+        exact: bool,
+    },
+    /// The safety layer tripped. `reverted` is the id of the undo move started in response, if any.
+    Safety {
+        trip: Trip,
+        reverted: Option<MoveId>,
+    },
+    /// Connection lost: everything frozen, queue dropped, nothing will be replayed.
+    LinkLost,
+    /// Connection back: touched params re-read; `drifted` were changed on the console meanwhile (yielded to the
+    /// engineer, not overwritten).
+    LinkRestored {
+        drifted: Vec<ParamId>,
     },
     /// STOP (or the end of a PANIC): frozen, no job runs until `resume`.
     Stopped,

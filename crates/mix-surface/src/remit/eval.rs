@@ -33,6 +33,8 @@ pub enum Reason {
     Coupling,
     Revive,
     Inspection,
+    /// Not the remit: the actuator's safety layer (envelope, ceiling, feedback guard, watchdog) refused.
+    Safety,
 }
 
 impl Reason {
@@ -49,6 +51,7 @@ impl Reason {
             Reason::Coupling => "coupling",
             Reason::Revive => "revive",
             Reason::Inspection => "inspection",
+            Reason::Safety => "safety",
         }
     }
 }

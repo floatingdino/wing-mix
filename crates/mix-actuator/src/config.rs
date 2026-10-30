@@ -101,6 +101,21 @@ pub struct ActuatorConfig {
     pub external_cooldown_s: f64,
     /// Pause between two jobs (s): lets analysis settle before the next move.
     pub settle_s: f64,
+    /// Most write records kept in memory (`Actuator::write_log`); the oldest are dropped first and counted
+    /// (`write_log_dropped`). 0 = unbounded. M050 persists the full audit trail via the event stream.
+    #[serde(default = "default_write_log_cap")]
+    pub write_log_cap: usize,
+    /// Most completed moves kept for undo (oldest dropped first). 0 = unbounded.
+    #[serde(default = "default_history_cap")]
+    pub history_cap: usize,
+}
+
+fn default_write_log_cap() -> usize {
+    10_000
+}
+
+fn default_history_cap() -> usize {
+    256
 }
 
 impl Default for ActuatorConfig {
@@ -117,6 +132,8 @@ impl Default for ActuatorConfig {
             fader_floor_db: -80.0,
             external_cooldown_s: 5.0,
             settle_s: 0.0,
+            write_log_cap: default_write_log_cap(),
+            history_cap: default_history_cap(),
         }
     }
 }
