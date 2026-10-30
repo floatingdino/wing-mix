@@ -290,6 +290,12 @@ pub struct StartOptions {
     pub time_scale: Option<f64>,
     #[serde(default)]
     pub max_batches: Option<u32>,
+    /// M067 change budget: weighted net deviation from the session baseline (dB; default 60).
+    #[serde(default)]
+    pub max_net_db: Option<f64>,
+    /// M067 pacing: weighted dB per minute (default 24).
+    #[serde(default)]
+    pub max_db_per_min: Option<f64>,
     #[serde(default)]
     pub target_objective: Option<f64>,
     /// Follow the plan's solo inspections (default true; needs a `solo` tap).
