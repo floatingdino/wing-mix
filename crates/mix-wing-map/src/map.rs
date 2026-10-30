@@ -577,6 +577,107 @@ fn map_system(path: &str, segs: &[&str]) -> Option<Mapped> {
     Some(m)
 }
 
+// ---- preamp aliases (remit.md A.1/A.3) --------------------------------------------------------------------------
+
+/// `<strip>/preamp/<leaf>` aliases of the source params that feed a strip: (generic leaf, `io/in/<grp>/<n>/` leaf).
+pub const PREAMP_ALIASES: &[(&str, &str)] = &[("gain", "g"), ("phantom", "vph")];
+
+/// WING path prefix (`io/in/A/3`) of the source currently feeding an input/aux strip: its `in/conn` patch, or the
+/// alt source (`in/conn/altgrp`/`altin`) while `in/set/altsrc` is on. `None` for other strips, unpatched or
+/// source-less (`OFF`) strips.
+pub fn preamp_source(store: &ParamStore, strip: &StripId) -> Option<String> {
+    let root = strip_path(strip)?;
+    if !root.starts_with("ch/") && !root.starts_with("aux/") {
+        return None;
+    }
+    let alt = store
+        .lookup(&format!("{root}/in/set/altsrc"))
+        .and_then(|n| store.get_f64(n))
+        .is_some_and(|v| v != 0.0);
+    let (g, i) = if alt {
+        ("altgrp", "altin")
+    } else {
+        ("grp", "in")
+    };
+    let grp = store.lookup(&format!("{root}/in/conn/{g}"))?;
+    let mut tok = String::new();
+    store.format_token(grp, &mut tok).ok()?;
+    let n = store.get_f64(store.lookup(&format!("{root}/in/conn/{i}"))?)? as i64;
+    (n > 0).then(|| format!("io/in/{tok}/{n}"))
+}
+
+/// The `<strip>/preamp/<leaf>` alias params of `strip` that resolve under the current patch, as (source node,
+/// mapping). The mapping has the alias id and the class/codec of the source param (`preamp_gain`, `phantom`), so
+/// remit treats the alias exactly like the source.
+pub fn preamp_aliases(store: &ParamStore, strip: &StripId) -> Vec<(NodeId, Mapped)> {
+    let Some(prefix) = preamp_source(store, strip) else {
+        return Vec::new();
+    };
+    PREAMP_ALIASES
+        .iter()
+        .filter_map(|(leaf, src)| {
+            let node = store.lookup(&format!("{prefix}/{src}"))?;
+            let mut m = map_node(store, node)?;
+            m.id = ParamId::new(format!("{strip}/preamp/{leaf}"));
+            Some((node, m))
+        })
+        .collect()
+}
+
+/// Resolve a `<strip>/preamp/<leaf>` alias id.
+pub fn resolve_preamp_alias(store: &ParamStore, id: &ParamId) -> Option<(NodeId, Mapped)> {
+    let strip = id.strip()?;
+    preamp_aliases(store, &strip)
+        .into_iter()
+        .find(|(_, m)| &m.id == id)
+}
+
+/// Every input/aux strip whose preamp aliases currently resolve to `source` (a node below `io/in/<grp>/<n>/`),
+/// with the alias mappings: used to mirror source changes onto the aliases.
+pub fn aliases_of_source(store: &ParamStore, source: NodeId) -> Vec<(StripId, Mapped)> {
+    let s = Schema::get();
+    let path = s.path(source);
+    let Some((prefix, _)) = path.rsplit_once('/') else {
+        return Vec::new();
+    };
+    if !path.starts_with("io/in/") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (dom, kind, n) in STRIP_DOMAINS {
+        if !matches!(*dom, "ch" | "aux") {
+            continue;
+        }
+        for i in 1..=*n {
+            let strip = StripId::new(kind, i);
+            if preamp_source(store, &strip).as_deref() == Some(prefix) {
+                out.extend(
+                    preamp_aliases(store, &strip)
+                        .into_iter()
+                        .filter(|(n, _)| *n == source)
+                        .map(|(_, m)| (strip.clone(), m)),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// The strip whose patch/alt-source selector `node` is (`ch/3/in/conn/grp`, `.../in`, `altgrp`, `altin`,
+/// `in/set/altsrc`): its preamp aliases then point somewhere else.
+pub fn patch_strip_of(node: NodeId) -> Option<StripId> {
+    let s = Schema::get();
+    let path = s.path(node);
+    let segs: Vec<&str> = path.split('/').collect();
+    match segs.as_slice() {
+        [d @ ("ch" | "aux"), _, "in", "conn", "grp" | "in" | "altgrp" | "altin"]
+        | [d @ ("ch" | "aux"), _, "in", "set", "altsrc"] => {
+            strip_of_path(&path).filter(|_| generic_kind(d).is_some())
+        }
+        _ => None,
+    }
+}
+
 /// Reverse index for non-slot params (generic id -> node) and model-block prefixes (for slot lookups).
 pub struct Index {
     by_id: HashMap<ParamId, NodeId>,
@@ -641,6 +742,41 @@ impl Index {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preamp_alias_resolves_through_the_patch_and_alt_source() {
+        use wing_model::Value as W;
+        let store = ParamStore::new();
+        let strip = StripId::new("input", 2);
+        assert!(preamp_aliases(&store, &StripId::new("bus", 1)).is_empty());
+        let set = |p: &str, v: W| store.set_from(store.lookup(p).unwrap(), v, 1).unwrap();
+        let tok = |p: &str, t: &str| store.set_enum_name(store.lookup(p).unwrap(), t, 1).unwrap();
+        tok("ch/2/in/conn/grp", "LCL");
+        set("ch/2/in/conn/in", W::Int(4));
+        tok("ch/2/in/conn/altgrp", "A");
+        set("ch/2/in/conn/altin", W::Int(9));
+        let a = preamp_aliases(&store, &strip);
+        let ids: Vec<_> = a.iter().map(|(_, m)| m.id.as_str().to_string()).collect();
+        assert_eq!(ids, ["input.2/preamp/gain", "input.2/preamp/phantom"]);
+        assert_eq!(Schema::get().path(a[0].0), "io/in/LCL/4/g");
+        assert_eq!(a[0].1.class, ParamClass::PreampGain);
+        assert_eq!(a[1].1.class, ParamClass::Phantom);
+        let (n, _) = resolve_preamp_alias(&store, &ParamId::new("input.2/preamp/gain")).unwrap();
+        assert!(aliases_of_source(&store, n)
+            .iter()
+            .any(|(s, _)| *s == strip));
+        assert!(patch_strip_of(store.lookup("ch/2/in/conn/in").unwrap()) == Some(strip.clone()));
+        // alt source on: the alias follows io/in/A/9
+        set("ch/2/in/set/altsrc", W::Int(1));
+        let a = preamp_aliases(&store, &strip);
+        assert_eq!(Schema::get().path(a[0].0), "io/in/A/9/g");
+        assert!(!aliases_of_source(&store, n)
+            .iter()
+            .any(|(s, _)| *s == strip));
+        // no source: no alias
+        tok("ch/2/in/conn/altgrp", "OFF");
+        assert!(preamp_aliases(&store, &strip).is_empty());
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 

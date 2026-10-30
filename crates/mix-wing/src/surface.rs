@@ -305,6 +305,10 @@ impl WingSurface {
 
     fn resolve(&self, param: &ParamId) -> SurfaceResult<(NodeId, Mapped)> {
         let st = self.store();
+        if param.as_str().contains("/preamp/") {
+            return map::resolve_preamp_alias(st, param)
+                .ok_or_else(|| SurfaceError::UnknownParam(param.clone()));
+        }
         let node = self
             .index
             .node(st, param)
@@ -654,9 +658,31 @@ fn dispatch(rx: Receiver<ClientMsg>, client: Weak<NativeClient>, subs: Subs, lin
                     });
                 }
             }
+            // re-patching (or switching to the alt source) moves the strip's preamp aliases to another source
+            if let Some(strip) = map::patch_strip_of(id) {
+                topo = true;
+                for (n, m) in map::preamp_aliases(st, &strip) {
+                    if let Some(value) = convert::read(st, n, &m) {
+                        events.push(SurfaceEvent::ParamChanged {
+                            param: m.id,
+                            value,
+                            origin,
+                        });
+                    }
+                }
+            }
             let Some(m) = map::map_node(st, id) else {
                 continue;
             };
+            for (_, am) in map::aliases_of_source(st, id) {
+                if let Some(value) = convert::read(st, id, &am) {
+                    events.push(SurfaceEvent::ParamChanged {
+                        param: am.id,
+                        value,
+                        origin,
+                    });
+                }
+            }
             if m.class == ParamClass::SendLevel {
                 let v = st.get_f64(id).unwrap_or(-144.0) > SEND_FLOOR_DB;
                 if above_floor.insert(ch.id, v).is_some_and(|old| old != v) {
@@ -734,6 +760,10 @@ impl Surface for WingSurface {
             if m.id.strip().as_ref() != Some(strip) {
                 continue;
             }
+            out.push(self.spec_of(n, &m)?);
+        }
+        // `<strip>/preamp/{gain,phantom}`: the source feeding the strip, resolved through its patch
+        for (n, m) in map::preamp_aliases(st, strip) {
             out.push(self.spec_of(n, &m)?);
         }
         Ok(out)
