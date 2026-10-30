@@ -54,7 +54,13 @@ pub fn wing_sim_bin() -> Option<PathBuf> {
 
 /// A port pair (p, p+1) free for TCP and UDP, outside the OS ephemeral range, never 2222/2223.
 fn free_port(salt: u32) -> u16 {
-    let mut x = (std::process::id() ^ salt.wrapping_mul(0x9E37_79B9)) as u64;
+    // mix in the clock: concurrent test binaries (different pids, same salts) must not walk the same sequence
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let mut x = ((std::process::id() as u64) << 32 | nanos as u64)
+        ^ (salt as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     loop {
         x = x
             .wrapping_mul(6364136223846793005)
@@ -158,7 +164,12 @@ impl SimDaemon {
         while Instant::now() < deadline {
             if std::net::TcpStream::connect_timeout(&self.addr, Duration::from_millis(200)).is_ok()
             {
-                return true;
+                // the port may belong to another test binary's daemon (probe-then-bind race): only ours counts,
+                // so make sure our child survived binding it
+                std::thread::sleep(Duration::from_millis(150));
+                if matches!(self.child.try_wait(), Ok(None)) {
+                    return true;
+                }
             }
             if let Ok(Some(st)) = self.child.try_wait() {
                 eprintln!("wing-sim exited ({st}):\n{}", self.log());

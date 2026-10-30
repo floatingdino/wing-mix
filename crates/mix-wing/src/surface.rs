@@ -371,6 +371,7 @@ impl WingSurface {
     /// Set a node's raw value on the mirror and the console (inspection/config writes that bypass the param map).
     fn set_node(&self, node: NodeId, v: WValue) -> SurfaceResult<()> {
         self.alive()?;
+        let _g = self.client.write_guard();
         self.store()
             .set_from(node, v, ORIGIN_LOCAL)
             .map_err(|e| SurfaceError::Refused(e.to_string()))?;
@@ -379,6 +380,7 @@ impl WingSurface {
 
     fn set_token(&self, node: NodeId, tok: &str) -> SurfaceResult<()> {
         self.alive()?;
+        let _g = self.client.write_guard();
         self.store()
             .set_enum_name(node, tok, ORIGIN_LOCAL)
             .map_err(|e| SurfaceError::Refused(e.to_string()))?;
@@ -511,6 +513,7 @@ impl WingSurface {
     fn restore_rta_raw(&self, saved: (u32, u32)) -> SurfaceResult<()> {
         let (a, b) = self.rta_nodes()?;
         for (n, raw) in [(b, saved.1), (a, saved.0)] {
+            let _g = self.client.write_guard();
             self.store()
                 .set_raw(n, raw, ORIGIN_LOCAL)
                 .map_err(|e| SurfaceError::Refused(e.to_string()))?;
@@ -795,9 +798,11 @@ impl Surface for WingSurface {
             param: param.clone(),
             got: value.type_name(),
         })?;
+        let g = self.client.write_guard();
         convert::apply(self.store(), n, &w, ORIGIN_LOCAL)
             .map_err(|e| SurfaceError::Refused(format!("{param}: {e}")))?;
         self.client.send_value(n).map_err(io)?;
+        drop(g);
         convert::read(self.store(), n, &m).ok_or_else(|| SurfaceError::UnknownParam(param.clone()))
     }
 
@@ -905,7 +910,8 @@ impl Surface for WingSurface {
 /// A second `WingSurface` acts as "another client" for the conformance suite.
 impl ConformanceDriver for WingSurface {
     fn external_write(&self, param: &ParamId, value: Value) -> bool {
-        self.write(param, value).is_ok()
+        // a round trip orders the write before whatever the other connection asks the console next
+        self.write(param, value).is_ok() && self.client.barrier(self.timeout).is_ok()
     }
 
     fn set_destructive_solo(&self, on: bool) -> bool {
@@ -915,11 +921,12 @@ impl ConformanceDriver for WingSurface {
                 *lock(&self.driver_prev_mode) = Some(prev);
             }
             self.write(&p, Value::Enum("SIP".into())).is_ok()
+                && self.client.barrier(self.timeout).is_ok()
         } else {
             let prev = lock(&self.driver_prev_mode)
                 .take()
                 .unwrap_or_else(|| "LIVE".into());
-            self.write(&p, Value::Enum(prev)).is_ok()
+            self.write(&p, Value::Enum(prev)).is_ok() && self.client.barrier(self.timeout).is_ok()
         }
     }
 }
