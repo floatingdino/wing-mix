@@ -4,7 +4,9 @@
 //! loudness-normalise to -23 LUFS (the analysis is scale-invariant; this just keeps levels and gates in a fixed
 //! range, and the original integrated loudness is restored in `loudness.integrated_lufs`) → offline analysis
 //! (`mix_analysis::analyse_buffer`) → sections (novelty + clustering, see [`sections`]) → `ProfileBuilder`.
-//! Profiles are cached on disk by blake3 + analysis/schema/reference versions + section choice.
+//! A section-focused profile's PLR and LRA are measured over that section (M037; the builder's Session values
+//! describe the whole song). Profiles are cached on disk by blake3 + analysis/schema/reference versions +
+//! section choice.
 //!
 //! Per-stem targets (M023) plug in through [`StemTargetProvider`]; this crate does no source separation.
 
@@ -30,7 +32,7 @@ pub use resample::resample;
 pub use sections::detect_sections;
 
 /// Bump when this crate's pipeline changes results (resampling, normalisation, sectioning); invalidates caches.
-pub const REFERENCE_VERSION: u32 = 1;
+pub const REFERENCE_VERSION: u32 = 2;
 /// Analysis sample rate.
 pub const ANALYSIS_RATE: u32 = 48_000;
 /// Normalisation target (EBU R128 programme loudness).
@@ -219,6 +221,9 @@ pub fn build_profile(
         sample_rate_in: ing.sample_rate_in,
     };
     let mut p = ProfileBuilder::new(&ing.analysis).build(source, &ing.sections, focus);
+    if let Some(sec) = focus {
+        section_loudness(ing, sec, &mut p)?;
+    }
     // Undo the normalisation gain on the informational absolute loudness.
     if let Some(i) = ing.integrated_lufs {
         p.loudness.integrated_lufs += (i - NORMALISE_LUFS) as f32;
@@ -240,6 +245,42 @@ pub fn build_profile(
         }
     }
     Ok(p)
+}
+
+/// PLR and LRA of a section-focused profile measured over the section itself (M037). The builder takes them
+/// from the whole-song Session, which a live section is never comparable with: a dynamic song's LRA (17 LU for
+/// one of the fixture records) against a 15 s live section's (2-5 LU) reads as "squashed", and the song's
+/// loudest peak against a quiet section's loudness inflates PLR. Measured with the same analyser as the live tap.
+fn section_loudness(
+    ing: &Ingested,
+    sec: &SectionRef,
+    p: &mut TargetProfile,
+) -> Result<(), ReferenceError> {
+    let a = &ing.audio;
+    let ch = a.channels.max(1);
+    let frame = |t: f64| ((t.max(0.0) * a.sample_rate as f64) as usize).min(a.samples.len() / ch);
+    let (s0, s1) = (frame(sec.start_s), frame(sec.end_s));
+    // Shorter than a short-term window: keep the song values.
+    if s1 <= s0 + 3 * a.sample_rate as usize {
+        return Ok(());
+    }
+    let opts = OfflineOptions {
+        novelty: false,
+        ..OfflineOptions::default()
+    };
+    let an = analyse_buffer(
+        &a.samples[s0 * ch..s1 * ch],
+        &AnalyserConfig::new(a.sample_rate, a.channels),
+        &opts,
+    )
+    .map_err(|e| ReferenceError::Analysis(e.to_string()))?;
+    if let Some(v) = an.session.loudness.lra_lu {
+        p.loudness.lra_lu = v;
+    }
+    if let Some(v) = an.session.loudness.plr_db.filter(|v| v.is_finite()) {
+        p.loudness.plr_db = v;
+    }
+    Ok(())
 }
 
 /// File → profile, consulting `cache` first when given (a hit skips decode and analysis).

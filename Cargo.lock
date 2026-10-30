@@ -697,6 +697,7 @@ dependencies = [
  "mix-actuator",
  "mix-analysis",
  "mix-core",
+ "mix-describe",
  "mix-fixtures",
  "mix-knowledge",
  "mix-reference",
