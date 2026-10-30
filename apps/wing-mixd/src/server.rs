@@ -75,6 +75,16 @@ pub struct ControlServer {
 impl ControlServer {
     /// Bind `path` (a stale socket file is replaced; a live one is an `AddrInUse` error) and serve.
     pub fn spawn(path: &Path, d: Arc<dyn Dispatch>) -> io::Result<Self> {
+        #[cfg(unix)]
+        if path.as_os_str().len() > 100 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: Unix socket paths are limited to ~104 bytes; use a shorter --state-dir",
+                    path.display()
+                ),
+            ));
+        }
         if path.exists() {
             if sock::connect(path).is_ok() {
                 return Err(io::Error::new(
@@ -212,4 +222,62 @@ pub fn subscribe(path: &Path) -> Result<impl Iterator<Item = String>, String> {
     r.read_line(&mut ack).map_err(|e| e.to_string())?;
     parse_reply(&ack)?;
     Ok(r.lines().map_while(Result::ok))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::Mutex;
+
+    struct Echo(Mutex<Vec<Sender<String>>>);
+
+    impl Dispatch for Echo {
+        fn dispatch(&self, req: Request) -> Result<Value, String> {
+            match req {
+                Request::Ping => {
+                    for s in self.0.lock().unwrap().iter() {
+                        let _ = s.send(json!({"source": "daemon", "type": "pinged"}).to_string());
+                    }
+                    Ok(json!("pong"))
+                }
+                r => Err(format!("unsupported {}", r.name())),
+            }
+        }
+        fn events(&self) -> Receiver<String> {
+            let (tx, rx) = channel();
+            self.0.lock().unwrap().push(tx);
+            rx
+        }
+    }
+
+    #[test]
+    fn socket_round_trip_stream_and_cleanup() {
+        // short path: Unix socket paths are limited to ~104 bytes
+        let dir = PathBuf::from(format!("/tmp/wmxd-sock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("control.sock");
+        drop(sock::bind(&path).unwrap()); // stale socket file: replaced
+        let server = ControlServer::spawn(&path, Arc::new(Echo(Mutex::new(Vec::new())))).unwrap();
+        assert_eq!(
+            ControlServer::spawn(&path, Arc::new(Echo(Mutex::new(Vec::new()))))
+                .err()
+                .map(|e| e.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        let t = Duration::from_secs(5);
+        let mut events = subscribe(&path).unwrap();
+        assert_eq!(request(&path, "ping", t), Ok(json!("pong")));
+        assert!(request(&path, r#"{"cmd":"undo"}"#, t)
+            .unwrap_err()
+            .contains("unsupported undo"));
+        assert!(request(&path, "bogus words", t).is_err());
+        let e: Value = serde_json::from_str(&events.next().unwrap()).unwrap();
+        assert_eq!(e["type"], "pinged");
+        drop(server);
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

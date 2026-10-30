@@ -15,6 +15,7 @@ mix-knowledge = { path = "../../crates/mix-knowledge" }
 mix-llm = { path = "../../crates/mix-llm" }
 serde_json.workspace = true
 mix-stems = { path = "../../crates/mix-stems" }
+wing-mixd = { path = "../wing-mixd" }
 
 [dev-dependencies]
 hound = { workspace = true }

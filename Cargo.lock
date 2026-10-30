@@ -1867,6 +1867,7 @@ dependencies = [
  "mix-reference",
  "mix-stems",
  "serde_json",
+ "wing-mixd",
 ]
 
 [[package]]
