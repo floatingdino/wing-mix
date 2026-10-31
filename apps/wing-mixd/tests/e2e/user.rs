@@ -185,6 +185,12 @@ pub fn run(fx: &Fixture, snap: &Path, out: &Path) -> Option<UserRun> {
             }
         }
     }
+    if stems {
+        // the cached stem profile is used only when the sidecar counts as installed (it is never run: cache hit)
+        let sd = dir.join("s").join("stems");
+        std::fs::create_dir_all(&sd).unwrap();
+        std::fs::write(sd.join("installed.json"), r#"{"model":"htdemucs"}"#).unwrap();
+    }
     let d = Mixd::start(&dir);
     d.req(
         json!({"cmd": "connect_console", "console": "wing", "ip": "127.0.0.1",
