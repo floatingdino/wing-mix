@@ -482,17 +482,33 @@ impl NativeClient {
         for chunk in ids.chunks(256) {
             let mut w = lock(&self.writer);
             let base = w.de_sent;
-            target = self.write_locked(&mut w, |enc, buf| {
+            // Register the expected answers *before* the request goes out (M069): the reader thread may process
+            // an answer before this thread returns from the write, and an unregistered answer is taken for a
+            // change event from someone else (a spurious External event, e.g. on an RTA claim's refresh).
+            {
+                let mut gets = lock(&self.shared.gets);
+                for (i, &id) in chunk.iter().enumerate() {
+                    gets.insert(id, base + i as u64 + 1);
+                }
+            }
+            target = match self.write_locked(&mut w, |enc, buf| {
                 for &id in chunk {
                     let _ = enc.control(&Token::NavHash(s.hash(id)), buf);
                     let _ = enc.control(&Token::DataRequest, buf);
                 }
                 chunk.len() as u64
-            })?;
-            let mut gets = lock(&self.shared.gets);
-            for (i, &id) in chunk.iter().enumerate() {
-                gets.insert(id, base + i as u64 + 1);
-            }
+            }) {
+                Ok(t) => t,
+                Err(e) => {
+                    let mut gets = lock(&self.shared.gets);
+                    for (i, &id) in chunk.iter().enumerate() {
+                        if gets.get(&id) == Some(&(base + i as u64 + 1)) {
+                            gets.remove(&id);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
         }
         if ids.is_empty() {
             return Ok(());
