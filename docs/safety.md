@@ -39,6 +39,12 @@ only the holds below apply, not the size limits).
 Holds block gain *increases* only (value goes up by more than the param tolerance): cuts, filters, moves toward the
 baseline and non-gain params continue. While a hold is active the operator can still cut.
 
+Undo/PANIC under a hold (M068): a restore the safety layer refuses (an increase under a hold; for undo also a
+discrete change on an audible strip) is *held* in place while the rest of the restore runs, and completes once the
+hold releases. After 10 s (`RESTORE_HOLD_S`) of refusals that param is left and reported in `Reverted.skipped`.
+Before M068 one refused write aborted the whole PANIC in place (e2e: a fader increase under a feedback-*suspect*
+hold of a monitor-coupled strip left 32 params unrestored), and a refusal at plan time dropped the param at once.
+
 ## Feedback-risk guard
 
 Input: third-octave frames from `Features` (main mix, or any tap via `feed_features`) or console RTA bands. Per
