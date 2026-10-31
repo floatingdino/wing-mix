@@ -212,7 +212,14 @@ pub struct DiagnosisConfig {
     /// M067: confidence factor of level checks that involve a [meter-refined](StripTap::meter_refined) strip (its
     /// level is a peak-meter reading scaled into the main, not a loudness measurement).
     pub meter_confidence: f32,
+    /// M070 scrutiny: every tolerance (and target interval half-width) is multiplied by this (0.5 = twice as
+    /// strict, 1.5 = more forgiving), for problems and the continuous distance alike. Threshold evidence
+    /// (sources.toml problems) is unaffected.
+    pub tolerance_scale: f32,
 }
+
+/// Range of [`DiagnosisConfig::tolerance_scale`] the daemon accepts.
+pub const SCRUTINY_RANGE: (f32, f32) = (0.5, 1.5);
 
 impl Default for DiagnosisConfig {
     fn default() -> Self {
@@ -228,6 +235,7 @@ impl Default for DiagnosisConfig {
             gate_opportunities: false,
             comp_opportunities: false,
             meter_confidence: 0.5,
+            tolerance_scale: 1.0,
         }
     }
 }
@@ -365,6 +373,7 @@ impl<'a> Ctx<'a> {
 
     /// Records a mix-level check for [`Diagnosis::distance`].
     pub fn record(&mut self, weight: f32, ev: &Evidence) {
+        let ev = &ev.scaled(self.cfg.tolerance_scale);
         if ev.tolerance > 0.0 && ev.deviation.is_finite() {
             self.dist.push((weight, ev.deviation / ev.tolerance));
         }
@@ -376,7 +385,7 @@ impl<'a> Ctx<'a> {
 
     /// Adds a problem when its evidence exceeds tolerance.
     pub fn push(&mut self, d: Draft) {
-        let ev = d.evidence;
+        let ev = d.evidence.scaled(self.cfg.tolerance_scale);
         if ev.excess.is_nan() || ev.excess <= 0.0 || !ev.excess.is_finite() {
             return;
         }

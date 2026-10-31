@@ -732,3 +732,75 @@ fn loudness_range_needs_a_comparable_span() {
     m.t_end_s = 120.0;
     assert!(lra(&run(&m, &p, &[])));
 }
+
+/// M070 scrutiny: a deviation inside the default tolerance is no problem at 1.0 but is at 0.5; the continuous
+/// distance scales with it; a matched mix stays clean at any scrutiny.
+#[test]
+fn scrutiny_scales_every_tolerance() {
+    let p = synth::profile();
+    let at = |m: &Features, s: f32| {
+        diagnose(
+            &DiagnosisInput::new(m, &p),
+            kb(),
+            &DiagnosisConfig {
+                tolerance_scale: s,
+                ..DiagnosisConfig::default()
+            },
+        )
+        .unwrap()
+    };
+    let matched = synth::features_matching(&p, long());
+    for s in [0.5, 1.0, 1.5] {
+        let d = at(&matched, s);
+        assert!(d.problems.is_empty(), "{s}: {}", dump(&d));
+    }
+    let mut m = matched.clone();
+    // inside the band tolerance: find the largest shift that is still clean at 1.0
+    let mut shift = 0.0;
+    for k in 1..=40 {
+        let mut x = matched.clone();
+        shift_band(
+            &mut x.spectrum.erb_mid_rel_db,
+            2000.0,
+            5000.0,
+            k as f32 * 0.25,
+        );
+        if !at(&x, 1.0).problems.is_empty() {
+            break;
+        }
+        shift = k as f32 * 0.25;
+        m = x;
+    }
+    assert!(shift > 0.5, "{shift}");
+    let normal = at(&m, 1.0);
+    let strict = at(&m, 0.5);
+    let loose = at(&m, 1.5);
+    assert!(normal.problems.is_empty(), "{}", dump(&normal));
+    assert!(!strict.problems.is_empty(), "{}", dump(&strict));
+    assert!(loose.problems.is_empty());
+    assert!(
+        strict.distance > 1.5 * normal.distance && loose.distance < normal.distance,
+        "{} {} {}",
+        strict.distance,
+        normal.distance,
+        loose.distance
+    );
+}
+
+/// Scaling keeps one-sided checks one-sided and threshold evidence untouched.
+#[test]
+fn scrutiny_respects_one_sided_and_threshold_evidence() {
+    let mut e = Evidence::new("sibilance_db", "db", -5.0, 0.0, 3.0);
+    e.fine_side();
+    assert_eq!(e.scaled(0.5).excess, 0.0);
+    let e = Evidence::new("x", "db", 2.0, 0.0, 3.0);
+    assert_eq!(e.excess, 0.0);
+    assert!((e.scaled(0.5).excess - 0.5).abs() < 1e-6);
+    let t = Evidence {
+        tolerance: 0.0,
+        allowance: 0.0,
+        excess: 1.0,
+        ..Evidence::new("y", "db", 1.0, 0.0, 0.0)
+    };
+    assert_eq!(t.scaled(0.5), t);
+}

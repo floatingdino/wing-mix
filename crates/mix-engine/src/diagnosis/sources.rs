@@ -839,7 +839,7 @@ fn push_masking(
     let (shift, paths) = cx.intent_delta(&sref, &key);
     let mut e = Evidence::new(key.clone(), "db", msr, base + shift, thr);
     if e.deviation < 0.0 {
-        e.excess = 0.0;
+        e.fine_side();
     }
     let terms = cx.intent_terms(&paths);
     cx.consumed_intents.extend(paths);
@@ -1113,7 +1113,7 @@ fn push_sibilance(
     let (shift, paths) = cx.intent_delta(&sref, "sibilance_db");
     let mut e = Evidence::new("sibilance_db", "db", sib, target + shift, tol);
     if e.deviation < 0.0 {
-        e.excess = 0.0;
+        e.fine_side();
     }
     let terms = cx.intent_terms(&paths);
     cx.consumed_intents.extend(paths);
@@ -1259,6 +1259,7 @@ fn source_problems(
                 unit,
                 deviation,
                 excess: deviation.abs().max(0.1),
+                allowance: 0.0,
             };
             let kc = match p.confidence {
                 Confidence::High => 0.8,

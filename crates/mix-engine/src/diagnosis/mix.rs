@@ -484,7 +484,7 @@ fn stereo(cx: &mut Ctx<'_>) {
             0.05,
         );
         if e.deviation > 0.0 {
-            e.excess = 0.0; // one-sided: more mono than the minimum is fine
+            e.fine_side(); // one-sided: more mono than the minimum is fine
         }
         cx.mix_bag
             .insert("low_correlation".into(), st.low_mono_correlation as f64);
@@ -616,7 +616,7 @@ fn stereo(cx: &mut Ctx<'_>) {
         (c.p50 - c.p10).max(0.0) + 0.3,
     );
     if e.deviation > 0.0 {
-        e.excess = 0.0;
+        e.fine_side();
     }
     cx.mix_bag
         .insert("correlation".into(), st.correlation as f64);

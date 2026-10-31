@@ -88,6 +88,7 @@ pub(crate) fn check(cx: &mut Ctx<'_>) {
             unit,
             deviation,
             excess: (deviation.abs() - tol).max(0.0),
+            allowance: tol,
         };
         let (kind, blocks) = kind_of(base, delta);
         let (subject, contributors) = if scope == "mix" {

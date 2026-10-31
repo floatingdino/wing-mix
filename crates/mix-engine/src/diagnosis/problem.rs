@@ -163,6 +163,11 @@ pub struct Evidence {
     pub deviation: f32,
     /// `max(0, |deviation| − tolerance)`, or the distance outside the target interval ([`Evidence::interval`]).
     pub excess: f32,
+    /// M070: |deviation| allowed on the measured side before `excess` starts (the tolerance, or the interval's
+    /// half-width on that side), for the scrutiny scale ([`super::DiagnosisConfig::tolerance_scale`]). 0 = not
+    /// rescalable (threshold evidence); infinite = one-sided check whose deviation is on the fine side.
+    #[serde(skip)]
+    pub allowance: f32,
 }
 
 impl Evidence {
@@ -182,6 +187,7 @@ impl Evidence {
             unit: unit.into(),
             deviation,
             excess: (deviation.abs() - tol).max(0.0),
+            allowance: tol,
         }
     }
 
@@ -209,7 +215,32 @@ impl Evidence {
             unit: unit.into(),
             deviation: measured - target.p50,
             excess: (lo - measured).max(measured - hi).max(0.0),
+            allowance: if measured >= target.p50 {
+                hi - target.p50
+            } else {
+                target.p50 - lo
+            },
         }
+    }
+
+    /// One-sided check: the deviation is on the side that is fine (no excess at any scrutiny).
+    pub fn fine_side(&mut self) {
+        self.excess = 0.0;
+        self.allowance = f32::INFINITY;
+    }
+
+    /// M070 scrutiny: the evidence with every allowance scaled by `s` (0.5 = twice as strict).
+    pub fn scaled(&self, s: f32) -> Evidence {
+        let mut e = self.clone();
+        if (s - 1.0).abs() < 1e-6 || !(e.allowance > 0.0) || !e.deviation.is_finite() {
+            return e;
+        }
+        e.tolerance *= s;
+        if e.allowance.is_finite() {
+            e.allowance *= s;
+            e.excess = (e.deviation.abs() - e.allowance).max(0.0);
+        }
+        e
     }
 
     /// `true` when the measured value is above the target.
