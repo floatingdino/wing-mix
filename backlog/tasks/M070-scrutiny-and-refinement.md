@@ -65,3 +65,13 @@ Work:
   (mode+mute, rtasrc+rtatap), uncorrelated with our solo writes. Section changes every 13-20 s (< window_s 20 s),
   so measurement windows rarely complete. (1) LRA/PLR: Session window of ~20 s vs a whole-song target (section
   null, 644 s).
+- 2026-10-31 agent: done so far (committed): (2) `strips::eligible` follows routes to a main through GRP/post sends
+  and bus->bus sends (`main_route_gain_db`, bus faders/mutes, pre sends not followed), solo taps get the route gain
+  as `gain_to_main_db`; regression test on the user's routing shape. (4) controller ignores non-strip params
+  (`is_mix_param`), section hysteresis `min_section_s` 24 s, mix-wing `refresh_answers_are_never_reported_as_changes`
+  (494/500 spurious with the pre-M069 ordering + a 200 us gap). (1) PLR/LRA only when the window covers >= half the
+  target's span. Scrutiny (`DiagnosisConfig::tolerance_scale`, `Evidence::allowance`), refinement
+  (`PlanConfig::refine`, `RefineConfig`, controller fallback above target_objective), near misses (plan +
+  `suggested.near_misses` + snapshot), suggest within target mirrors autopilot. Daemon `set_scrutiny`, start
+  `scrutiny`/`refine`, `status.tuning`, settings.json. WingMix slider/toggle/badge/held-back list; `make app` green.
+  Next: per-stem diagnosis test from solo measurements, e2e user-scene repro, numbers.
