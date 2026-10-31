@@ -22,6 +22,7 @@ mod mixd;
 mod observer;
 mod score;
 mod sim;
+mod user;
 mod wing;
 
 use std::collections::BTreeMap;
@@ -643,4 +644,50 @@ fn e2e_wing_real() {
     }
     let _ = BTreeMap::<(), ()>::new();
     let _ = Policy::from_toml_str(wing_mixd::daemon::DEFAULT_POLICY).unwrap();
+}
+
+// -------------------------------------------------------------------------------------------------------------
+// M070: the user's scene
+
+/// The user's scene + real multitrack + whole-song reference, main + solo only, live timing ([`user`]). Needs
+/// `E2E_USER_SNAP` (a copy of the user's wing-sim `state.snap`); `E2E_USER_OUT` collects recordings and events.
+#[test]
+#[ignore = "slow: M070 user-scene repro (real time, ~15 min)"]
+fn e2e_user_scene() {
+    let Ok(snap) = std::env::var("E2E_USER_SNAP") else {
+        eprintln!("SKIPPED: E2E_USER_SNAP not set");
+        return;
+    };
+    if mix_testsim::wing_sim_bin().is_none() {
+        eprintln!("SKIPPED: no wing-sim binary");
+        return;
+    }
+    let Some(fx) = Fixture::open_default() else {
+        eprintln!("SKIPPED: fixtures absent");
+        return;
+    };
+    let fx = fx.unwrap();
+    let out = user::out_dir();
+    let u = user::run(&fx, std::path::Path::new(&snap), &out).expect("user-scene run");
+    eprintln!("{}", serde_json::to_string_pretty(&u).unwrap());
+    assert_eq!(u.forbidden, 0, "forbidden writes");
+}
+
+/// Scores the recordings of [`e2e_user_scene`] runs (dirs in `E2E_USER_RESCORE`, comma-separated) against the
+/// whole-song reference with the Live context, with this build's diagnosis (one scorer for before/after builds).
+#[test]
+#[ignore = "M070: offline scoring of e2e_user_scene recordings"]
+fn e2e_user_rescore() {
+    let Ok(dirs) = std::env::var("E2E_USER_RESCORE") else {
+        eprintln!("SKIPPED: E2E_USER_RESCORE not set");
+        return;
+    };
+    let s = song("holy-forever").unwrap();
+    let cache = ProfileCache::new(std::env::temp_dir().join("wingmix-m016-profiles"));
+    let mut t = reference_profile(s, None, Some(&cache)).expect("reference");
+    apply_context(&mut t, MixContext::Live);
+    for d in dirs.split(',') {
+        let v = user::rescore(std::path::Path::new(d.trim()), &t);
+        eprintln!("{d}: {v:?}");
+    }
 }
