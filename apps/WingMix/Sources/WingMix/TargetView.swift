@@ -67,6 +67,32 @@ struct TargetView: View {
                     }
                     .padding(6)
                 }
+                Box("Scrutiny") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Forgiving").font(.caption)
+                            Slider(value: Binding(get: { 2.0 - model.scrutiny },
+                                                  set: { v in model.scrutiny = 2.0 - v }),
+                                   in: 0.5...1.5, step: 0.05,
+                                   onEditingChanged: { editing in
+                                       if !editing { Task { await model.setScrutiny(scale: model.scrutiny) } }
+                                   })
+                            .frame(maxWidth: 260)
+                            .accessibilityLabel("Scrutiny")
+                            Text("Strict").font(.caption)
+                            Text(String(format: "tolerance x%.2f", model.scrutiny)).monospacedDigit()
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .disabled(!model.daemonReady)
+                        FlagToggle(title: "Refine a mix that is already within tolerance",
+                                   isOn: Binding(get: { model.refine },
+                                                 set: { v in Task { await model.setScrutiny(refine: v) } }))
+                        .disabled(!model.daemonReady)
+                        Text("Strict asks for a closer match to the target (every tolerance scaled down). Refinement makes small fader/EQ steps (at most 1.5 dB) towards the target when nothing is out of tolerance, and keeps one only if the measured mix improves.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
             }
             .padding(20)
         }

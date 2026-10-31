@@ -7,7 +7,8 @@
 //! globally squashed or wide mix is one problem, not six.
 
 use mix_core::bands::{BROAD6_EDGES_HZ, BROAD6_NAMES, LOW_MONO_HZ, N_BROAD};
-use mix_core::features::{Stat, Window};
+use mix_core::features::{Features, Stat, Window};
+use mix_core::profile::{ProfileSource, TargetProfile};
 
 use super::problem::{BandRef, Contributor, Evidence, ProblemKind, Scope, Subject};
 use super::{mean_at, power_sum_db, window_loudness, Ctx, Draft};
@@ -235,6 +236,24 @@ fn rule_threshold(cx: &Ctx<'_>, rule: &str, feature: &str) -> Option<f32> {
     })
 }
 
+/// Typical span (s) a description / genre target describes (built from whole songs).
+const WHOLE_SONG_S: f64 = 180.0;
+
+/// M070: whether the main's window covers at least half of the span the target's loudness range describes.
+pub(crate) fn range_comparable(main: &Features, tg: &TargetProfile) -> bool {
+    let measured = main.t_end_s - main.t_start_s;
+    if measured <= 0.0 {
+        // synthetic / offline features without a time span: trust the caller
+        return true;
+    }
+    let target = match (&tg.section, &tg.source) {
+        (Some(s), _) => s.end_s - s.start_s,
+        (None, ProfileSource::Reference { duration_s, .. }) => *duration_s,
+        _ => WHOLE_SONG_S,
+    };
+    measured >= 0.5 * target
+}
+
 fn dynamics(cx: &mut Ctx<'_>) {
     let tg = cx.input.target;
     let main = cx.input.main;
@@ -289,8 +308,14 @@ fn dynamics(cx: &mut Ctx<'_>) {
             "peak-to-short-term-loudness ratio (PSR)",
         ));
     }
-    // PLR and LRA exist on Session windows only.
-    if let Some(plr) = main.loudness.plr_db {
+    // PLR and LRA exist on Session windows only. M070: they describe the span they were measured over; a 20 s
+    // window of one section has ~1 LU of loudness range while a whole song has 5-10, so they are compared only
+    // when the window covers at least half of what the target describes (its section, else the whole song).
+    let span_ok = range_comparable(main, tg);
+    if !span_ok && (main.loudness.plr_db.is_some() || main.loudness.lra_lu.is_some()) {
+        cx.note("PLR/LRA skipped: the measurement window is much shorter than the span the target describes");
+    }
+    if let Some(plr) = main.loudness.plr_db.filter(|_| span_ok) {
         let tol = rule_threshold(cx, "mix_bus_too_dynamic", "plr_db").unwrap_or(3.0);
         let e = Evidence::new("plr_db", "db", plr, tg.loudness.plr_db, tol);
         cx.mix_bag.insert("plr_db".into(), e.deviation as f64);
@@ -298,9 +323,13 @@ fn dynamics(cx: &mut Ctx<'_>) {
     }
     let lra_tol = rule_threshold(cx, "dyn_too_dynamic", "lra_lu").unwrap_or(3.0);
     if let Some(lra) = main.loudness.lra_lu {
-        let e = Evidence::new("lra_lu", "lu", lra, tg.loudness.lra_lu, lra_tol);
-        cx.mix_bag.insert("lra_lu".into(), e.deviation as f64);
-        checks.push((e, "loudness.lra_lu".into(), "loudness range (LRA)"));
+        if !span_ok {
+            // fall through to nothing: no comparable range measure
+        } else {
+            let e = Evidence::new("lra_lu", "lu", lra, tg.loudness.lra_lu, lra_tol);
+            cx.mix_bag.insert("lra_lu".into(), e.deviation as f64);
+            checks.push((e, "loudness.lra_lu".into(), "loudness range (LRA)"));
+        }
     } else if !bands.is_empty() {
         let m = bands
             .iter()
@@ -455,7 +484,7 @@ fn stereo(cx: &mut Ctx<'_>) {
             0.05,
         );
         if e.deviation > 0.0 {
-            e.excess = 0.0; // one-sided: more mono than the minimum is fine
+            e.fine_side(); // one-sided: more mono than the minimum is fine
         }
         cx.mix_bag
             .insert("low_correlation".into(), st.low_mono_correlation as f64);
@@ -587,7 +616,7 @@ fn stereo(cx: &mut Ctx<'_>) {
         (c.p50 - c.p10).max(0.0) + 0.3,
     );
     if e.deviation > 0.0 {
-        e.excess = 0.0;
+        e.fine_side();
     }
     cx.mix_bag
         .insert("correlation".into(), st.correlation as f64);

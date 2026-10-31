@@ -101,6 +101,14 @@ playing relative to the main, activity, gain reduction (spectra stay priors), so
 them at reduced confidence. The session change budget (M067, `control::budget`) limits the net deviation of the
 tool's own changes from where the engineer left the mix (makeup free, group/pair moves counted once, reverted moves
 free) and paces it per minute; it is not a travel total.
+A strip takes part in the mix when it reaches a main directly or through subgroup/post-fader sends to buses that do
+(M070: `strips::main_route_gain_db`; a solo capture carries the route's bus gains as `gain_to_main_db`).
+**Scrutiny and refinement** (M070): every diagnosis tolerance is scaled by the user's scrutiny (0.5 strict .. 1.5
+forgiving; `set_scrutiny`). When nothing exceeds tolerance but the objective is still above the target, refinement
+mode plans small fader/EQ steps (<= 1.5 dB) from a diagnosis at 0.35 x the tolerances, scored on the normal
+objective and kept only when the measured improvement holds; suggestions list near misses (what was held back and
+why). Console configuration (solo mode, RTA source) never counts as an engineer move, and section changes have
+24 s of hysteresis.
 
 ## Closed-loop verification without hardware
 `mix-sim` drives the real wing-simulator DSP offline (multitrack fixtures + scene → render), so the full loop

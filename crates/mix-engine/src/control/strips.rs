@@ -100,7 +100,8 @@ impl Default for StripConfig {
     }
 }
 
-/// A strip that takes part in the mix (input/aux, named or typed, not muted, fader up, routed to a main).
+/// A strip that takes part in the mix (input/aux, named or typed, not muted, fader up, routed to a main directly
+/// or through subgroup/post-fader sends to buses that reach a main).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Eligible {
     pub strip: StripId,
@@ -108,10 +109,71 @@ pub struct Eligible {
     /// sources.toml id from the strip's tags or name (no audio yet).
     pub source: Option<String>,
     pub fader_db: f64,
+    /// M070: gain from the strip's post-fader signal to the main (dB): 0 for a direct main assign at 0 dB, else the
+    /// best route's send levels and bus faders (`VOX` group bus +2 dB → main: +2).
+    pub gain_to_main_db: f64,
+}
+
+/// Send floor (dB) below which a non-subgroup send counts as off.
+const SEND_FLOOR_DB: f64 = -90.0;
+
+/// M070: gain (dB) of the loudest route from `strip`'s post-fader signal to a main: direct main sends, and
+/// subgroup / post-fader sends to buses (any depth: `DRUMS FOH → BAND BUS → main`) whose fader is up and that are
+/// not muted. Pre-fader sends are monitor/FX feeds, not the strip's place in the mix, and are not followed.
+/// `None`: no route (or only through muted/closed buses).
+pub fn main_route_gain_db(state: &ConsoleState, strip: &StripId) -> Option<f64> {
+    fn walk(
+        state: &ConsoleState,
+        id: &StripId,
+        depth: usize,
+        seen: &mut Vec<StripId>,
+    ) -> Option<f64> {
+        let s = state.topology.get(id)?;
+        let mut best: Option<f64> = None;
+        for x in &s.sends {
+            if !x.is_active(SEND_FLOOR_DB) {
+                continue;
+            }
+            let from_bus = !matches!(s.kind, StripKind::Input | StripKind::Aux);
+            let lvl = if x.tap == mix_surface::model::SendTap::Group {
+                0.0
+            } else if x.tap == mix_surface::model::SendTap::Pre && !from_bus {
+                continue;
+            } else {
+                x.level_db
+            };
+            let g = match StripKind::of(&x.dest) {
+                Some(StripKind::Main) => Some(lvl),
+                Some(StripKind::Bus) if depth < 4 && !seen.contains(&x.dest) => {
+                    let st = state.settings(&x.dest);
+                    let fader = st.fader_db.unwrap_or(0.0);
+                    if st.mute || fader <= SEND_FLOOR_DB {
+                        None
+                    } else {
+                        seen.push(x.dest.clone());
+                        let r = walk(state, &x.dest, depth + 1, seen).map(|g| g + lvl + fader);
+                        seen.pop();
+                        r
+                    }
+                }
+                _ => None,
+            };
+            if let Some(g) = g {
+                best = Some(best.map_or(g, |b: f64| b.max(g)));
+            }
+        }
+        best
+    }
+    walk(state, strip, 0, &mut vec![strip.clone()])
 }
 
 /// Strips of `state` that contribute to the mix.
 pub fn eligible(state: &ConsoleState, kb: &KnowledgeBase, fader_floor_db: f64) -> Vec<Eligible> {
+    let lists_mains = state.topology.strips.iter().any(|s| {
+        s.sends
+            .iter()
+            .any(|x| StripKind::of(&x.dest) == Some(StripKind::Main))
+    });
     state
         .topology
         .strips
@@ -126,15 +188,14 @@ pub fn eligible(state: &ConsoleState, kb: &KnowledgeBase, fader_floor_db: f64) -
             if fader <= fader_floor_db {
                 return None;
             }
-            // routed to a main: an active main send when the topology lists main sends at all
-            let mains: Vec<_> = s
-                .sends
-                .iter()
-                .filter(|x| StripKind::of(&x.dest) == Some(StripKind::Main))
-                .collect();
-            if !mains.is_empty() && !mains.iter().any(|x| x.is_active(-90.0)) {
-                return None;
-            }
+            // routed to a main (directly or through buses) when the topology lists main sends at all; a surface
+            // without that information counts every strip as routed (M070: before, only a direct main assign
+            // counted, so a scene that sums inputs on group buses had one eligible strip)
+            let gain_to_main_db = if !lists_mains {
+                0.0
+            } else {
+                main_route_gain_db(state, &s.id)?
+            };
             let source = match s.tags.iter().find(|t| kb.source(t).is_some()) {
                 Some(t) => Some(t.clone()),
                 None => classify_source(kb, &s.name, &s.tags, None),
@@ -148,6 +209,7 @@ pub fn eligible(state: &ConsoleState, kb: &KnowledgeBase, fader_floor_db: f64) -
                 name: s.name.clone(),
                 source,
                 fader_db: fader,
+                gain_to_main_db,
             })
         })
         .collect()
@@ -748,6 +810,7 @@ mod tests {
             name: format!("CH {ch}"),
             source: source.map(String::from),
             fader_db: -10.0,
+            gain_to_main_db: 0.0,
         }
     }
 
@@ -772,6 +835,154 @@ mod tests {
             },
             Vec::new(),
         )
+    }
+
+    /// The user's scene shape (M070, PUBLIC.snap-like): no input is assigned to main 1 directly; vocals go to a
+    /// `VOX` group bus (+2 dB) → main, drums to `DRUMS FOH` → `BAND BUS` (-2 dB) → main, all in subgroup mode at
+    /// -oo; a talkback input feeds only a pre-fader monitor bus; a strip on a muted bus is not in the mix.
+    fn group_routed_state() -> ConsoleState {
+        use mix_core::units::Unit;
+        use mix_surface::model::{SendInfo, SendTap};
+        use mix_surface::{Block, ParamClass, ParamSpec};
+        let send = |dest: &str, n: u32, on: bool, level_db: f64, tap: SendTap| SendInfo {
+            dest: StripId::new(dest, n),
+            on,
+            level_db,
+            tap,
+            tap_after: Block::parse("fader"),
+        };
+        let strip = |kind: StripKind, k: &str, n: u32, name: &str, sends: Vec<SendInfo>| {
+            let mut s = Strip::new(StripId::new(k, n), kind, name);
+            s.sends = sends;
+            s
+        };
+        let strips = vec![
+            strip(
+                StripKind::Input,
+                "input",
+                1,
+                "KICK",
+                vec![
+                    send("main", 1, false, 0.0, SendTap::Post),
+                    send("bus", 6, true, -144.0, SendTap::Group),
+                    send("bus", 14, true, -5.0, SendTap::Pre),
+                ],
+            ),
+            strip(
+                StripKind::Input,
+                "input",
+                20,
+                "VOX1",
+                vec![
+                    send("main", 1, false, 0.0, SendTap::Post),
+                    send("bus", 5, true, -6.0, SendTap::Group),
+                ],
+            ),
+            strip(
+                StripKind::Input,
+                "input",
+                26,
+                "PREACH",
+                vec![send("main", 1, true, 0.0, SendTap::Post)],
+            ),
+            strip(
+                StripKind::Input,
+                "input",
+                31,
+                "DRUM TALK",
+                vec![
+                    send("main", 1, false, 0.0, SendTap::Post),
+                    send("bus", 14, true, 0.0, SendTap::Pre),
+                ],
+            ),
+            strip(
+                StripKind::Input,
+                "input",
+                12,
+                "AC GT",
+                vec![
+                    send("main", 1, false, 0.0, SendTap::Post),
+                    send("bus", 3, true, 0.0, SendTap::Group),
+                ],
+            ),
+            strip(
+                StripKind::Bus,
+                "bus",
+                5,
+                "VOX",
+                vec![send("main", 1, true, 0.0, SendTap::Post)],
+            ),
+            strip(
+                StripKind::Bus,
+                "bus",
+                6,
+                "DRUMS FOH",
+                vec![
+                    send("main", 1, false, 0.0, SendTap::Post),
+                    send("bus", 7, true, 0.0, SendTap::Post),
+                ],
+            ),
+            strip(
+                StripKind::Bus,
+                "bus",
+                7,
+                "BAND BUS",
+                vec![send("main", 1, true, 0.0, SendTap::Post)],
+            ),
+            strip(
+                StripKind::Bus,
+                "bus",
+                3,
+                "MUTED GRP",
+                vec![send("main", 1, true, 0.0, SendTap::Post)],
+            ),
+            strip(StripKind::Bus, "bus", 14, "DRUMS IEM", Vec::new()),
+            strip(StripKind::Main, "main", 1, "", Vec::new()),
+        ];
+        let fader = |id: &str, v: f64| {
+            (
+                ParamSpec::float(id, ParamClass::Fader, Unit::Db, -144.0, 10.0),
+                Value::Float(v),
+            )
+        };
+        let mute = |id: &str, v: bool| (ParamSpec::boolean(id, ParamClass::Mute), Value::Bool(v));
+        let mut params = Vec::new();
+        for s in &strips {
+            params.push(fader(&format!("{}/fader", s.id), 0.0));
+            params.push(mute(&format!("{}/mute", s.id), false));
+        }
+        params.push(fader("bus.5/fader", 2.0));
+        params.push(fader("bus.7/fader", -2.0));
+        params.push(mute("bus.3/mute", true));
+        ConsoleState::from_parts(
+            Topology {
+                strips,
+                context: Vec::new(),
+            },
+            params,
+        )
+    }
+
+    #[test]
+    fn strips_summed_on_group_buses_are_eligible_with_their_route_gain() {
+        let st = group_routed_state();
+        let el = eligible(&st, kb(), -60.0);
+        let got: BTreeMap<String, f64> = el
+            .iter()
+            .map(|e| (e.strip.to_string(), e.gain_to_main_db))
+            .collect();
+        // before M070 only the direct main assign (PREACH) was eligible
+        assert_eq!(
+            got.keys().cloned().collect::<Vec<_>>(),
+            vec!["input.1", "input.20", "input.26"],
+            "{got:?}"
+        );
+        assert!((got["input.1"] - -2.0).abs() < 1e-9, "{got:?}");
+        assert!((got["input.20"] - 2.0).abs() < 1e-9, "{got:?}");
+        assert!(got["input.26"].abs() < 1e-9);
+        // talkback (pre-fader IEM feed only) and a strip on a muted group are not in the mix
+        assert!(main_route_gain_db(&st, &StripId::new("input", 31)).is_none());
+        assert!(main_route_gain_db(&st, &StripId::new("input", 12)).is_none());
     }
 
     #[test]

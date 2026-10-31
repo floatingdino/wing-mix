@@ -182,11 +182,30 @@ struct LiveView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text(model.names.humanize(m.label)).font(.callout.bold())
+                            if m.refinement == true {
+                                Text("refine").font(.caption2).padding(.horizontal, 4)
+                                    .background(Color.blue.opacity(0.15), in: Capsule())
+                                    .help("Refinement: nothing is out of tolerance; a small step towards the target")
+                            }
                             Spacer()
                             if let g = m.predictedGain { Text(String(format: "-%.3f", g)).monospacedDigit().font(.caption).foregroundStyle(.green) }
                         }
                         if let e = m.explanation { Text(model.names.humanize(e.split(separator: "[").first.map(String.init) ?? e)).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                         if let n = m.needsConfirmation, !n.isEmpty { Text("needs confirmation: \(model.names.humanize(n.joined(separator: ", ")))").font(.caption).foregroundStyle(.orange) }
+                    }
+                }
+                if let near = snap?.nearMisses, !near.isEmpty {
+                    Divider()
+                    Text("Held back").font(.caption.bold()).foregroundStyle(.secondary)
+                    ForEach(near.prefix(5)) { n in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(model.names.humanize(n.label)).font(.caption)
+                                if let r = n.reason { Text(r).font(.caption2).foregroundStyle(.secondary).lineLimit(2) }
+                            }
+                            Spacer()
+                            if let g = n.predictedGain { Text(String(format: "-%.3f", g)).monospacedDigit().font(.caption2).foregroundStyle(.secondary) }
+                        }
                     }
                 }
             }

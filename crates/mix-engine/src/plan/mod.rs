@@ -127,6 +127,47 @@ pub struct PlanConfig {
     /// Session baseline per param (value when the session first touched it; the gate's per-session limit and
     /// remit envelopes are measured from it). Params missing here start at their plan-time value.
     pub session_baseline: BTreeMap<ParamId, f64>,
+    /// M070 refinement mode: plan small conventional moves towards the target centre from deviations inside the
+    /// tolerance (see [`RefineConfig`]). `None`: plan from problems only.
+    pub refine: Option<RefineConfig>,
+    /// M070: the actuator's safety layer holds gain increases (mains loudness / true-peak ceiling): plan no
+    /// increase (fader, send, trim, EQ gain, makeup), so the plan answers with cuts instead of moves the gate would
+    /// refuse. Held candidates are reported as near misses.
+    pub hold_increases: bool,
+}
+
+/// M070 refinement: when nothing exceeds tolerance, a good mix can still sit off the target's centre. Candidates
+/// come from a diagnosis at `tolerance_scale ×` the configured tolerances; every candidate is still scored on the
+/// normal objective (its continuous distance moves inside tolerance), only fader and EQ moves of at most
+/// `max_step_db` are considered, and a move must predict at least `min_gain` (the closed loop then keeps it only
+/// if the measured improvement holds).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RefineConfig {
+    pub tolerance_scale: f32,
+    pub max_step_db: f64,
+    pub min_gain: f64,
+}
+
+impl Default for RefineConfig {
+    fn default() -> Self {
+        RefineConfig {
+            tolerance_scale: 0.35,
+            max_step_db: 1.5,
+            min_gain: 0.01,
+        }
+    }
+}
+
+/// M070: a candidate the planner scored but did not take, with why (published in suggest mode so the engineer
+/// sees what the tool would try).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NearMiss {
+    pub label: String,
+    pub strip: StripId,
+    pub problem: String,
+    /// Objective reduction it predicts.
+    pub predicted_gain: f64,
+    pub reason: String,
 }
 
 impl PlanConfig {
@@ -149,6 +190,8 @@ impl PlanConfig {
             },
             safety: Some(SafetyConfig::default()),
             session_baseline: BTreeMap::new(),
+            refine: None,
+            hold_increases: false,
         }
     }
 
@@ -216,6 +259,9 @@ pub struct PlannedMove {
     pub benefit: f64,
     /// Remit confirmation keys this move needs (empty = allowed now).
     pub needs_confirmation: Vec<String>,
+    /// M070: planned in refinement mode (a small move towards the target centre, nothing exceeded tolerance).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refinement: bool,
 }
 
 /// A step of the plan.
@@ -252,6 +298,37 @@ pub struct Plan {
     pub notes: Vec<String>,
     /// Every confirmation key the plan's moves need.
     pub confirmations: Vec<String>,
+    /// M070: the best candidates of the first step that were not taken (gain too small for their cost, below the
+    /// refinement minimum), best first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near_misses: Vec<NearMiss>,
+}
+
+/// Near misses published per plan.
+pub const MAX_NEAR_MISSES: usize = 5;
+
+/// M070: a gain change that raises the level (what the safety layer's holds refuse).
+fn raises_gain(c: &ParamChange) -> bool {
+    let leaf = c.param.leaf();
+    let gain = leaf == "fader"
+        || leaf.ends_with(".gain")
+        || leaf == "level"
+        || leaf.ends_with("trim")
+        || leaf == "makeup"
+        || leaf == "gain";
+    match (gain, c.from.as_ref().and_then(Value::as_f64), c.to.as_f64()) {
+        (true, Some(a), Some(b)) => b > a + 0.05,
+        _ => false,
+    }
+}
+
+/// M070: whether a refinement may make this change (fader, EQ band gain/freq/Q).
+fn refinement_param(p: &ParamId) -> bool {
+    p.leaf() == "fader"
+        || (p.block() == Some("eq")
+            && [".gain", ".freq", ".q"]
+                .iter()
+                .any(|x| p.leaf().ends_with(x)))
 }
 
 impl Plan {
@@ -791,10 +868,70 @@ pub fn plan_with(
         .map_err(|e| PlanError::Diagnosis(e.to_string()))
     };
 
+    // M070 refinement: candidates from a stricter diagnosis, small fader/EQ steps only, scored as usual
+    let refine = cfg.refine;
+    let gen_diag_cfg = refine.map(|r| DiagnosisConfig {
+        tolerance_scale: cfg.diagnosis.tolerance_scale * r.tolerance_scale,
+        ..cfg.diagnosis.clone()
+    });
+    let gen_cand_cfg = match refine {
+        Some(r) => CandidateConfig {
+            max_fader_step_db: cfg.candidates.max_fader_step_db.min(r.max_step_db),
+            max_eq_step_db: cfg.candidates.max_eq_step_db.min(r.max_step_db),
+            ..cfg.candidates.clone()
+        },
+        None => cfg.candidates.clone(),
+    };
+    let run_gen =
+        |pred: &Prediction, st: &ConsoleState, d: &Diagnosis| -> Result<Diagnosis, PlanError> {
+            let Some(gc) = &gen_diag_cfg else {
+                return Ok(d.clone());
+            };
+            let mut taps = pred.strips.clone();
+            taps.extend(fx.iter().cloned());
+            let progress = fader_intent_progress(
+                input.target,
+                &taps,
+                st,
+                Some(input.state),
+                &cfg.session_baseline,
+                kb,
+            );
+            diagnose(
+                &DiagnosisInput::new(&pred.main, input.target)
+                    .with_strips(&taps)
+                    .with_intent_progress(&progress),
+                kb,
+                gc,
+            )
+            .map_err(|e| PlanError::Diagnosis(e.to_string()))
+        };
+    let max_step_ok = |c: &Candidate| -> bool {
+        let Some(r) = refine else { return true };
+        c.changes.iter().all(|x| {
+            if !refinement_param(&x.param) {
+                return false;
+            }
+            let is_db = x.param.leaf() == "fader" || x.param.leaf().ends_with(".gain");
+            match (
+                is_db,
+                x.from.as_ref().and_then(Value::as_f64),
+                x.to.as_f64(),
+            ) {
+                (true, Some(a), Some(b)) => (b - a).abs() <= r.max_step_db + 0.05,
+                _ => true,
+            }
+        })
+    };
+
     let mut state = input.state.clone();
     let mut pred = model.predict(&state);
-    let mut diag = run(&pred, &state)?;
+    let diag = run(&pred, &state)?;
+    let mut gdiag = run_gen(&pred, &state, &diag)?;
     let before = score_of(&diag, w, Some(input.state));
+    let mut near: Vec<NearMiss> = Vec::new();
+    let mut held: Vec<NearMiss> = Vec::new();
+    let mut first_step = true;
     let mut cur = before.clone();
     let mut notes: Vec<String> = Vec::new();
     let mut remit_drops: BTreeMap<String, usize> = BTreeMap::new();
@@ -831,7 +968,7 @@ pub fn plan_with(
             kb,
             state: &state,
             model: &model,
-            cfg: &cfg.candidates,
+            cfg: &gen_cand_cfg,
             strip_mid: &mid_fn,
             source_of: &src_fn,
             stems: &stems,
@@ -840,7 +977,7 @@ pub fn plan_with(
         };
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut cands: Vec<Checked> = Vec::new();
-        for p in select_problems(&diag, cfg) {
+        for p in select_problems(&gdiag, cfg) {
             if matches!(
                 p.kind,
                 ProblemKind::Punch | ProblemKind::Phase | ProblemKind::StereoBalance
@@ -858,7 +995,22 @@ pub fn plan_with(
                 if !seen.insert(key.clone())
                     || tried_bad.contains(&key)
                     || !estimated_ok(&c, &estimated)
+                    || !max_step_ok(&c)
                 {
+                    continue;
+                }
+                if cfg.hold_increases && c.changes.iter().any(raises_gain) {
+                    if first_step && held.len() < MAX_NEAR_MISSES {
+                        held.push(NearMiss {
+                            label: c.label.clone(),
+                            strip: c.strip.clone(),
+                            problem: c.problem.clone(),
+                            predicted_gain: 0.0,
+                            reason:
+                                "mains loudness / true-peak hold: gain increases are refused now"
+                                    .into(),
+                        });
+                    }
                     continue;
                 }
                 match check_remit(&input.remit, input.state, &state, c, cfg) {
@@ -887,6 +1039,29 @@ pub fn plan_with(
             let s2 = score_of(&d2, w, Some(&st2));
             let benefit = cur.objective - s2.objective;
             let net = benefit - cfg.cost_weight * k.cand.cost;
+            let below_refine = refine.is_some_and(|r| benefit < r.min_gain);
+            if first_step && benefit > 0.0 && (net <= cfg.min_score || below_refine) {
+                near.push(NearMiss {
+                    label: k.cand.label.clone(),
+                    strip: k.cand.strip.clone(),
+                    problem: k.cand.problem.clone(),
+                    predicted_gain: benefit,
+                    reason: if net <= cfg.min_score {
+                        format!(
+                            "predicted gain {benefit:.3} does not pay for the move (cost {:.3})",
+                            cfg.cost_weight * k.cand.cost
+                        )
+                    } else {
+                        format!(
+                            "refinement: predicted gain {benefit:.3} below {:.3}",
+                            refine.map_or(0.0, |r| r.min_gain)
+                        )
+                    },
+                });
+            }
+            if below_refine && net > cfg.min_score {
+                continue;
+            }
             if net <= cfg.min_score {
                 if benefit <= 0.0 {
                     tried_bad.insert(format!(
@@ -904,6 +1079,7 @@ pub fn plan_with(
                 best = Some((net, k, p2, d2, s2));
             }
         }
+        first_step = false;
         let Some((net, k, p2, d2, s2)) = best else {
             break;
         };
@@ -923,13 +1099,19 @@ pub fn plan_with(
             cost: c.cost,
             benefit: net + cfg.cost_weight * c.cost,
             needs_confirmation: k.confirm,
+            refinement: refine.is_some(),
         };
         chosen.push((c.phase, mv));
         state.apply(&c.changes);
+        gdiag = run_gen(&p2, &state, &d2)?;
         pred = p2;
-        diag = d2;
         cur = s2;
     }
+    near.sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
+    near.truncate(MAX_NEAR_MISSES);
+    // held increases after the scored near misses (not scored: they could not run)
+    let room = MAX_NEAR_MISSES.saturating_sub(near.len()).max(2);
+    near.extend(held.into_iter().take(room));
 
     for (r, n) in &remit_drops {
         notes.push(format!("{n} candidate move(s) not proposed: remit {r}"));
@@ -976,6 +1158,7 @@ pub fn plan_with(
         after: cur,
         notes,
         confirmations,
+        near_misses: near,
     })
 }
 

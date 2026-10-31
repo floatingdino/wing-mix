@@ -101,6 +101,11 @@ pub use io::{Executor, Measurement, MixMeter, SoloProbe};
 pub use section::{SectionDetector, SectionJump};
 pub use strips::{Coverage, Due, StripBook, StripConfig};
 
+/// Whether a param belongs to a strip's processing (not `system/...` console configuration).
+pub fn is_mix_param(p: &ParamId) -> bool {
+    p.strip().is_some() && !p.as_str().starts_with("system/")
+}
+
 /// Keep or revert a verified batch (see [`KeepRule`]).
 pub fn keep(before: f64, after: f64, predicted_gain: f64, rule: &KeepRule) -> bool {
     let actual = before - after;
@@ -284,6 +289,10 @@ pub struct Controller<'k> {
     silent_in_solo: std::collections::BTreeSet<StripId>,
     kept: u32,
     pending: Vec<Pending>,
+    /// M070: the last plan's near misses (published with suggestions).
+    near_misses: Vec<crate::plan::NearMiss>,
+    /// M070: the safety layer refuses gain increases (mains ceiling) until about this time: plan cuts only.
+    increase_hold_until: f64,
     inspections: Arc<Mutex<Vec<Inspection>>>,
     probe: Option<SoloProbe>,
     actuator_stopped: bool,
@@ -360,6 +369,8 @@ impl<'k> Controller<'k> {
             silent_in_solo: Default::default(),
             kept: 0,
             pending: Vec::new(),
+            near_misses: Vec::new(),
+            increase_hold_until: f64::NEG_INFINITY,
             inspections: Arc::new(Mutex::new(Vec::new())),
             probe: None,
             actuator_stopped: false,
@@ -435,6 +446,11 @@ impl<'k> Controller<'k> {
     /// `Suggested`).
     pub fn planned(&self) -> Vec<MoveSummary> {
         self.plan.iter().map(Batch::summary).collect()
+    }
+
+    /// M070: what the last plan scored but held back (best first).
+    pub fn near_misses(&self) -> &[crate::plan::NearMiss] {
+        &self.near_misses
     }
 
     /// Moves waiting for a remit confirmation.
@@ -574,6 +590,13 @@ impl<'k> Controller<'k> {
                     self.on_job_end(id, changes, Some((format!("aborted: {reason:?}"), stop)));
                 }
                 ActuatorEvent::Refused { id, reason, .. } => {
+                    if matches!(
+                        &reason,
+                        Refusal::Remit { reason: mix_surface::remit::Reason::Safety, detail, .. }
+                            if detail.contains("increase")
+                    ) {
+                        self.hold_increases();
+                    }
                     let key = match &reason {
                         Refusal::Remit { confirm_key, .. } => confirm_key.clone(),
                         _ => None,
@@ -590,14 +613,27 @@ impl<'k> Controller<'k> {
                 }
                 ActuatorEvent::Stopped | ActuatorEvent::LinkLost => {
                     self.actuator_stopped = true;
-                    if !matches!(self.state, State::Executing(_) | State::Reverting { .. }) {
+                    // M070: suggest/observe write nothing: a STOP (e.g. the mains true-peak guard on a hot mix,
+                    // tripping every few seconds) must not stop the measurements and suggestions
+                    if self.cfg.mode == Mode::Autopilot
+                        && !matches!(self.state, State::Executing(_) | State::Reverting { .. })
+                    {
                         self.pause("actuator stopped");
                     }
                 }
                 ActuatorEvent::Safety { trip, .. } => {
-                    self.emit(ControlEvent::Paused {
-                        detail: format!("safety: {trip:?}"),
-                    });
+                    if matches!(
+                        trip,
+                        mix_actuator::Trip::MainsLoudness { .. }
+                            | mix_actuator::Trip::MainsTruePeak { .. }
+                    ) {
+                        self.hold_increases();
+                    }
+                    if self.cfg.mode == Mode::Autopilot {
+                        self.emit(ControlEvent::Paused {
+                            detail: format!("safety: {trip:?}"),
+                        });
+                    }
                 }
                 ActuatorEvent::Ready => {
                     self.actuator_stopped = false;
@@ -614,6 +650,16 @@ impl<'k> Controller<'k> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// M070: the mains ceiling holds gain increases: plan cuts until it has been quiet for a while (the safety
+    /// layer itself decides what runs; this only stops the planner proposing what it would refuse).
+    fn hold_increases(&mut self) {
+        let was = self.now < self.increase_hold_until;
+        self.increase_hold_until = self.now + 2.0 * self.cfg.window_s + self.cfg.settle_s;
+        if !was {
+            self.replan.get_or_insert(PlanReason::Exhausted);
         }
     }
 
@@ -672,6 +718,12 @@ impl<'k> Controller<'k> {
     }
 
     fn on_engineer(&mut self, param: ParamId) {
+        // M070: console configuration (solo mode, RTA source, ...) is not part of the mix: whoever changed it, it
+        // changes nothing the loop measures or plans, so it neither interrupts nor cools anything down (the daemon's
+        // own solo/RTA config traffic was reported as 1269 "engineer moves" in a 2 h session)
+        if !is_mix_param(&param) {
+            return;
+        }
         if let Some(j) = self.sweep.as_mut() {
             j.spoiled |= param.strip().as_ref() == Some(&j.strip);
         }
@@ -875,6 +927,10 @@ impl<'k> Controller<'k> {
         let mut solo = self.book.taps_for(&ids, state, &raw.main, &*self.transfer);
         for t in &mut solo {
             t.dyn_gr_db = meters.strips.get(&t.strip).and_then(|m| m.dyn_gr_db);
+            // M070: a solo capture is the strip's post-fader signal; buses on its way to the main add their gain
+            if let Some(e) = missing.iter().find(|e| e.strip == t.strip) {
+                t.gain_to_main_db = e.gain_to_main_db as f32;
+            }
         }
         let have: std::collections::BTreeSet<StripId> =
             solo.iter().map(|t| t.strip.clone()).collect();
@@ -1363,7 +1419,7 @@ impl<'k> Controller<'k> {
     }
 
     fn decide(&mut self, exec: &mut dyn Executor) {
-        if self.actuator_stopped {
+        if self.actuator_stopped && self.cfg.mode == Mode::Autopilot {
             self.pause("actuator stopped");
             return;
         }
@@ -1381,13 +1437,37 @@ impl<'k> Controller<'k> {
                 if self.replan.is_some() || self.plan.is_empty() {
                     let reason = self.replan.take().unwrap_or(PlanReason::Exhausted);
                     if self.make_plan(reason) {
+                        // M070: within the target, suggest only what autopilot would still do (M039's
+                        // converge_min_gain); the rest is shown as near misses
+                        if obj <= self.cfg.target_objective {
+                            let min = self.cfg.converge_min_gain;
+                            let (keep, drop): (Vec<Batch>, Vec<Batch>) =
+                                self.plan.drain(..).partition(|b| b.predicted_gain() >= min);
+                            self.plan = keep.into();
+                            for b in drop {
+                                self.near_misses.push(crate::plan::NearMiss {
+                                    label: b.mv.action.label.clone(),
+                                    strip: b.mv.strip.clone(),
+                                    problem: b.mv.problem.clone(),
+                                    predicted_gain: b.predicted_gain(),
+                                    reason: format!(
+                                        "mix within target: gain {:.3} below {min:.3}",
+                                        b.predicted_gain()
+                                    ),
+                                });
+                            }
+                            self.near_misses
+                                .sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
+                            self.near_misses.truncate(crate::plan::MAX_NEAR_MISSES);
+                        }
                         let moves = self
                             .plan
                             .iter()
                             .map(Batch::summary)
                             .chain(self.pending.iter().map(|p| p.summary.clone()))
                             .collect();
-                        self.emit(ControlEvent::Suggested { moves });
+                        let near_misses = self.near_misses.clone();
+                        self.emit(ControlEvent::Suggested { moves, near_misses });
                     }
                 }
             }
@@ -1629,9 +1709,31 @@ impl<'k> Controller<'k> {
             },
         };
         self.cfg.plan.session_baseline = self.session_baseline.clone();
-        let Ok(p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
+        self.cfg.plan.refine = None;
+        // autopilot only: in suggest mode the engineer may make room for a raise themselves
+        self.cfg.plan.hold_increases =
+            self.cfg.mode == Mode::Autopilot && self.now < self.increase_hold_until;
+        let Ok(mut p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
             return false;
         };
+        // M070 refinement: nothing to fix, but the mix is not where the target is yet
+        if p.moves().next().is_none() && s.score.objective > self.cfg.target_objective {
+            if let Some(r) = self.cfg.refine {
+                let mut c = self.cfg.plan.clone();
+                c.refine = Some(r);
+                if let Ok(mut rp) = plan_with(&input, self.kb, &c, &*self.transfer) {
+                    if rp.moves().next().is_none() {
+                        // keep the better-informed near misses (problem candidates first)
+                        rp.near_misses.append(&mut p.near_misses);
+                        rp.near_misses
+                            .sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
+                        rp.near_misses.truncate(crate::plan::MAX_NEAR_MISSES);
+                    }
+                    p = rp;
+                }
+            }
+        }
+        self.near_misses = p.near_misses.clone();
         self.expected = s.score.objective;
         let mut inspect: Option<(StripId, f64)> = None;
         let mut asks: Vec<(String, Batch)> = Vec::new();

@@ -845,6 +845,69 @@ mod tests {
         c.close();
     }
 
+    /// A console that answers every get at once with the node's (unchanged) value + `DE`, in one write.
+    fn instant_answer_console(value: f32) -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            c.set_nodelay(true).ok();
+            let mut dec = NrpDecoder::new();
+            let mut enc = NrpEncoder::new();
+            let mut buf = [0u8; 4096];
+            let mut out = Vec::new();
+            enc.select(CH_CONTROL, &mut out);
+            loop {
+                let n = match c.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                dec.feed(&buf[..n]);
+                let mut cur = None;
+                while let Some(t) = dec.next_control() {
+                    match t {
+                        Ok(Token::NavHash(h)) => cur = Some(h),
+                        Ok(Token::DataRequest) => {
+                            if let Some(h) = cur.filter(|&h| h != 0) {
+                                let _ = enc.control(&Token::NavHash(h), &mut out);
+                                let _ = enc.control(&Token::Float(value), &mut out);
+                            }
+                            let _ = enc.control(&Token::End, &mut out);
+                        }
+                        _ => {}
+                    }
+                }
+                if !out.is_empty() {
+                    c.write_all(&out).unwrap();
+                    out.clear();
+                }
+            }
+        });
+        addr
+    }
+
+    /// M070 (user session: 1269 `engineer_moved` on `system/cfg/solo/*` and `system/cfg/rta/*`): a get's answer
+    /// that arrives before `refresh` registered it was taken for someone else's change event (M068 reports
+    /// unchanged change events). Fixed in M069 (register before sending); hammer it so a regression shows.
+    #[test]
+    fn refresh_answers_are_never_reported_as_changes() {
+        let addr = instant_answer_console(0.0);
+        let (c, rx) = NativeClient::connect(addr, Duration::from_secs(2)).unwrap();
+        let id = fader();
+        // the first answer changes the mirror (factory default -> the console's value): a real change
+        c.refresh(&[id], Duration::from_secs(2)).unwrap();
+        let _ = rx.try_iter().count();
+        for _ in 0..500 {
+            c.refresh(&[id], Duration::from_secs(2)).unwrap();
+        }
+        let changes: Vec<_> = rx
+            .try_iter()
+            .filter(|m| matches!(m, ClientMsg::Change(ch) if ch.origin == ORIGIN_REMOTE))
+            .collect();
+        assert!(changes.is_empty(), "{} spurious changes", changes.len());
+        c.close();
+    }
+
     fn own(v: f32) -> Own {
         Own::Float(v)
     }

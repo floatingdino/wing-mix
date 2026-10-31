@@ -315,3 +315,52 @@ Findings of M067 and what they were:
 
 Generic regression: move -> PANIC -> compare for every param class the planner moves (`mix_actuator::testkit`), on
 SimSurface (`tests/panic_classes.rs`) and wing-sim (`wing_sim_panic_restores_*`).
+
+## M070: the user's scene (scrutiny + refinement), 2026-10-31
+
+User report: on their own mix (scene "running", main + solo taps, whole-song reference "Holy Forever" with htdemucs
+stems, Live context, a 2 h autopilot session) the tool never suggested a move. Reproduced with
+`e2e_user_scene` (`apps/wing-mixd/tests/e2e/user.rs`): a private wing-sim loaded with a **copy** of the user's
+`state.snap` used as is (no soundcheck: the multitrack goes into the USB inputs the scene's channels use as alt
+source, playback -10 dB), only USB 1/2 = main and 3/4 = monitor A captured, the whole-song reference with the user's
+cached stem profile, live timing (20 s windows): 150 s recorded, 240 s suggest, 300 s autopilot, 150 s recorded,
+PANIC, remit audit. Before = main `fc7ad1b` (incl. M069), after = task/M070, same harness, run side by side:
+
+| | before (main) | after (M070) |
+|---|---|---|
+| strips eligible / measured in solo / sweeps | **1** / 1 / 3 | **17** / 17 / 35 |
+| suggest (240 s): suggestions with moves, distinct moves | 8, 1 (the same main EQ +3 dB at 1.5 kHz) | 3, 6 (vocal/keys/bass faders, `stem:Other` faders) + near misses |
+| sections (detected) with a suggestion | 6 / 9 | 3 / 4 (the 4th: mix within target on estimates, near miss `input.10 fader +3 dB` shown with its gain 0.022 < 0.04) |
+| autopilot batches (kept), hold | 0, `no_progress` | 8 (5), still working |
+| top problems | LRA (window mismatch), stereo width | Vocals/Other stem tonal balance (sub/bass), strip levels, bass dynamics |
+| main-bus distance start -> end (one scorer) / FOH | 0.407 -> 0.407 / 0.500 | 0.407 -> 0.424 / 0.500 |
+| forbidden writes | 0 | 0 |
+
+The user's mix is already closer to the record on the main bus than the engineer's FOH recording (0.41 vs 0.50); what
+the tool now finds (and the main-bus measure does not see) is per-stem balance against the htdemucs stems, which
+needs the strips measured: on main the scene's inputs reach main 1 only through group buses, so one strip was ever
+measured (finding 2). The kept batches reduced the strip/stem objective; the main-bus distance did not improve.
+
+Earlier variants of the same repro (kept in the task log): with the REAPER item gains applied the scene's main
+(fader +10 dB) peaks at +3 dBFS and the mains true-peak guard tripped ~130 times in 14 min: on main the controller
+paused on every trip even in suggest mode (nothing measured at all), and on the branch the first planned raises were
+refused by the gate. Fixed: suggest/observe keep measuring while the actuator is stopped; under the ceiling hold
+autopilot plans no gain increases (they show as near misses).
+
+**Three songs** (`E2E_MODES=reference E2E_TAPS=multi,solo tools/e2e/run.sh wing`, 3 parallel processes per build;
+main-bus distance start -> end, batches (kept), every run `no_progress`, all audits green in both builds):
+
+| run | before (main) | after (M070) | FOH | suggested moves (both) |
+|---|---|---|---|---|
+| I Know That I Know §9, multichannel | 2.615 -> 1.132 (-57 %) 21 (12) | 2.787 -> 1.184 (-58 %) 17 (8) | 0.859 / 0.901 | 5 |
+| I Know That I Know §9, main + solo | 2.615 -> 1.538 (-41 %) 23 (9) | 2.788 -> 1.580 (-43 %) 23 (12) | | 3 |
+| Holy Forever §7, multichannel | 2.510 -> 0.983 (-61 %) 21 (10) | 2.510 -> 0.829 (-67 %) 17 (8) | 1.031 | 5 |
+| Holy Forever §7, main + solo | 2.510 -> 1.146 (-54 %) 30 (12) | 2.510 -> 1.158 (-54 %) 20 (10) | | 3 |
+| Show Me Your Face §4, multichannel | 2.252 -> 1.604 (-29 %) 21 (10) | 2.251 -> 1.546 (-31 %) 24 (7) | 1.403 | 7 |
+| Show Me Your Face §4, main + solo | 2.251 -> 1.509 (-33 %) 29 (11) | 2.252 -> 1.320 (-41 %) 36 (15) | | 5 |
+
+I Know That I Know's start and FOH distances differ between the columns because the scorer changed (finding 1: its
+reference section is more than twice the 16 s recording, so PLR/LRA are no longer compared); Holy Forever and Show
+Me Your Face use the same scorer in both. These scenes assign every channel to main 1 directly (the e2e soundcheck),
+so finding 2 does not apply; the PUBLIC-derived scene's other group-routed channels now count as eligible (17 -> 21
+strips). Refinement did not trigger here (the problem-driven plans were never empty above the target objective).

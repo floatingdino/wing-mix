@@ -53,6 +53,15 @@ pub struct SectionConfig {
     pub spectral_jump_db: f32,
     /// Frames quieter than this (LUFS) are ignored (breaks, silence).
     pub floor_lufs: f32,
+    /// M070 hysteresis: no new section is reported this long after the last one (s, musical time). A live song's
+    /// bar-to-bar dynamics crossed the thresholds every 13-20 s in a user session (139 changes in 2 h), each one
+    /// re-planning and restarting a 20 s measurement window, so few windows ever completed.
+    #[serde(default = "default_min_section_s")]
+    pub min_section_s: f64,
+}
+
+fn default_min_section_s() -> f64 {
+    24.0
 }
 
 /// Controller settings.
@@ -106,6 +115,10 @@ pub struct ControlConfig {
     /// A soloed strip quieter than this (LUFS) is not playing: its move is skipped.
     pub inspect_silent_lufs: f32,
     pub section: SectionConfig,
+    /// M070 refinement mode: when the plan from problems is empty and the objective is above `target_objective`,
+    /// plan small fader/EQ moves towards the target centre (`None`: off). Scrutiny is
+    /// `plan.diagnosis.tolerance_scale`.
+    pub refine: Option<crate::plan::RefineConfig>,
     /// M062: strips without a tap: solo sweeps, measured-strip book, priors.
     pub strips: StripConfig,
     pub plan: PlanConfig,
@@ -162,8 +175,10 @@ impl ControlConfig {
                 loudness_jump_lu: 5.0,
                 spectral_jump_db: 5.0,
                 floor_lufs: -50.0,
+                min_section_s: default_min_section_s(),
             },
             strips: StripConfig::default(),
+            refine: Some(crate::plan::RefineConfig::default()),
             plan,
         }
     }

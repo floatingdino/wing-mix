@@ -166,7 +166,16 @@ pub fn features_matching(p: &TargetProfile, window: Window) -> Features {
     let mut f = Features::new("main", window, true);
     let l = MAIN_LUFS;
     let session = matches!(window, Window::Session);
-    f.t_end_s = 30.0;
+    // a Session snapshot stands for the span the target describes (M070: PLR/LRA compare only over such spans)
+    f.t_end_s = if session {
+        match (&p.section, &p.source) {
+            (Some(s), _) => s.end_s - s.start_s,
+            (None, mix_core::profile::ProfileSource::Reference { duration_s, .. }) => *duration_s,
+            _ => 180.0,
+        }
+    } else {
+        30.0
+    };
     let lo = &mut f.loudness;
     lo.momentary_lufs = l;
     lo.short_term_lufs = l;

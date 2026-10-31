@@ -62,6 +62,9 @@ pub struct MoveSummary {
     pub needs_confirmation: Vec<String>,
     /// A solo inspection precedes the move.
     pub inspect: bool,
+    /// M070: a refinement move (nothing exceeded tolerance; a small step towards the target centre).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refinement: bool,
 }
 
 impl MoveSummary {
@@ -76,6 +79,7 @@ impl MoveSummary {
             predicted_gain: mv.predicted.objective_before - mv.predicted.objective_after,
             needs_confirmation: mv.needs_confirmation.clone(),
             inspect,
+            refinement: mv.refinement,
         }
     }
 }
@@ -136,6 +140,10 @@ pub enum ControlEvent {
     /// Suggest mode: the current plan, nothing written.
     Suggested {
         moves: Vec<MoveSummary>,
+        /// M070: what the planner scored but held back (gain too small for its cost / the refinement minimum),
+        /// best first, so the engineer sees what the tool would try and why it did not.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        near_misses: Vec<crate::plan::NearMiss>,
     },
     BatchStarted {
         seq: u32,

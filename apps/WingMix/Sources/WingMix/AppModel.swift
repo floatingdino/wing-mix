@@ -61,6 +61,9 @@ final class AppModel {
     var liveContext: LiveContext = .live
     /// `applied: false` = the daemon stored it but the target transform is not active yet.
     var liveContextApplied: Bool?
+    /// M070 scrutiny (tolerance scale 0.5 strict .. 1.5 forgiving) and refinement mode, as the daemon reports them.
+    var scrutiny: Double = 1.0
+    var refine = true
 
     // Listen
     var devices: [AudioDevice] = []
@@ -244,6 +247,10 @@ final class AppModel {
                     liveContext = lc
                 }
                 if let a = snapshot?.liveContextApplied { liveContextApplied = a }
+                if let t = status?.tuning {
+                    if let s = t.scrutiny { scrutiny = s }
+                    if let r = t.refine { refine = r }
+                }
                 if let m = snapshot?.mode, let mm = MixMode(rawValue: m), mm != mode { mode = mm }
                 if let info = snapshot?.target?.info { targetInfo = info }
                 if screen == .live || frozenSnapshot != nil { await refreshSlots() }
@@ -396,6 +403,17 @@ final class AppModel {
         if section > 0 { args["section"] = .number(Double(section)) }
         await send("load_reference", args)
         await refreshStatus()
+    }
+
+    /// M070: `set_scrutiny` (scale and/or refinement mode).
+    func setScrutiny(scale: Double? = nil, refine r: Bool? = nil) async {
+        var args: [String: JSONValue] = [:]
+        if let scale { args["scale"] = .number((scale * 20).rounded() / 20) }
+        if let r { args["refine"] = .bool(r) }
+        if let res = await send("set_scrutiny", args) {
+            if let s = res["scrutiny"]?.double { scrutiny = s }
+            if let b = res["refine"]?.bool { refine = b }
+        }
     }
 
     func setLiveContext(_ c: LiveContext) async {

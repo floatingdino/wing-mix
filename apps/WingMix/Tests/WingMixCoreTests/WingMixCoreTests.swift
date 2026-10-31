@@ -73,6 +73,19 @@ func tempDir(_ tag: String) throws -> URL {
         #expect(s.touched.isEmpty && s.moves.isEmpty && s.pending.isEmpty)
     }
 
+    @Test func `decodes near misses, refinement moves and tuning (M070)`() throws {
+        let raw = #"{"ok":true,"result":{"plan":[{"label":"input.3 fader +1.0 dB","strip":"input.3","predicted_gain":0.02,"refinement":true}],"near_misses":[{"label":"input.4 EQ band.2 -1.5 dB at 400 Hz","strip":"input.4","problem":"tonal:mix@low_mid:band_dev_db","predicted_gain":0.004,"reason":"refinement: predicted gain 0.004 below 0.010"}]}}"#
+        let s = try ControlClient.parseReply(raw, as: Snapshot.self)
+        #expect(s.plan.first?.refinement == true)
+        #expect(s.nearMisses.count == 1 && s.nearMisses[0].predictedGain == 0.004)
+        #expect(s.nearMisses[0].reason?.hasPrefix("refinement") == true)
+        // older daemons: no near misses, no tuning
+        let old = try ControlClient.parseReply(#"{"ok":true,"result":{"plan":[]}}"#, as: Snapshot.self)
+        #expect(old.nearMisses.isEmpty)
+        let st = try DaemonStatus.decode(Data(#"{"running":true,"pid":1,"updated_unix":1,"tuning":{"scrutiny":0.75,"refine":false}}"#.utf8))
+        #expect(st.tuning?.scrutiny == 0.75 && st.tuning?.refine == false)
+    }
+
     @Test func `decodes the change budget`() throws {
         let raw = """
         {"ok":true,"result":{"mode":"autopilot","curve":[],"session":{"running":true,"budget":[7,12.5],

@@ -59,11 +59,18 @@ public struct DaemonStatus: Decodable, Sendable, Equatable {
     public var loading: Loading?
     public var mode: String?
     public var liveContext: String?
+    /// M070: `{"scrutiny": 0.5..1.5, "refine": bool}` (nil from older daemons).
+    public var tuning: Tuning?
     public var session: Session?
     public var safety: Safety?
     public var lastError: String?
     /// External tools (`uv`, `claude`) and where the daemon found them (nil path = missing).
     public var tools: [String: Tool]?
+
+    public struct Tuning: Decodable, Sendable, Equatable {
+        public var scrutiny: Double?
+        public var refine: Bool?
+    }
 
     public struct Tool: Decodable, Sendable, Equatable {
         public var path: String?

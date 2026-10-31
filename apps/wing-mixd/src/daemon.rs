@@ -25,6 +25,7 @@ use mix_core::ids::{ParamId, StripId};
 use mix_core::profile::TargetProfile;
 use mix_core::value::Value as PValue;
 use mix_engine::control::{ControlConfig, ControlEvent, Controller, Executor, Mode};
+use mix_engine::diagnosis::SCRUTINY_RANGE;
 use mix_knowledge::KnowledgeBase;
 use mix_sim::{Multitrack, SimConfig, SimSurface, Track};
 use mix_surface::journal::Change;
@@ -426,6 +427,9 @@ struct Daemon {
     roles: RoleStore,
     mode: Mode,
     live_context: LiveContext,
+    /// M070: persisted scrutiny (tolerance scale) and refinement mode.
+    scrutiny: f64,
+    refine: bool,
     console: Option<Console>,
     input: Option<Input>,
     target: Option<Target>,
@@ -472,7 +476,8 @@ impl Daemon {
         let policy = explicit_policy
             .clone()
             .unwrap_or_else(|| default_policy_for("wing").expect("embedded wing policy"));
-        let live_context = crate::status::Settings::load(&cfg.state_dir).live_context;
+        let settings = crate::status::Settings::load(&cfg.state_dir);
+        let live_context = settings.live_context;
         Daemon {
             roles: RoleStore::load(&cfg.state_dir),
             cfg,
@@ -486,6 +491,10 @@ impl Daemon {
             last_error: None,
             mode: Mode::Observe,
             live_context,
+            scrutiny: settings
+                .scrutiny
+                .clamp(SCRUTINY_RANGE.0 as f64, SCRUTINY_RANGE.1 as f64),
+            refine: settings.refine,
             console: None,
             input: None,
             target: None,
@@ -631,6 +640,7 @@ impl Daemon {
                 Ok(json!({"mode": mode}))
             }
             Request::SetLiveContext { context } => self.set_live_context(context),
+            Request::SetScrutiny { scale, refine } => self.set_scrutiny(scale, refine),
             Request::Start(o) => self.start(o),
             Request::Stop => self.stop(),
             Request::EmergencyStop | Request::Panic => Err("handled by the dispatcher".into()),
@@ -1157,9 +1167,7 @@ impl Daemon {
         self.live_context = context;
         let applied = self.target.is_some();
         if changed {
-            let st = crate::status::Settings {
-                live_context: context,
-            };
+            let st = self.settings();
             if let Err(e) = st.save(&self.cfg.state_dir) {
                 self.last_error = Some(format!("settings: {e}"));
             }
@@ -1185,6 +1193,50 @@ impl Daemon {
             "applied": applied,
             "target": self.target.as_ref().map(|t| context_summary(&t.profile)),
         }))
+    }
+
+    fn settings(&self) -> crate::status::Settings {
+        crate::status::Settings {
+            live_context: self.live_context,
+            scrutiny: self.scrutiny,
+            refine: self.refine,
+        }
+    }
+
+    fn tuning(&self) -> Value {
+        json!({"scrutiny": self.scrutiny, "refine": self.refine})
+    }
+
+    /// M070: scrutiny (diagnosis tolerance scale) and refinement mode; persisted, applied to a running loop by
+    /// rebuilding the controller (it re-measures and re-plans).
+    fn set_scrutiny(&mut self, scale: Option<f64>, refine: Option<bool>) -> Result<Value, String> {
+        if let Some(s) = scale {
+            let (lo, hi) = (SCRUTINY_RANGE.0 as f64, SCRUTINY_RANGE.1 as f64);
+            if !(lo..=hi).contains(&s) {
+                return Err(format!("scrutiny scale must be within {lo}..{hi}"));
+            }
+        }
+        let before = (self.scrutiny, self.refine);
+        self.scrutiny = scale.unwrap_or(self.scrutiny);
+        self.refine = refine.unwrap_or(self.refine);
+        if (self.scrutiny, self.refine) != before {
+            if let Err(e) = self.settings().save(&self.cfg.state_dir) {
+                self.last_error = Some(format!("settings: {e}"));
+            }
+            if let Some(s) = self.session.as_mut() {
+                s.opts.scrutiny = None;
+                s.opts.refine = None;
+            }
+            if self.session.as_ref().is_some_and(|s| s.ctl.is_some()) {
+                if let Err(e) = self.build_ctl() {
+                    self.last_error = Some(e);
+                }
+            }
+            let mut ev = self.tuning();
+            ev["type"] = json!("scrutiny_changed");
+            self.emit("daemon", &ev);
+        }
+        Ok(self.tuning())
     }
 
     fn start(&mut self, o: StartOptions) -> Result<Value, String> {
@@ -1333,6 +1385,18 @@ impl Daemon {
         cfg.strips.sweep = o.sweep.unwrap_or(true);
         cfg.strips.priors = o.priors.unwrap_or(true);
         cfg.strips.meters = o.meters.unwrap_or(true);
+        // M070 scrutiny + refinement (session option, else the persisted setting)
+        let scrutiny = o.scrutiny.unwrap_or(self.scrutiny);
+        if !(SCRUTINY_RANGE.0 as f64..=SCRUTINY_RANGE.1 as f64).contains(&scrutiny) {
+            return Err(format!(
+                "scrutiny must be within {}..{}",
+                SCRUTINY_RANGE.0, SCRUTINY_RANGE.1
+            ));
+        }
+        cfg.plan.diagnosis.tolerance_scale = scrutiny as f32;
+        if !o.refine.unwrap_or(self.refine) {
+            cfg.refine = None;
+        }
         let names: BTreeMap<StripId, String> = console
             .surface
             .topology()
@@ -1489,6 +1553,7 @@ impl Daemon {
             "mode": self.mode,
             "live_context": self.live_context,
             "live_context_applied": self.target.is_some(),
+            "tuning": self.tuning(),
             "console": self.console.as_ref().map(|c| json!({"kind": c.kind, "name": c.name})),
             "target": self.target.as_ref().map(|t| json!({"kind": t.kind, "label": t.label, "info": t.info, "context": context_summary(&t.profile)})),
             "slots": self.slots_status(),
@@ -1569,6 +1634,7 @@ impl Daemon {
                     .map(|d| d.problems.iter().take(20).collect::<Vec<_>>()));
             out["diagnosis_notes"] = json!(ctl.diagnosis().map(|d| d.notes.clone()));
             out["plan"] = json!(ctl.planned());
+            out["near_misses"] = json!(ctl.near_misses());
             out["pending"] = self.pending()["pending"].clone();
             out["moves"] = json!(ctl.records());
         }
@@ -1626,6 +1692,7 @@ impl Daemon {
                 .unwrap_or(Value::Null),
             live_context: self.live_context,
             live_context_applied: self.target.is_some(),
+            tuning: self.tuning(),
             mode: serde_json::to_value(self.mode)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))

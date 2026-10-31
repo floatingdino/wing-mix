@@ -192,14 +192,19 @@ fn each_mix_delta_is_detected_alone() {
 #[test]
 fn session_window_checks_plr_and_lra() {
     let p = synth::profile();
-    let mut f = synth::features_matching(&p, Window::Session);
+    // a session as long as the (whole-song, 180 s) target: PLR/LRA comparable (M070)
+    let whole = |mut f: Features| {
+        f.t_end_s = f.t_start_s + 180.0;
+        f
+    };
+    let mut f = whole(synth::features_matching(&p, Window::Session));
     f.loudness.lra_lu = Some(p.loudness.lra_lu + 6.0);
     let d = run(&f, &p, &[]);
     let pr = only(&d, "too_dynamic:mix:lra_lu");
     assert!(pr.rules.contains(&"dyn_too_dynamic".to_string()) || pr.rules.is_empty());
     assert_eq!(pr.suggested_blocks[0], "Dyn");
 
-    let mut f = synth::features_matching(&p, Window::Session);
+    let mut f = whole(synth::features_matching(&p, Window::Session));
     f.loudness.plr_db = Some(p.loudness.plr_db - 5.0);
     let d = run(&f, &p, &[]);
     only(&d, "squashed:mix:plr_db");
@@ -696,4 +701,111 @@ fn kit_balance_finds_a_quiet_snare_and_ignores_toms() {
         "{}",
         dump(&d)
     );
+}
+
+/// M070 (user session, finding 1): a 20 s live window has ~1 LU of loudness range; a whole-song reference
+/// (644 s, no section) 9.4. That is a window mismatch, not a mix fault: compared only over comparable spans.
+#[test]
+fn loudness_range_needs_a_comparable_span() {
+    use mix_core::profile::{ProfileSource, SectionRef};
+    let mut p = synth::profile();
+    p.loudness.lra_lu = 9.4;
+    p.source = ProfileSource::Reference {
+        file_name: "song.m4a".into(),
+        blake3: String::new(),
+        duration_s: 644.0,
+        sample_rate_in: 44_100,
+    };
+    let mut m = synth::features_matching(&p, Window::Session);
+    m.loudness.lra_lu = Some(1.0);
+    let lra = |d: &Diagnosis| d.problems.iter().any(|x| x.evidence.feature == "lra_lu");
+    m.t_start_s = 100.0;
+    m.t_end_s = 120.0;
+    let d = run(&m, &p, &[]);
+    assert!(!lra(&d), "{}", dump(&d));
+    assert!(d.notes.iter().any(|n| n.contains("PLR/LRA skipped")));
+    // a whole-song measurement is compared
+    m.t_end_s = 100.0 + 600.0;
+    assert!(lra(&run(&m, &p, &[])));
+    // so is a window as long as the target's section
+    p.section = Some(SectionRef {
+        index: 3,
+        label: "chorus".into(),
+        start_s: 60.0,
+        end_s: 90.0,
+    });
+    m.t_end_s = 120.0;
+    assert!(lra(&run(&m, &p, &[])));
+}
+
+/// M070 scrutiny: a deviation inside the default tolerance is no problem at 1.0 but is at 0.5; the continuous
+/// distance scales with it; a matched mix stays clean at any scrutiny.
+#[test]
+fn scrutiny_scales_every_tolerance() {
+    let p = synth::profile();
+    let at = |m: &Features, s: f32| {
+        diagnose(
+            &DiagnosisInput::new(m, &p),
+            kb(),
+            &DiagnosisConfig {
+                tolerance_scale: s,
+                ..DiagnosisConfig::default()
+            },
+        )
+        .unwrap()
+    };
+    let matched = synth::features_matching(&p, long());
+    for s in [0.5, 1.0, 1.5] {
+        let d = at(&matched, s);
+        assert!(d.problems.is_empty(), "{s}: {}", dump(&d));
+    }
+    let mut m = matched.clone();
+    // inside the band tolerance: find the largest shift that is still clean at 1.0
+    let mut shift = 0.0;
+    for k in 1..=40 {
+        let mut x = matched.clone();
+        shift_band(
+            &mut x.spectrum.erb_mid_rel_db,
+            2000.0,
+            5000.0,
+            k as f32 * 0.25,
+        );
+        if !at(&x, 1.0).problems.is_empty() {
+            break;
+        }
+        shift = k as f32 * 0.25;
+        m = x;
+    }
+    assert!(shift > 0.5, "{shift}");
+    let normal = at(&m, 1.0);
+    let strict = at(&m, 0.5);
+    let loose = at(&m, 1.5);
+    assert!(normal.problems.is_empty(), "{}", dump(&normal));
+    assert!(!strict.problems.is_empty(), "{}", dump(&strict));
+    assert!(loose.problems.is_empty());
+    assert!(
+        strict.distance > 1.5 * normal.distance && loose.distance < normal.distance,
+        "{} {} {}",
+        strict.distance,
+        normal.distance,
+        loose.distance
+    );
+}
+
+/// Scaling keeps one-sided checks one-sided and threshold evidence untouched.
+#[test]
+fn scrutiny_respects_one_sided_and_threshold_evidence() {
+    let mut e = Evidence::new("sibilance_db", "db", -5.0, 0.0, 3.0);
+    e.fine_side();
+    assert_eq!(e.scaled(0.5).excess, 0.0);
+    let e = Evidence::new("x", "db", 2.0, 0.0, 3.0);
+    assert_eq!(e.excess, 0.0);
+    assert!((e.scaled(0.5).excess - 0.5).abs() < 1e-6);
+    let t = Evidence {
+        tolerance: 0.0,
+        allowance: 0.0,
+        excess: 1.0,
+        ..Evidence::new("y", "db", 1.0, 0.0, 0.0)
+    };
+    assert_eq!(t.scaled(0.5), t);
 }

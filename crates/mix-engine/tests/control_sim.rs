@@ -379,6 +379,77 @@ fn stationary_matched_mix_does_not_hunt() {
 // -------------------------------------------------------------------------------------------------------------
 // Modes
 
+/// M070: a STOP (here: the operator's; on the user's hot mix the mains true-peak guard tripped every few seconds)
+/// pauses autopilot, but suggest mode writes nothing and keeps measuring and suggesting.
+#[test]
+fn suggest_keeps_measuring_while_the_actuator_is_stopped() {
+    let fx = fixture();
+    let mut r = rig(&fx.pair.degraded, config(Mode::Suggest));
+    r.actuator.stop();
+    let n = r.log.len();
+    r.run(3.0 * SECONDS);
+    let after = &r.log[n..];
+    assert!(
+        after
+            .iter()
+            .filter(|(_, e)| matches!(e, ControlEvent::Measured { .. }))
+            .count()
+            >= 2,
+        "{after:?}"
+    );
+    assert!(after
+        .iter()
+        .any(|(_, e)| matches!(e, ControlEvent::Suggested { moves, .. } if !moves.is_empty())));
+    assert!(!after
+        .iter()
+        .any(|(_, e)| matches!(e, ControlEvent::Paused { .. })));
+    assert!(r.actuator.write_log().is_empty());
+}
+
+/// M070: refinement mode is on by default, yet a mix that matches the reference (seed 7's reference scene against
+/// its own profile) gets no refinement suggestion (refinement only runs above the target objective), and within
+/// the target suggest shows only what autopilot would also do.
+#[test]
+fn matched_mix_gets_no_refinement_suggestions() {
+    let fx = fixture();
+    let c = config(Mode::Suggest);
+    assert!(c.refine.is_some());
+    let mut r = rig(&fx.pair.reference, c);
+    let got = r.run_until(2.5 * SECONDS, |r| {
+        r.log
+            .iter()
+            .any(|(_, e)| matches!(e, ControlEvent::Suggested { .. }))
+    });
+    assert!(got, "no plan");
+    let (moves, near) = r
+        .log
+        .iter()
+        .find_map(|(_, e)| match e {
+            ControlEvent::Suggested { moves, near_misses } => {
+                Some((moves.clone(), near_misses.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    for n in &near {
+        eprintln!(
+            "near miss: {} ({:.3}): {}",
+            n.label, n.predicted_gain, n.reason
+        );
+    }
+    // nothing from refinement, and only what autopilot would also do within the target (M039)
+    let min = config(Mode::Suggest).converge_min_gain;
+    for m in &moves {
+        eprintln!("suggested: {} ({:.3})", m.label, m.predicted_gain);
+    }
+    assert!(
+        moves
+            .iter()
+            .all(|m| !m.refinement && m.predicted_gain >= min),
+        "{moves:#?}"
+    );
+}
+
 #[test]
 fn suggest_mode_plans_but_writes_nothing() {
     let fx = fixture();
@@ -401,7 +472,7 @@ fn suggest_mode_plans_but_writes_nothing() {
         .log
         .iter()
         .find_map(|(_, e)| match e {
-            ControlEvent::Suggested { moves } => Some(moves.clone()),
+            ControlEvent::Suggested { moves, .. } => Some(moves.clone()),
             _ => None,
         })
         .unwrap();
