@@ -379,6 +379,33 @@ fn stationary_matched_mix_does_not_hunt() {
 // -------------------------------------------------------------------------------------------------------------
 // Modes
 
+/// M070: a STOP (here: the operator's; on the user's hot mix the mains true-peak guard tripped every few seconds)
+/// pauses autopilot, but suggest mode writes nothing and keeps measuring and suggesting.
+#[test]
+fn suggest_keeps_measuring_while_the_actuator_is_stopped() {
+    let fx = fixture();
+    let mut r = rig(&fx.pair.degraded, config(Mode::Suggest));
+    r.actuator.stop();
+    let n = r.log.len();
+    r.run(3.0 * SECONDS);
+    let after = &r.log[n..];
+    assert!(
+        after
+            .iter()
+            .filter(|(_, e)| matches!(e, ControlEvent::Measured { .. }))
+            .count()
+            >= 2,
+        "{after:?}"
+    );
+    assert!(after
+        .iter()
+        .any(|(_, e)| matches!(e, ControlEvent::Suggested { moves, .. } if !moves.is_empty())));
+    assert!(!after
+        .iter()
+        .any(|(_, e)| matches!(e, ControlEvent::Paused { .. })));
+    assert!(r.actuator.write_log().is_empty());
+}
+
 /// M070: refinement mode is on by default, yet a mix that matches the reference (seed 7's reference scene against
 /// its own profile) gets no refinement suggestion (refinement only runs above the target objective), and within
 /// the target suggest shows only what autopilot would also do.

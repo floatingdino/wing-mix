@@ -139,7 +139,11 @@ pub fn run(fx: &Fixture, snap: &Path, out: &Path) -> Option<UserRun> {
         } else {
             0.0
         };
-        let g = 10f32.powf(gdb as f32 / 20.0);
+        // E2E_USER_FEED_DB (default -10): playback level. The scene's main fader is at +10 dB, so the raw tracks
+        // peak at +3 dBFS on the main and the mains true-peak guard trips every few seconds; the user's session
+        // saw almost no trips, i.e. a lower playback level
+        let feed_db = env_f("E2E_USER_FEED_DB", -10.0);
+        let g = 10f32.powf((gdb + feed_db) as f32 / 20.0);
         tracks.push(Track {
             name: t.name.clone(),
             channel: t.channel,

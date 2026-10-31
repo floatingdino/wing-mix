@@ -613,7 +613,11 @@ impl<'k> Controller<'k> {
                 }
                 ActuatorEvent::Stopped | ActuatorEvent::LinkLost => {
                     self.actuator_stopped = true;
-                    if !matches!(self.state, State::Executing(_) | State::Reverting { .. }) {
+                    // M070: suggest/observe write nothing: a STOP (e.g. the mains true-peak guard on a hot mix,
+                    // tripping every few seconds) must not stop the measurements and suggestions
+                    if self.cfg.mode == Mode::Autopilot
+                        && !matches!(self.state, State::Executing(_) | State::Reverting { .. })
+                    {
                         self.pause("actuator stopped");
                     }
                 }
@@ -625,9 +629,11 @@ impl<'k> Controller<'k> {
                     ) {
                         self.hold_increases();
                     }
-                    self.emit(ControlEvent::Paused {
-                        detail: format!("safety: {trip:?}"),
-                    });
+                    if self.cfg.mode == Mode::Autopilot {
+                        self.emit(ControlEvent::Paused {
+                            detail: format!("safety: {trip:?}"),
+                        });
+                    }
                 }
                 ActuatorEvent::Ready => {
                     self.actuator_stopped = false;
@@ -1413,7 +1419,7 @@ impl<'k> Controller<'k> {
     }
 
     fn decide(&mut self, exec: &mut dyn Executor) {
-        if self.actuator_stopped {
+        if self.actuator_stopped && self.cfg.mode == Mode::Autopilot {
             self.pause("actuator stopped");
             return;
         }
