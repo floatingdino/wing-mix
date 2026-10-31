@@ -439,6 +439,9 @@ struct Daemon {
     moves: EngineerMoves,
     /// The console's change events (engineer moves).
     ext_rx: Option<Receiver<SurfaceEvent>>,
+    /// Blocks whose model we just switched (param prefix, when): the console re-loads the block's params, which are
+    /// consequences of our write, not engineer moves.
+    model_switched: Vec<(String, Instant)>,
     /// A slot comparison is running: the loop measures in observe mode and moves nothing.
     comparing: Option<Comparing>,
     /// Slot last recalled (the one the console is on, unless moved since).
@@ -497,6 +500,7 @@ impl Daemon {
                 crate::status::unix_now() * 1e3
             )),
             ext_rx: None,
+            model_switched: Vec::new(),
             comparing: None,
             active_slot: None,
             resume_mode: Mode::Autopilot,
@@ -1976,6 +1980,12 @@ impl Daemon {
                     .or_insert_with(|| ch.from.clone());
             }
         }
+        for m in &report.models {
+            if let Some((pre, _)) = m.as_str().rsplit_once('/') {
+                self.model_switched
+                    .push((format!("{pre}/"), Instant::now()));
+            }
+        }
         if !keep_engineer {
             for ch in &report.changes {
                 self.moves.acknowledge(&ch.param);
@@ -2173,6 +2183,8 @@ impl Daemon {
     fn drain_console_events(&mut self) {
         let Some(rx) = &self.ext_rx else { return };
         let evs: Vec<SurfaceEvent> = rx.try_iter().collect();
+        self.model_switched
+            .retain(|(_, t)| t.elapsed() < Duration::from_secs(5));
         for ev in evs {
             if let SurfaceEvent::ParamChanged {
                 param,
@@ -2180,6 +2192,13 @@ impl Daemon {
                 ..
             } = ev
             {
+                if self
+                    .model_switched
+                    .iter()
+                    .any(|(pre, _)| param.as_str().starts_with(pre.as_str()))
+                {
+                    continue;
+                }
                 self.moves.moved(param);
             }
         }
