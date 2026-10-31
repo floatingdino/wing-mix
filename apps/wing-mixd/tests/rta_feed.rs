@@ -111,8 +111,11 @@ fn console_rta_feeds_the_safety_monitor_and_is_restored() {
     // Ending the session releases the claim: the console's previous RTA source is back.
     d.request(serde_json::from_value(json!({"cmd": "disconnect_console"})).unwrap())
         .unwrap();
-    probe.client().barrier(Duration::from_secs(10)).unwrap();
-    assert_eq!(probe.rta_source().unwrap(), before);
+    // the daemon's restore goes out on its own connection: the probe's barrier does not order against it, so poll
+    eventually("console RTA source restored", || {
+        probe.client().barrier(Duration::from_secs(10)).unwrap();
+        probe.rta_source().unwrap() == before
+    });
     drop(d);
     let _ = std::fs::remove_dir_all(&dir);
 }
