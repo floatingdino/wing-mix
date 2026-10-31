@@ -145,7 +145,7 @@ impl Scope {
 }
 
 /// The numbers behind a problem.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Evidence {
     /// Knowledge-base feature name (`band_dev_db.low_mid`, `level_dev_lu`, `masking_db.presence`...).
     pub feature: String,
@@ -168,6 +168,19 @@ pub struct Evidence {
     /// rescalable (threshold evidence); infinite = one-sided check whose deviation is on the fine side.
     #[serde(skip)]
     pub allowance: f32,
+}
+
+/// Equality of what is published (`allowance` is derived bookkeeping that is not serialised).
+impl PartialEq for Evidence {
+    fn eq(&self, o: &Self) -> bool {
+        self.feature == o.feature
+            && self.measured == o.measured
+            && self.target == o.target
+            && self.tolerance == o.tolerance
+            && self.unit == o.unit
+            && self.deviation == o.deviation
+            && self.excess == o.excess
+    }
 }
 
 impl Evidence {

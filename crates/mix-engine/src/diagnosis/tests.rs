@@ -192,14 +192,19 @@ fn each_mix_delta_is_detected_alone() {
 #[test]
 fn session_window_checks_plr_and_lra() {
     let p = synth::profile();
-    let mut f = synth::features_matching(&p, Window::Session);
+    // a session as long as the (whole-song, 180 s) target: PLR/LRA comparable (M070)
+    let whole = |mut f: Features| {
+        f.t_end_s = f.t_start_s + 180.0;
+        f
+    };
+    let mut f = whole(synth::features_matching(&p, Window::Session));
     f.loudness.lra_lu = Some(p.loudness.lra_lu + 6.0);
     let d = run(&f, &p, &[]);
     let pr = only(&d, "too_dynamic:mix:lra_lu");
     assert!(pr.rules.contains(&"dyn_too_dynamic".to_string()) || pr.rules.is_empty());
     assert_eq!(pr.suggested_blocks[0], "Dyn");
 
-    let mut f = synth::features_matching(&p, Window::Session);
+    let mut f = whole(synth::features_matching(&p, Window::Session));
     f.loudness.plr_db = Some(p.loudness.plr_db - 5.0);
     let d = run(&f, &p, &[]);
     only(&d, "squashed:mix:plr_db");
