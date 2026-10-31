@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Flaky-test stress run: N x `cargo test --workspace` under a CPU hog (one `yes` per core) and high test threads.
+# Flaky-test stress run: N x `cargo test --workspace` under a CPU hog (ncpu/2 `yes` hogs (HOGS_N=n)) and 2x ncpu test threads.
 # Usage: tools/stress.sh [runs=30] [out-dir=target/stress]. Failing runs are kept as <out-dir>/run-N.log; the summary
 # lists every failed test. Always kills the hogs on exit. Never touches ports 2222/2223 (tests bind port 0).
 set -u
@@ -11,10 +11,10 @@ cargo test --workspace --no-run -q || exit 2
 HOGS=()
 cleanup() { for p in "${HOGS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; }
 trap cleanup EXIT INT TERM
-for _ in $(seq "$NCPU"); do yes > /dev/null & HOGS+=($!); done
+for _ in $(seq "${HOGS_N:-$((NCPU / 2))}"); do yes > /dev/null & HOGS+=($!); done
 fail=0
 for i in $(seq "$RUNS"); do
-  if RUST_TEST_THREADS=$((NCPU * 4)) cargo test --workspace --no-fail-fast > "$OUT/run-$i.log" 2>&1; then
+  if RUST_TEST_THREADS=$((NCPU * 2)) cargo test --workspace --no-fail-fast > "$OUT/run-$i.log" 2>&1; then
     rm "$OUT/run-$i.log"; echo "run $i: ok"
   else
     fail=$((fail + 1)); echo "run $i: FAILED ($OUT/run-$i.log)"

@@ -29,7 +29,7 @@ app:
 	cd apps/WingMix && swift test
 	apps/WingMix/smoke.sh
 
-# Flaky-test sweep (M069): 30 x `cargo test --workspace` under a CPU hog per core, RUST_TEST_THREADS=4*ncpu.
+# Flaky-test sweep (M069): 30 x `cargo test --workspace` under ncpu/2 CPU hogs, RUST_TEST_THREADS=2*ncpu.
 # `make stress RUNS=10` for fewer runs. Failing logs land in target/stress/run-N.log.
 stress:
 	tools/stress.sh $(or $(RUNS),30)

@@ -1754,6 +1754,8 @@ impl Daemon {
             return Err(format!("`{ORIGINAL}` is built in (the session baseline)"));
         }
         self.slot_store()?;
+        // account for console events already received, so they are not counted as moves *after* this slot
+        self.drain_console_events();
         let slot = self.capture_slot(&name, false, false)?;
         self.put_slot(slot, true)
     }
@@ -1770,6 +1772,7 @@ impl Daemon {
             Some(s) => s.name.clone(),
             None => store.next_name(),
         };
+        self.drain_console_events();
         match self.capture_slot(&name, false, true) {
             Ok(slot) => {
                 if let Err(e) = self.put_slot(slot, true) {
@@ -1888,6 +1891,8 @@ impl Daemon {
         confirm_live: bool,
     ) -> Result<Value, String> {
         let t_req = Instant::now();
+        // engineer moves received so far must be known before deciding what to keep
+        self.drain_console_events();
         let slot = self
             .slot_store()?
             .get(name)
