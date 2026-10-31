@@ -144,9 +144,9 @@ fn token_value(store: &ParamStore, id: NodeId, t: &Token<'_>) -> Option<Own> {
             let text = String::from_utf8_lossy(b);
             match d.ty {
                 ParamType::Str => return Some(Own::Text(text.into_owned())),
-                ParamType::Enum | ParamType::FEnum => d
-                    .enum_index(&text)
-                    .or_else(|| d.parse_text(&text).ok())?,
+                ParamType::Enum | ParamType::FEnum => {
+                    d.enum_index(&text).or_else(|| d.parse_text(&text).ok())?
+                }
                 _ => d.parse_text(&text).ok()?,
             }
         }

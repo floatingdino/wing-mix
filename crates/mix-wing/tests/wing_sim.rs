@@ -725,3 +725,73 @@ fn wing_sim_engineer_write_mid_ramp_is_detected_100_trials() {
     };
     engineer_mid_ramp_trials(&d, 100, 0x0068_2026);
 }
+
+/// M068: move -> PANIC -> every param of the touched strips back at its start value, over the native protocol.
+fn wing_sim_panic_round_trip(d: &common::Daemon, classes: &[&str]) {
+    use mix_actuator::testkit::{class_cases, panic_round_trip, Permissive};
+    use mix_actuator::{ActuatorEvent, PolicyGate};
+    use std::sync::Arc;
+    for (name, moves) in class_cases(&d.connect())
+        .into_iter()
+        .filter(|(n, _)| classes.contains(n))
+    {
+        let s = Arc::new(d.connect());
+        let wanted: Vec<ParamId> = moves
+            .iter()
+            .flat_map(|a| a.changes.iter().map(|c| c.param.clone()))
+            .collect();
+        let gate = Box::new(Permissive(PolicyGate::new(common::policy(), &*s).unwrap()));
+        let rt = panic_round_trip(s.clone(), gate, moves, Duration::from_millis(10));
+        assert!(rt.failed.is_empty(), "{name}: moves failed {:?}", rt.failed);
+        for p in &wanted {
+            assert!(rt.moved.contains(p), "{name}: {p} not moved {:?}", rt.moved);
+        }
+        // the console itself (a fresh connection's full sync), not only our mirror
+        s.client().barrier(Duration::from_secs(10)).unwrap();
+        let fresh = d.connect();
+        let strips: std::collections::BTreeSet<StripId> =
+            wanted.iter().filter_map(|p| p.strip()).collect();
+        let now = mix_actuator::testkit::snapshot(&fresh, &strips);
+        let mirror = mix_actuator::testkit::snapshot(&*s, &strips);
+        assert!(
+            rt.residual.is_empty(),
+            "{name}: not restored by PANIC {:#?}\n{:?}",
+            rt.residual,
+            rt.reverted
+        );
+        let drift = mix_actuator::testkit::diff(&fresh, &mirror, &now);
+        assert!(
+            drift.is_empty(),
+            "{name}: console differs from the mirror {drift:#?}"
+        );
+        assert!(
+            matches!(&rt.reverted, Some(ActuatorEvent::Reverted { conflicts, skipped, .. }) if conflicts.is_empty() && skipped.is_empty()),
+            "{name}: {:?}",
+            rt.reverted
+        );
+    }
+}
+
+/// M068 regression (e2e: main-bus EQ after PANIC; a model switch made PANIC panic): the main EQ moves, a fader and
+/// the de-esser model switch, each PANICed on wing-sim.
+#[test]
+fn wing_sim_panic_restores_main_eq_and_a_model_switch() {
+    let Some(d) = daemon_or_skip("wing_sim_panic_restores_main_eq_and_a_model_switch") else {
+        return;
+    };
+    wing_sim_panic_round_trip(&d, &["main_eq", "dynamics_model"]);
+}
+
+/// M068: every param class the planner moves, move -> PANIC on wing-sim.
+#[test]
+#[ignore = "slow: run with make check-full"]
+fn wing_sim_panic_restores_every_planner_class() {
+    let Some(d) = daemon_or_skip("wing_sim_panic_restores_every_planner_class") else {
+        return;
+    };
+    let all: Vec<&str> = mix_actuator::testkit::class_cases(&d.connect())
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
+    wing_sim_panic_round_trip(&d, &all);
+}
