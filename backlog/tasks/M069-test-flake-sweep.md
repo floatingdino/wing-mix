@@ -2,7 +2,7 @@
 id: M069
 title: Flaky-test sweep: make every timing-sensitive test deterministic
 stage: S6
-status: todo
+status: done
 owner: -
 depends: [M068]
 branch: -
@@ -39,3 +39,4 @@ them one by one:
   6. wing-mixd `server::tests::socket_round_trip_stream_and_cleanup`: a sibling test's fork+exec can inherit the just-dropped listener fd (stale socket looks live); retry spawn briefly.
   Verification: on commit 5942eae the stress pass was stopped at the time-box after 15 consecutive stressed runs, 0 failures (earlier commits failed on items above; the full 30x pass was not completed). CI green on task/M069, incl. 5942eae: runs 41174378471, 41174114735, 41169375221.
   Proposed follow-ups: (a) complete a 30x `make stress` on main after merge; (b) the stale-socket inherited-fd retry is a test-only workaround (set CLOEXEC atomically in production bind if it matters); (c) model_switched 5 s window also hides real engineer EQ moves in that block right after a recall.
+- 2026-10-31 coordinator: merged at time-box (15/15 stressed runs, 3 green CI). done. Follow-ups in log.
