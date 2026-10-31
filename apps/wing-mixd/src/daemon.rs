@@ -1634,6 +1634,7 @@ impl Daemon {
                     .map(|d| d.problems.iter().take(20).collect::<Vec<_>>()));
             out["diagnosis_notes"] = json!(ctl.diagnosis().map(|d| d.notes.clone()));
             out["plan"] = json!(ctl.planned());
+            out["near_misses"] = json!(ctl.near_misses());
             out["pending"] = self.pending()["pending"].clone();
             out["moves"] = json!(ctl.records());
         }

@@ -445,6 +445,11 @@ impl<'k> Controller<'k> {
         self.plan.iter().map(Batch::summary).collect()
     }
 
+    /// M070: what the last plan scored but held back (best first).
+    pub fn near_misses(&self) -> &[crate::plan::NearMiss] {
+        &self.near_misses
+    }
+
     /// Moves waiting for a remit confirmation.
     pub fn pending(&self) -> &[Pending] {
         &self.pending

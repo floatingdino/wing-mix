@@ -112,6 +112,18 @@ public struct MoveSummary: Decodable, Sendable, Equatable, Identifiable {
     public var predictedGain: Double?
     public var needsConfirmation: [String]?
     public var inspect: Bool?
+    /// M070: planned in refinement mode (a small step towards the target centre).
+    public var refinement: Bool?
+    public var id: String { "\(strip ?? "")|\(label)" }
+}
+
+/// M070: a candidate the planner scored but held back (`near_misses`).
+public struct NearMiss: Decodable, Sendable, Equatable, Identifiable {
+    public var label: String
+    public var strip: String?
+    public var problem: String?
+    public var predictedGain: Double?
+    public var reason: String?
     public var id: String { "\(strip ?? "")|\(label)" }
 }
 
@@ -207,6 +219,8 @@ public struct Snapshot: Decodable, Sendable, Equatable {
     public var problems: [Problem]
     public var diagnosisNotes: [String]
     public var plan: [MoveSummary]
+    /// M070: candidates held back (empty from older daemons).
+    public var nearMisses: [NearMiss]
     public var pending: [PendingMove]
     public var moves: [MoveRecord]
     public var log: [JSONValue]
@@ -215,7 +229,7 @@ public struct Snapshot: Decodable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case atS, mode, liveContext, liveContextApplied, console, target, loudness, spectrum, session, score, curve, problems, diagnosisNotes, plan,
-             pending, moves, log, safety, touched
+             nearMisses, pending, moves, log, safety, touched
     }
 
     public init(from decoder: Decoder) throws {
@@ -234,6 +248,7 @@ public struct Snapshot: Decodable, Sendable, Equatable {
         problems = try c.decodeIfPresent([Problem].self, forKey: .problems) ?? []
         diagnosisNotes = try c.decodeIfPresent([String].self, forKey: .diagnosisNotes) ?? []
         plan = try c.decodeIfPresent([MoveSummary].self, forKey: .plan) ?? []
+        nearMisses = try c.decodeIfPresent([NearMiss].self, forKey: .nearMisses) ?? []
         pending = try c.decodeIfPresent([PendingMove].self, forKey: .pending) ?? []
         moves = try c.decodeIfPresent([MoveRecord].self, forKey: .moves) ?? []
         log = try c.decodeIfPresent([JSONValue].self, forKey: .log) ?? []
