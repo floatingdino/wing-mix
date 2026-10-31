@@ -316,6 +316,14 @@ fn wing_sim_recall_latency_engineer_moves_and_models() {
     });
     eventually("daemon sees the moves", Duration::from_secs(10), || {
         params(&d, &["input.8/fader"])["input.8/fader"].approx_eq(&f(-21.0), 0.05)
+            && params(&d, &["input.1/eq/model"])["input.1/eq/model"] == PValue::Enum("SOUL".into())
+    });
+    // the console's model-default slot params follow the switch asynchronously: let them settle on the daemon's
+    // side too before B is stored (otherwise they count as engineer moves after B)
+    eventually("SOUL slot params settled", Duration::from_secs(10), || {
+        eng.read(&p("input.1/eq/hmq"))
+            .ok()
+            .is_some_and(|v| params(&d, &["input.1/eq/hmq"])["input.1/eq/hmq"].approx_eq(&v, 0.001))
     });
     let b = ok(&d, json!({"cmd": "slot_store", "name": "B"}));
     assert!(b["params"].as_u64().unwrap() > 100);
@@ -382,10 +390,10 @@ fn wing_sim_recall_latency_engineer_moves_and_models() {
     // B again: stored after the engineer's moves, so nothing is "moved since"; switch back fully
     let rb = ok(&d, json!({"cmd": "slot_recall", "name": "B"}));
     assert!(rb["kept_engineer"].as_array().unwrap().is_empty(), "{rb}");
-    assert_eq!(
-        eng.read(&p("input.1/eq/model")).unwrap(),
-        PValue::Enum("SOUL".into())
-    );
+    // (the recall returns when the daemon's writes went out; the engineer's client sees them a moment later)
+    eventually("model back to SOUL", Duration::from_secs(10), || {
+        eng.read(&p("input.1/eq/model")).unwrap() == PValue::Enum("SOUL".into())
+    });
     eventually("B on the console", Duration::from_secs(5), || {
         eng.read(&faders[7]).unwrap().approx_eq(&f(-21.0), 0.05)
     });

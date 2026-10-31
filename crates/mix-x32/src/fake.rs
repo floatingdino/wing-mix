@@ -47,6 +47,9 @@ pub struct FakeX32 {
     opts: FakeOptions,
     stop: Arc<AtomicBool>,
     sets: Arc<AtomicUsize>,
+    /// `console_set` ordering marker: requests sent / acknowledged by the server thread.
+    sync_sent: AtomicUsize,
+    sync_ack: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -138,15 +141,17 @@ impl FakeX32 {
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let sets = Arc::new(AtomicUsize::new(0));
+        let sync_ack = Arc::new(AtomicUsize::new(0));
         let thread = {
-            let (sock, state, stop, sets, opts) = (
+            let (sock, state, stop, sets, opts, ack) = (
                 sock.clone(),
                 state.clone(),
                 stop.clone(),
                 sets.clone(),
                 opts.clone(),
+                sync_ack.clone(),
             );
-            std::thread::spawn(move || serve(sock, state, stop, sets, opts))
+            std::thread::spawn(move || serve(sock, state, stop, sets, opts, ack))
         };
         FakeX32 {
             addr,
@@ -155,6 +160,8 @@ impl FakeX32 {
             opts,
             stop,
             sets,
+            sync_sent: AtomicUsize::new(0),
+            sync_ack,
             thread: Some(thread),
         }
     }
@@ -179,6 +186,16 @@ impl FakeX32 {
     pub fn console_set(&self, addr: &str, v: Arg) -> bool {
         if default_value(addr).is_none() {
             return false;
+        }
+        // Order this change after every client datagram already queued at the server (a client's earlier set
+        // would otherwise be applied *after* it and overwrite it): a marker travels the same queue.
+        let n = self.sync_sent.fetch_add(1, Ordering::SeqCst) + 1;
+        let marker = encode(&Message::new("/_sync", vec![Arg::Int(n as i32)]));
+        if self.sock.send_to(&marker, self.addr).is_ok() {
+            let t = Instant::now();
+            while self.sync_ack.load(Ordering::SeqCst) < n && t.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         let mut st = self.state.lock().unwrap();
         st.values.insert(addr.to_string(), v.clone());
@@ -218,6 +235,7 @@ fn serve(
     stop: Arc<AtomicBool>,
     sets: Arc<AtomicUsize>,
     opts: FakeOptions,
+    sync_ack: Arc<AtomicUsize>,
 ) {
     let mut buf = [0u8; 2048];
     let mut dropped = 0usize;
@@ -236,6 +254,11 @@ fn serve(
                     .map(|s| Arg::Str(s.into()))
                     .to_vec(),
             )),
+            ("/_sync", false) => {
+                if let Some(Arg::Int(n)) = m.args.first() {
+                    sync_ack.fetch_max(*n as usize, Ordering::SeqCst);
+                }
+            }
             ("/xremote", _) => {
                 state.lock().unwrap().clients.insert(from, Instant::now());
             }
