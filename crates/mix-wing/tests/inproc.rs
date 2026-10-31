@@ -533,6 +533,9 @@ fn rta_claim_writes_are_not_external_events() {
     let s = con.connect();
     let rx = s.subscribe();
     s.client().barrier(Duration::from_secs(2)).unwrap();
+    // the hub may still deliver the pre-connect console_set values as change events (the event thread is
+    // asynchronous): those are not the claim's doing; let them all through before the claim starts
+    while rx.recv_timeout(Duration::from_millis(150)).is_ok() {}
     {
         let _claim = s
             .claim_rta(&RtaSource {
