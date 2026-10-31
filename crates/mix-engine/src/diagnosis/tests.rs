@@ -697,3 +697,38 @@ fn kit_balance_finds_a_quiet_snare_and_ignores_toms() {
         dump(&d)
     );
 }
+
+/// M070 (user session, finding 1): a 20 s live window has ~1 LU of loudness range; a whole-song reference
+/// (644 s, no section) 9.4. That is a window mismatch, not a mix fault: compared only over comparable spans.
+#[test]
+fn loudness_range_needs_a_comparable_span() {
+    use mix_core::profile::{ProfileSource, SectionRef};
+    let mut p = synth::profile();
+    p.loudness.lra_lu = 9.4;
+    p.source = ProfileSource::Reference {
+        file_name: "song.m4a".into(),
+        blake3: String::new(),
+        duration_s: 644.0,
+        sample_rate_in: 44_100,
+    };
+    let mut m = synth::features_matching(&p, Window::Session);
+    m.loudness.lra_lu = Some(1.0);
+    let lra = |d: &Diagnosis| d.problems.iter().any(|x| x.evidence.feature == "lra_lu");
+    m.t_start_s = 100.0;
+    m.t_end_s = 120.0;
+    let d = run(&m, &p, &[]);
+    assert!(!lra(&d), "{}", dump(&d));
+    assert!(d.notes.iter().any(|n| n.contains("PLR/LRA skipped")));
+    // a whole-song measurement is compared
+    m.t_end_s = 100.0 + 600.0;
+    assert!(lra(&run(&m, &p, &[])));
+    // so is a window as long as the target's section
+    p.section = Some(SectionRef {
+        index: 3,
+        label: "chorus".into(),
+        start_s: 60.0,
+        end_s: 90.0,
+    });
+    m.t_end_s = 120.0;
+    assert!(lra(&run(&m, &p, &[])));
+}

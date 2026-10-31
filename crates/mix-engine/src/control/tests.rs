@@ -280,7 +280,12 @@ fn only_strip_params_are_engineer_moves() {
     ] {
         assert!(!is_mix_param(&ParamId::new(p)), "{p}");
     }
-    for p in ["input.9/fader", "dca.2/mute", "main.1/eq/high.gain", "bus.6/dyn/mix"] {
+    for p in [
+        "input.9/fader",
+        "dca.2/mute",
+        "main.1/eq/high.gain",
+        "bus.6/dyn/mix",
+    ] {
         assert!(is_mix_param(&ParamId::new(p)), "{p}");
     }
 }
