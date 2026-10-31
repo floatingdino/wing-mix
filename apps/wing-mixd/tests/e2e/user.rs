@@ -1,7 +1,7 @@
 //! M070: the user's report ("it never suggests anything on my mix") reproduced on a private wing-sim: a copy of the
 //! user's own scene (`E2E_USER_SNAP`, never the live state file; the scene is used as is: no soundcheck, no
 //! re-patching of inputs), the real multitrack (Holy Forever) fed into the USB inputs the scene's channels use as
-//! their alt source, the project's track gains applied (as REAPER plays them), only the main + monitor A (solo) USB
+//! their alt source, raw track levels (`E2E_USER_TRACK_GAINS=1`: with the project's track gains), only the main + monitor A (solo) USB
 //! outs captured, the whole-song reference with its cached htdemucs stem profile (`E2E_USER_PROFILES`: a copy of
 //! the daemon's `profiles/` dir) and the Live context — as in the user's session, at live timing (20 s windows).
 //!
@@ -126,14 +126,20 @@ pub fn run(fx: &Fixture, snap: &Path, out: &Path) -> Option<UserRun> {
         let Some(&(_, usb)) = LANES.iter().find(|(rec, _)| *rec == t.channel as u32) else {
             continue;
         };
-        let g = 10f32.powf(
+        // raw tracks by default (the user's scene has its own trims; with the REAPER item gains the main peaks
+        // at +4 dBFS and the mains true-peak guard stops the loop every few seconds); E2E_USER_TRACK_GAINS=1
+        // applies them
+        let use_gains = std::env::var("E2E_USER_TRACK_GAINS").is_ok_and(|v| v == "1");
+        let gdb = if use_gains {
             gain_of
                 .get(&t.channel)
                 .copied()
                 .unwrap_or(0.0)
-                .clamp(-18.0, 18.0) as f32
-                / 20.0,
-        );
+                .clamp(-18.0, 18.0)
+        } else {
+            0.0
+        };
+        let g = 10f32.powf(gdb as f32 / 20.0);
         tracks.push(Track {
             name: t.name.clone(),
             channel: t.channel,
