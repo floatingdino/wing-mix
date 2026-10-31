@@ -11,6 +11,9 @@ backlog/COORDINATOR.md, human actions: docs/HUMAN-ACTIONS.md). Sister repo: /Use
   `#[ignore = "slow: run with make check-full"]` with a sampled fast variant covering the same path.
 - `make check-full`: same plus `cargo test --workspace --release -- --include-ignored`; run before finishing an
   analysis/engine task.
+- `make stress` (`tools/stress.sh`, `RUNS=n`): n (default 30) x `cargo test --workspace` under one CPU hog per core with
+  4x test threads; prints every failing test. Run after touching anything timing-sensitive (UDP fakes, reconnects,
+  barriers); tests must wait on conditions (poll/barrier), never fixed sleeps. Linux: CI on `task/**` pushes.
 - `make fmt`, `make build` (release, workspace), `make bench` (criterion; dev-dependency only).
 - Toolchain: stable (rust-toolchain.toml). `.cargo/config.toml` sets `target-cpu=apple-m1` on aarch64-apple-darwin.
   Release profile: thin LTO, codegen-units=1, panic=abort. wing-blocks/wing-dsp/wing-engine build at opt-level 2 in dev.

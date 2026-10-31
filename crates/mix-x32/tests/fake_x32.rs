@@ -131,7 +131,7 @@ fn writes_use_x32_addresses_and_laws() {
         let t = Instant::now();
         while fake.get(a).unwrap() != want {
             assert!(
-                t.elapsed() < Duration::from_secs(3),
+                t.elapsed() < Duration::from_secs(10),
                 "{a}: {:?}",
                 fake.get(a)
             );
@@ -155,11 +155,19 @@ fn writes_use_x32_addresses_and_laws() {
         std::thread::sleep(Duration::from_millis(5));
     }
     w("input.3/fader", Value::Float(-10.0));
-    std::thread::sleep(Duration::from_millis(100));
-    let Arg::Float(f) = get("/ch/03/mix/fader") else {
-        panic!()
-    };
-    assert!((f - 0.5).abs() < 0.001, "{f}");
+    // UDP: poll until the new value arrives (a fixed sleep flaked on loaded runners)
+    let t = Instant::now();
+    loop {
+        if matches!(get("/ch/03/mix/fader"), Arg::Float(f) if (f - 0.5).abs() < 0.001) {
+            break;
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            get("/ch/03/mix/fader")
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     w("input.3/mute", Value::Bool(true));
     wait("/ch/03/mix/on", Arg::Int(0)); // mix/on is inverted
     w("input.3/pan", Value::Float(-100.0));
@@ -184,7 +192,14 @@ fn writes_use_x32_addresses_and_laws() {
     wait("/main/m/mix/on", Arg::Int(0));
 
     // quantisation is reported back: 0.1 dB steps do not exist on the trim grid (0.25 dB)
+    let before_trim = fake.client_sets();
     assert_eq!(w("input.1/in/trim", Value::Float(1.1)), Value::Float(1.0));
+    // the set is unacknowledged: wait for it to land before counting the datagrams the fake received
+    let t = Instant::now();
+    while fake.client_sets() == before_trim {
+        assert!(t.elapsed() < Duration::from_secs(10), "trim never arrived");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     // validation happens before anything is sent
     let sets = fake.client_sets();
     assert!(matches!(
