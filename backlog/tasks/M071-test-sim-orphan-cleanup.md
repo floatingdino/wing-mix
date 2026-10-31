@@ -2,7 +2,7 @@
 id: M071
 title: Test wing-sim daemons must not outlive their test process
 stage: S6
-status: review
+status: done
 owner: task-agent
 depends: [M070]
 branch: task/M071
@@ -38,3 +38,4 @@ Never touch the user's own wing-sim (no `--name WMTEST`, ports 2222/2223).
   `daemon_dies_with_killed_parent` (re-executes the test binary as helper, SIGKILL, group gone < 2 s),
   `sweep_reaps_stale_and_spares_live`. Results: `make check` rc=0, `tools/e2e/run.sh smoke` ok, no WMTEST processes
   or wingmix-test-* dirs left after either. Not run: `make stress`, Linux CI (push for CI if wanted).
+- 2026-10-31 coordinator: merged, make check passes. done.
