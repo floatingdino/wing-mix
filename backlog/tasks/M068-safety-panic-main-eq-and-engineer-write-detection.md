@@ -2,10 +2,10 @@
 id: M068
 title: SAFETY: PANIC misses main-bus EQ on WING path; engineer write during short ramp undetected
 stage: S4
-status: todo
-owner: -
+status: in_progress
+owner: agent-M068
 depends: [M067]
-branch: -
+branch: task/M068
 model: opus
 ---
 
@@ -32,3 +32,17 @@ Re-run the e2e audit suite (`tools/e2e/run.sh wing`, multichannel and solo) and 
 
 ## Log
 - 2026-10-31 coordinator: created from M067's audit findings; top priority.
+- 2026-10-31 agent-M068: started. Findings so far:
+  (1) "PANIC misses main EQ" reproduced (Show Me Your Face description, multichannel) but it is a harness artifact:
+  description runs had `drills = false`, so no PANIC ran at all; the "after PANIC" wing-sim snapshot diff only
+  filtered `ch/` paths for non-drill runs, so the *kept* main-EQ batch (band.2 cut, `batch_kept`) showed as a
+  residual. A direct wing-sim probe (actuator moves 5 main EQ params, PANIC) restores all 5. While enabling PANIC in
+  every run found a real PANIC bug: a session that switched a model (e.g. gate GATE -> DS902 + its range/on, which
+  the description run did) made `panic_with_id` hit `plan(..)` -> `Err(MixedModelChange)` -> `.expect(..)` (actuator
+  thread panic = daemon abort in release); undo of such a move was refused. Fixing: two-phase undo/PANIC + block
+  state capture (the switch back loads the old model's defaults; ids are positional).
+  (2) Engineer write mid-ramp: mix-wing's reader dropped every console value for a node with an own write in flight
+  (M019b), so an engineer write the console processed just before our next ramp write was silently lost; and the
+  console's coalesced fan-out can carry *our* value for the engineer's change (unchanged mirror -> no hook -> no
+  event). Fixed in client.rs (Overridden msg, unchanged change events reported), actuator (drift check, put back the
+  engineer's value an in-flight write overwrote, undo/revert leave cooling params alone). 100/100 trials green.
