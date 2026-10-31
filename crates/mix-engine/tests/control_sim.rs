@@ -379,6 +379,50 @@ fn stationary_matched_mix_does_not_hunt() {
 // -------------------------------------------------------------------------------------------------------------
 // Modes
 
+/// M070: refinement mode is on by default, yet a mix that matches the reference (seed 7's reference scene against
+/// its own profile) gets no refinement suggestion (refinement only runs above the target objective), and within
+/// the target suggest shows only what autopilot would also do.
+#[test]
+fn matched_mix_gets_no_refinement_suggestions() {
+    let fx = fixture();
+    let c = config(Mode::Suggest);
+    assert!(c.refine.is_some());
+    let mut r = rig(&fx.pair.reference, c);
+    let got = r.run_until(2.5 * SECONDS, |r| {
+        r.log
+            .iter()
+            .any(|(_, e)| matches!(e, ControlEvent::Suggested { .. }))
+    });
+    assert!(got, "no plan");
+    let (moves, near) = r
+        .log
+        .iter()
+        .find_map(|(_, e)| match e {
+            ControlEvent::Suggested { moves, near_misses } => {
+                Some((moves.clone(), near_misses.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    for n in &near {
+        eprintln!(
+            "near miss: {} ({:.3}): {}",
+            n.label, n.predicted_gain, n.reason
+        );
+    }
+    // nothing from refinement, and only what autopilot would also do within the target (M039)
+    let min = config(Mode::Suggest).converge_min_gain;
+    for m in &moves {
+        eprintln!("suggested: {} ({:.3})", m.label, m.predicted_gain);
+    }
+    assert!(
+        moves
+            .iter()
+            .all(|m| !m.refinement && m.predicted_gain >= min),
+        "{moves:#?}"
+    );
+}
+
 #[test]
 fn suggest_mode_plans_but_writes_nothing() {
     let fx = fixture();

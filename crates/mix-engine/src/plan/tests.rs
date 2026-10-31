@@ -845,3 +845,62 @@ fn estimated_strips_get_fader_moves_for_a_level_intent() {
         }
     }
 }
+
+/// M070 refinement: a vocal a little low but inside every tolerance gets no move from problems; refinement
+/// proposes small (≤ 1.5 dB) fader/EQ steps that the normal objective scores as a gain. A mix exactly on target
+/// gets nothing either way.
+#[test]
+fn refinement_nudges_inside_tolerance_and_leaves_a_matched_mix_alone() {
+    let kb = KnowledgeBase::embedded();
+    let pol = policy();
+    let sess = RemitSession::default();
+    let normal = PlanConfig::from_kb(kb);
+    let refine = PlanConfig {
+        refine: Some(RefineConfig::default()),
+        ..PlanConfig::from_kb(kb)
+    };
+    let on = on_target(kb);
+    assert_eq!(run(&on, &pol, &sess, &normal, kb).moves().count(), 0);
+    let p = run(&on, &pol, &sess, &refine, kb);
+    assert_eq!(p.moves().count(), 0, "{:#?}", p.moves().collect::<Vec<_>>());
+
+    // the largest vocal dip that raises no problem-driven move
+    let mut found = None;
+    for k in 1..=12 {
+        let d = -0.5 * k as f64;
+        let s = degrade(kb, &[ParamChange::new("input.3/fader", d)]);
+        if run(&s, &pol, &sess, &normal, kb).moves().count() > 0 {
+            break;
+        }
+        found = Some((d, s));
+    }
+    let (dip, s) = found.expect("a small dip stays inside tolerance");
+    assert!(dip <= -0.5, "{dip}");
+    let p = run(&s, &pol, &sess, &refine, kb);
+    let moves: Vec<_> = p.moves().collect();
+    assert!(!moves.is_empty(), "dip {dip}: notes {:?}", p.notes);
+    assert!(moves.iter().all(|m| m.refinement));
+    for c in moves.iter().flat_map(|m| &m.action.changes) {
+        let is_db = c.param.leaf() == "fader" || c.param.leaf().ends_with(".gain");
+        if let (true, Some(from), Some(to)) = (
+            is_db,
+            c.from.as_ref().and_then(Value::as_f64),
+            c.to.as_f64(),
+        ) {
+            assert!(
+                (to - from).abs() <= 1.5 + 1e-6,
+                "{}: {from} -> {to}",
+                c.param
+            );
+        }
+    }
+    assert!(p.after.objective < p.before.objective);
+    // every refinement change is a fader or EQ move within the step
+    for c in moves.iter().flat_map(|m| &m.action.changes) {
+        assert!(
+            c.param.leaf() == "fader" || c.param.block() == Some("eq"),
+            "{}",
+            c.param
+        );
+    }
+}

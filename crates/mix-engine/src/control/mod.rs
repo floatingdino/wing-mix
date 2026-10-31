@@ -1399,6 +1399,29 @@ impl<'k> Controller<'k> {
                 if self.replan.is_some() || self.plan.is_empty() {
                     let reason = self.replan.take().unwrap_or(PlanReason::Exhausted);
                     if self.make_plan(reason) {
+                        // M070: within the target, suggest only what autopilot would still do (M039's
+                        // converge_min_gain); the rest is shown as near misses
+                        if obj <= self.cfg.target_objective {
+                            let min = self.cfg.converge_min_gain;
+                            let (keep, drop): (Vec<Batch>, Vec<Batch>) =
+                                self.plan.drain(..).partition(|b| b.predicted_gain() >= min);
+                            self.plan = keep.into();
+                            for b in drop {
+                                self.near_misses.push(crate::plan::NearMiss {
+                                    label: b.mv.action.label.clone(),
+                                    strip: b.mv.strip.clone(),
+                                    problem: b.mv.problem.clone(),
+                                    predicted_gain: b.predicted_gain(),
+                                    reason: format!(
+                                        "mix within target: gain {:.3} below {min:.3}",
+                                        b.predicted_gain()
+                                    ),
+                                });
+                            }
+                            self.near_misses
+                                .sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
+                            self.near_misses.truncate(crate::plan::MAX_NEAR_MISSES);
+                        }
                         let moves = self
                             .plan
                             .iter()
