@@ -810,6 +810,7 @@ dependencies = [
 name = "mix-testsim"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mix-sim",
  "wing-shm",
 ]
