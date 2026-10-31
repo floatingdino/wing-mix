@@ -1688,7 +1688,7 @@ impl<'k> Controller<'k> {
                 if let Ok(mut rp) = plan_with(&input, self.kb, &c, &*self.transfer) {
                     if rp.moves().next().is_none() {
                         // keep the better-informed near misses (problem candidates first)
-                        rp.near_misses.extend(p.near_misses.drain(..));
+                        rp.near_misses.append(&mut p.near_misses);
                         rp.near_misses
                             .sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
                         rp.near_misses.truncate(crate::plan::MAX_NEAR_MISSES);

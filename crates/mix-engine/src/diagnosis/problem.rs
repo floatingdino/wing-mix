@@ -245,7 +245,11 @@ impl Evidence {
     /// M070 scrutiny: the evidence with every allowance scaled by `s` (0.5 = twice as strict).
     pub fn scaled(&self, s: f32) -> Evidence {
         let mut e = self.clone();
-        if (s - 1.0).abs() < 1e-6 || !(e.allowance > 0.0) || !e.deviation.is_finite() {
+        if (s - 1.0).abs() < 1e-6
+            || e.allowance.is_nan()
+            || e.allowance <= 0.0
+            || !e.deviation.is_finite()
+        {
             return e;
         }
         e.tolerance *= s;

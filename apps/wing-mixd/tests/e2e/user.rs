@@ -68,8 +68,10 @@ fn write_f32(path: &Path, x: &[f32]) {
 pub fn read_f32(path: &Path) -> Option<Vec<f32>> {
     let b = std::fs::read(path).ok()?;
     Some(
-        b.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     )
 }
