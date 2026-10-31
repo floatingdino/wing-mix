@@ -85,3 +85,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M067 | Change budget pacing + meter-based strip estimates | M062 | opus |
 | M068 | SAFETY: PANIC main EQ + engineer mid-ramp write detection | M067 | opus |
 | M069 | Flaky-test sweep: deterministic timing-sensitive tests | M068 | sonnet |
+| M070 | Analysis scrutiny + refinement mode | M069 | opus |
