@@ -86,3 +86,4 @@ Source of truth is each task file's header. `python3 tools/backlog.py --ready` l
 | M068 | SAFETY: PANIC main EQ + engineer mid-ramp write detection | M067 | opus |
 | M069 | Flaky-test sweep: deterministic timing-sensitive tests | M068 | sonnet |
 | M070 | Analysis scrutiny + refinement mode | M069 | opus |
+| M071 | Test wing-sim daemons must not outlive their test | M070 | sonnet |
