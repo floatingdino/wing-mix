@@ -291,6 +291,8 @@ pub struct Controller<'k> {
     pending: Vec<Pending>,
     /// M070: the last plan's near misses (published with suggestions).
     near_misses: Vec<crate::plan::NearMiss>,
+    /// M070: the safety layer refuses gain increases (mains ceiling) until about this time: plan cuts only.
+    increase_hold_until: f64,
     inspections: Arc<Mutex<Vec<Inspection>>>,
     probe: Option<SoloProbe>,
     actuator_stopped: bool,
@@ -368,6 +370,7 @@ impl<'k> Controller<'k> {
             kept: 0,
             pending: Vec::new(),
             near_misses: Vec::new(),
+            increase_hold_until: f64::NEG_INFINITY,
             inspections: Arc::new(Mutex::new(Vec::new())),
             probe: None,
             actuator_stopped: false,
@@ -587,6 +590,13 @@ impl<'k> Controller<'k> {
                     self.on_job_end(id, changes, Some((format!("aborted: {reason:?}"), stop)));
                 }
                 ActuatorEvent::Refused { id, reason, .. } => {
+                    if matches!(
+                        &reason,
+                        Refusal::Remit { reason: mix_surface::remit::Reason::Safety, detail, .. }
+                            if detail.contains("increase")
+                    ) {
+                        self.hold_increases();
+                    }
                     let key = match &reason {
                         Refusal::Remit { confirm_key, .. } => confirm_key.clone(),
                         _ => None,
@@ -608,6 +618,13 @@ impl<'k> Controller<'k> {
                     }
                 }
                 ActuatorEvent::Safety { trip, .. } => {
+                    if matches!(
+                        trip,
+                        mix_actuator::Trip::MainsLoudness { .. }
+                            | mix_actuator::Trip::MainsTruePeak { .. }
+                    ) {
+                        self.hold_increases();
+                    }
                     self.emit(ControlEvent::Paused {
                         detail: format!("safety: {trip:?}"),
                     });
@@ -627,6 +644,16 @@ impl<'k> Controller<'k> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// M070: the mains ceiling holds gain increases: plan cuts until it has been quiet for a while (the safety
+    /// layer itself decides what runs; this only stops the planner proposing what it would refuse).
+    fn hold_increases(&mut self) {
+        let was = self.now < self.increase_hold_until;
+        self.increase_hold_until = self.now + 2.0 * self.cfg.window_s + self.cfg.settle_s;
+        if !was {
+            self.replan.get_or_insert(PlanReason::Exhausted);
         }
     }
 
@@ -1677,6 +1704,9 @@ impl<'k> Controller<'k> {
         };
         self.cfg.plan.session_baseline = self.session_baseline.clone();
         self.cfg.plan.refine = None;
+        // autopilot only: in suggest mode the engineer may make room for a raise themselves
+        self.cfg.plan.hold_increases =
+            self.cfg.mode == Mode::Autopilot && self.now < self.increase_hold_until;
         let Ok(mut p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
             return false;
         };

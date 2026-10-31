@@ -130,6 +130,10 @@ pub struct PlanConfig {
     /// M070 refinement mode: plan small conventional moves towards the target centre from deviations inside the
     /// tolerance (see [`RefineConfig`]). `None`: plan from problems only.
     pub refine: Option<RefineConfig>,
+    /// M070: the actuator's safety layer holds gain increases (mains loudness / true-peak ceiling): plan no
+    /// increase (fader, send, trim, EQ gain, makeup), so the plan answers with cuts instead of moves the gate would
+    /// refuse. Held candidates are reported as near misses.
+    pub hold_increases: bool,
 }
 
 /// M070 refinement: when nothing exceeds tolerance, a good mix can still sit off the target's centre. Candidates
@@ -187,6 +191,7 @@ impl PlanConfig {
             safety: Some(SafetyConfig::default()),
             session_baseline: BTreeMap::new(),
             refine: None,
+            hold_increases: false,
         }
     }
 
@@ -301,6 +306,21 @@ pub struct Plan {
 
 /// Near misses published per plan.
 pub const MAX_NEAR_MISSES: usize = 5;
+
+/// M070: a gain change that raises the level (what the safety layer's holds refuse).
+fn raises_gain(c: &ParamChange) -> bool {
+    let leaf = c.param.leaf();
+    let gain = leaf == "fader"
+        || leaf.ends_with(".gain")
+        || leaf == "level"
+        || leaf.ends_with("trim")
+        || leaf == "makeup"
+        || leaf == "gain";
+    match (gain, c.from.as_ref().and_then(Value::as_f64), c.to.as_f64()) {
+        (true, Some(a), Some(b)) => b > a + 0.05,
+        _ => false,
+    }
+}
 
 /// M070: whether a refinement may make this change (fader, EQ band gain/freq/Q).
 fn refinement_param(p: &ParamId) -> bool {
@@ -910,6 +930,7 @@ pub fn plan_with(
     let mut gdiag = run_gen(&pred, &state, &diag)?;
     let before = score_of(&diag, w, Some(input.state));
     let mut near: Vec<NearMiss> = Vec::new();
+    let mut held: Vec<NearMiss> = Vec::new();
     let mut first_step = true;
     let mut cur = before.clone();
     let mut notes: Vec<String> = Vec::new();
@@ -976,6 +997,20 @@ pub fn plan_with(
                     || !estimated_ok(&c, &estimated)
                     || !max_step_ok(&c)
                 {
+                    continue;
+                }
+                if cfg.hold_increases && c.changes.iter().any(raises_gain) {
+                    if first_step && held.len() < MAX_NEAR_MISSES {
+                        held.push(NearMiss {
+                            label: c.label.clone(),
+                            strip: c.strip.clone(),
+                            problem: c.problem.clone(),
+                            predicted_gain: 0.0,
+                            reason:
+                                "mains loudness / true-peak hold: gain increases are refused now"
+                                    .into(),
+                        });
+                    }
                     continue;
                 }
                 match check_remit(&input.remit, input.state, &state, c, cfg) {
@@ -1074,6 +1109,9 @@ pub fn plan_with(
     }
     near.sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
     near.truncate(MAX_NEAR_MISSES);
+    // held increases after the scored near misses (not scored: they could not run)
+    let room = MAX_NEAR_MISSES.saturating_sub(near.len()).max(2);
+    near.extend(held.into_iter().take(room));
 
     for (r, n) in &remit_drops {
         notes.push(format!("{n} candidate move(s) not proposed: remit {r}"));

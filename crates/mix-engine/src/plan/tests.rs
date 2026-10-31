@@ -904,3 +904,25 @@ fn refinement_nudges_inside_tolerance_and_leaves_a_matched_mix_alone() {
         );
     }
 }
+
+/// M070: under the safety layer's mains-ceiling hold the plan raises nothing (the gate would refuse it); the held
+/// raise of the buried vocal shows as a near miss instead of a batch that fails.
+#[test]
+fn ceiling_hold_plans_no_raises() {
+    let kb = KnowledgeBase::embedded();
+    let s = setup(kb);
+    let cfg = PlanConfig {
+        hold_increases: true,
+        ..PlanConfig::from_kb(kb)
+    };
+    let p = run(&s, &policy(), &RemitSession::default(), &cfg, kb);
+    for c in p.moves().flat_map(|m| &m.action.changes) {
+        assert!(!raises_gain(c), "{} {:?} -> {:?}", c.param, c.from, c.to);
+    }
+    assert!(p.after.objective <= p.before.objective);
+    assert!(
+        p.near_misses.iter().any(|n| n.reason.contains("hold")),
+        "{:?}",
+        p.near_misses
+    );
+}
