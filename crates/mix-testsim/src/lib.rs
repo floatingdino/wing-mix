@@ -752,8 +752,10 @@ mod tests {
         let stale_pid = stale.id() as i32;
         assert!(group_alive(stale_pid));
         sweep_stale(); // (the start-up sweep of a concurrent test may have beaten us to it: assert effects only)
-        let _ = stale.wait(); // reap the killed stand-in so the group is really gone
-        assert!(!group_alive(stale_pid));
+                       // The leader dying of SIGKILL proves the sweep killed its group. (Not `group_alive`: on Linux CI the
+                       // killed `sleep` child is reparented to a pid 1 that may not reap, and zombies still answer kill(-g, 0).)
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(stale.wait().unwrap().signal(), Some(libc::SIGKILL));
         assert!(!stale_dir.exists());
         assert!(Segment::open(&stale_shm, &OpenOptions::default()).is_err());
         assert!(live_dir.exists() && matches!(live.try_wait(), Ok(None)));

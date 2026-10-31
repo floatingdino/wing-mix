@@ -39,3 +39,8 @@ Never touch the user's own wing-sim (no `--name WMTEST`, ports 2222/2223).
   `sweep_reaps_stale_and_spares_live`. Results: `make check` rc=0, `tools/e2e/run.sh smoke` ok, no WMTEST processes
   or wingmix-test-* dirs left after either. Not run: `make stress`, Linux CI (push for CI if wanted).
 - 2026-10-31 coordinator: merged, make check passes. done.
+- 2026-10-31 task agent (M071b): Linux CI failed `sweep_reaps_stale_and_spares_live` on `!group_alive(stale_pid)`: the
+  sweep did kill the group, but the killed stand-in's `sleep` child is reparented to a CI pid 1 that does not reap, and a
+  zombie still answers `kill(-pgid, 0)`. Test now asserts the leader died of SIGKILL (`ExitStatusExt::signal`). Product
+  code unchanged. Note `daemon_dies_with_killed_parent` also uses `group_alive` (needs wing-sim, so it skips on CI);
+  could flake the same way in a container without a reaping init.
