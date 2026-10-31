@@ -203,10 +203,22 @@ fn section_detector() {
     let h = feed(&mut d, &st(-11.0, 0.0), 10.0);
     assert_eq!(h.len(), 1, "{h:?}");
     assert!(h[0].loudness_jump_lu > 5.0);
+    // M070 hysteresis: the band drops back and forth every 8 s (bar-to-bar dynamics of a live song): nothing new
+    // within `min_section_s` of the chorus
+    let mut h = Vec::new();
+    for k in 0..2 {
+        let l = if k % 2 == 0 { -17.0 } else { -11.0 };
+        h.extend(feed(&mut d, &st(l, 0.0), 8.0));
+    }
+    assert!(h.is_empty(), "{h:?}");
+    let h = feed(&mut d, &st(-11.0, 0.0), c.min_section_s);
+    assert!(h.is_empty(), "{h:?}");
     // a big spectral change at the same loudness
     let h = feed(&mut d, &st(-11.0, 30.0), 10.0);
     assert_eq!(h.len(), 1, "{h:?}");
     assert!(h[0].spectral_jump_db > 5.0);
+    let h = feed(&mut d, &st(-11.0, 30.0), c.min_section_s);
+    assert!(h.is_empty(), "{h:?}");
     // a short spike shorter than the hold time and silence are ignored
     assert!(feed(&mut d, &st(-3.0, 30.0), c.hold_s * 0.5).is_empty());
     assert!(feed(&mut d, &st(-90.0, 30.0), 5.0).is_empty());
@@ -253,4 +265,22 @@ fn events_serialise() {
     })
     .unwrap();
     assert!(j.contains("\"type\":\"paced\""), "{j}");
+}
+
+/// M070: console configuration (the daemon's own solo/RTA traffic, or anyone's) never counts as an engineer move.
+#[test]
+fn only_strip_params_are_engineer_moves() {
+    use crate::control::is_mix_param;
+    use mix_core::ids::ParamId;
+    for p in [
+        "system/cfg/solo/mode",
+        "system/cfg/solo/mute",
+        "system/cfg/rta/rtasrc",
+        "system/cfg/rta/$tap",
+    ] {
+        assert!(!is_mix_param(&ParamId::new(p)), "{p}");
+    }
+    for p in ["input.9/fader", "dca.2/mute", "main.1/eq/high.gain", "bus.6/dyn/mix"] {
+        assert!(is_mix_param(&ParamId::new(p)), "{p}");
+    }
 }

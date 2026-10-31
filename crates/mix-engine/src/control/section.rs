@@ -1,7 +1,8 @@
 //! Section-change detection from short-term main features (a streaming stand-in for offline Foote novelty, which
 //! allocates and needs the whole song). The short-term (3 s) loudness and ERB `rel_db` curve are smoothed
 //! (`fast_tau_s`) and compared with a slow running reference (running mean, then EMA with `tau_s`); a new section
-//! is a loudness jump of `loudness_jump_lu` or an RMS curve change of `spectral_jump_db` that persists for `hold_s`.
+//! is a loudness jump of `loudness_jump_lu` or an RMS curve change of `spectral_jump_db` that persists for `hold_s`,
+//! at least `min_section_s` after the previous one (M070 hysteresis).
 //! Snapshots in the first 3 s after a (re)start are skipped (the short-term window is still filling), and nothing
 //! is reported before `warmup_s`. After a detection the reference restarts from the new section.
 //!
@@ -42,6 +43,8 @@ pub struct SectionDetector {
     seen_s: f64,
     last_s: Option<f64>,
     over_since: Option<f64>,
+    /// Time of the last reported jump (M070 hysteresis).
+    last_jump_s: Option<f64>,
 }
 
 impl SectionDetector {
@@ -56,6 +59,7 @@ impl SectionDetector {
             seen_s: 0.0,
             last_s: None,
             over_since: None,
+            last_jump_s: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl SectionDetector {
         self.seen_s = 0.0;
         self.last_s = None;
         self.over_since = None;
+        self.last_jump_s = None;
     }
 
     /// A jump is building (over the threshold, not yet held long enough): the music is changing section (M062:
@@ -117,8 +122,13 @@ impl SectionDetector {
         let spec = if n > 0 { (s / n as f32).sqrt() } else { 0.0 };
         let dl = self.cur_l - self.ref_l;
         let warm = self.seen_s >= self.cfg.warmup_s;
-        let over =
-            warm && (dl.abs() >= self.cfg.loudness_jump_lu || spec >= self.cfg.spectral_jump_db);
+        // hysteresis: within `min_section_s` of the last jump the reference keeps following the music instead
+        let settled = self
+            .last_jump_s
+            .is_none_or(|t| now_s - t >= self.cfg.min_section_s);
+        let over = warm
+            && settled
+            && (dl.abs() >= self.cfg.loudness_jump_lu || spec >= self.cfg.spectral_jump_db);
         // update the reference (running mean until it has seen `tau_s`, then EMA); frozen while a jump is pending
         if !over {
             self.seen_s += dt;
@@ -141,6 +151,7 @@ impl SectionDetector {
         self.reference = self.cur;
         self.seen_s = 1e-9;
         self.over_since = None;
+        self.last_jump_s = Some(now_s);
         Some(SectionJump {
             at_s: now_s,
             loudness_jump_lu: dl,

@@ -101,6 +101,11 @@ pub use io::{Executor, Measurement, MixMeter, SoloProbe};
 pub use section::{SectionDetector, SectionJump};
 pub use strips::{Coverage, Due, StripBook, StripConfig};
 
+/// Whether a param belongs to a strip's processing (not `system/...` console configuration).
+pub fn is_mix_param(p: &ParamId) -> bool {
+    p.strip().is_some() && !p.as_str().starts_with("system/")
+}
+
 /// Keep or revert a verified batch (see [`KeepRule`]).
 pub fn keep(before: f64, after: f64, predicted_gain: f64, rule: &KeepRule) -> bool {
     let actual = before - after;
@@ -672,6 +677,12 @@ impl<'k> Controller<'k> {
     }
 
     fn on_engineer(&mut self, param: ParamId) {
+        // M070: console configuration (solo mode, RTA source, ...) is not part of the mix: whoever changed it, it
+        // changes nothing the loop measures or plans, so it neither interrupts nor cools anything down (the daemon's
+        // own solo/RTA config traffic was reported as 1269 "engineer moves" in a 2 h session)
+        if !is_mix_param(&param) {
+            return;
+        }
         if let Some(j) = self.sweep.as_mut() {
             j.spoiled |= param.strip().as_ref() == Some(&j.strip);
         }
