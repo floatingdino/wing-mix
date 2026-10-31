@@ -1758,8 +1758,8 @@ impl Daemon {
             return Err(format!("`{ORIGINAL}` is built in (the session baseline)"));
         }
         self.slot_store()?;
-        // account for console events already received, so they are not counted as moves *after* this slot
-        self.drain_console_events();
+        // account for console events already in flight, so they are not counted as moves *after* this slot
+        self.settle_console_events();
         let slot = self.capture_slot(&name, false, false)?;
         self.put_slot(slot, true)
     }
@@ -1776,7 +1776,7 @@ impl Daemon {
             Some(s) => s.name.clone(),
             None => store.next_name(),
         };
-        self.drain_console_events();
+        self.settle_console_events();
         match self.capture_slot(&name, false, true) {
             Ok(slot) => {
                 if let Err(e) = self.put_slot(slot, true) {
@@ -2179,28 +2179,49 @@ impl Daemon {
         Ok(json!({"a": a, "b": b.unwrap_or("current"), "params": params}))
     }
 
+    /// Drain, then wait (bounded) until the event thread has been quiet for a moment: a change the console made
+    /// just before the caller's request may still be on its way through the client's asynchronous dispatch.
+    fn settle_console_events(&mut self) {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            self.drain_console_events();
+            let Some(rx) = &self.ext_rx else { return };
+            match rx.recv_timeout(Duration::from_millis(40)) {
+                Ok(ev) => self.note_console_event(ev),
+                Err(_) => return,
+            }
+            if Instant::now() > deadline {
+                return;
+            }
+        }
+    }
+
     /// Engineer moves (for `engineer_moved` / `keep_engineer`).
     fn drain_console_events(&mut self) {
         let Some(rx) = &self.ext_rx else { return };
         let evs: Vec<SurfaceEvent> = rx.try_iter().collect();
+        for ev in evs {
+            self.note_console_event(ev);
+        }
+    }
+
+    fn note_console_event(&mut self, ev: SurfaceEvent) {
         self.model_switched
             .retain(|(_, t)| t.elapsed() < Duration::from_secs(5));
-        for ev in evs {
-            if let SurfaceEvent::ParamChanged {
-                param,
-                origin: mix_surface::surface::Origin::External,
-                ..
-            } = ev
+        if let SurfaceEvent::ParamChanged {
+            param,
+            origin: mix_surface::surface::Origin::External,
+            ..
+        } = ev
+        {
+            if self
+                .model_switched
+                .iter()
+                .any(|(pre, _)| param.as_str().starts_with(pre.as_str()))
             {
-                if self
-                    .model_switched
-                    .iter()
-                    .any(|(pre, _)| param.as_str().starts_with(pre.as_str()))
-                {
-                    continue;
-                }
-                self.moves.moved(param);
+                return;
             }
+            self.moves.moved(param);
         }
     }
 
