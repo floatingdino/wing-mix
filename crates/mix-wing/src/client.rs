@@ -11,6 +11,7 @@
 //! request completion; keepalive `DF D1` within 10 s. Store changes are reported through the mirror's hook as
 //! [`ClientMsg::Change`] with origin [`ORIGIN_REMOTE`] (from the console) or [`ORIGIN_LOCAL`] (own writes).
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering::*};
@@ -40,6 +41,11 @@ pub enum ClientMsg {
     Change(Change),
     /// The connection closed.
     Disconnected,
+    /// M068: a console value for a node with an own write in flight that is not one of our own in-flight values:
+    /// another client (the engineer) set it before the console processed our write, which then overwrote it. The
+    /// mirror keeps our value (the console's final state); `raw` is the overwritten value (interpret it with the
+    /// node's active descriptor). Reported so the engineer's move is never mistaken for our own echo.
+    Overridden(Change),
 }
 
 struct Writer {
@@ -71,9 +77,131 @@ struct Shared {
     /// Held while an own write is applied to the mirror and sent, and while the reader applies console values:
     /// the value `send_value` reads back is the one just written, never a console event that slipped in between.
     apply: Mutex<()>,
-    /// Nodes with an own write in flight -> the `DE` count at which the console has processed it. Console values
-    /// for such a node that arrive before then were produced before our write and would roll the mirror back.
-    pending: Mutex<std::collections::HashMap<NodeId, u64>>,
+    /// Nodes with own writes in flight -> `(DE count at which the console has processed the write, the raw value
+    /// we sent)`, oldest first. Console values for such a node that arrive before the last of them were produced
+    /// before our last write and would roll the mirror back: they are not applied. If such a value is none of our
+    /// in-flight values it is someone else's write that ours overwrote: reported as [`ClientMsg::Overridden`].
+    pending: Mutex<HashMap<NodeId, Vec<(u64, Own)>>>,
+    /// Nodes with a get in flight -> `DE` count of its answer (a get's answer predates a write sent after it).
+    gets: Mutex<HashMap<NodeId, u64>>,
+}
+
+/// An own value in flight, as the console will store it.
+#[derive(Debug, Clone)]
+enum Own {
+    Raw(u32),
+    /// Float params (raw = the f32's bits): compared with a tiny tolerance (a console that rounds a value we sent
+    /// slightly differently than our mirror does must not look like someone else's write).
+    Float(f32),
+    Text(String),
+}
+
+impl Own {
+    fn same(&self, o: &Own) -> bool {
+        match (self, o) {
+            (Own::Raw(a), Own::Raw(b)) => a == b,
+            (Own::Float(a), Own::Float(b)) => {
+                let (a, b) = (*a as f64, *b as f64);
+                (a - b).abs() <= 1e-3 + 1e-4 * a.abs().max(b.abs())
+            }
+            (Own::Text(a), Own::Text(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Raw encoding (`None` for text).
+    fn raw(&self) -> Option<u32> {
+        match self {
+            Own::Raw(r) => Some(*r),
+            Own::Float(f) => Some(f.to_bits()),
+            Own::Text(_) => None,
+        }
+    }
+}
+
+fn is_float(d: &wing_model::Desc) -> bool {
+    use wing_model::ParamType as T;
+    matches!(d.ty, T::LinF | T::LogF | T::Fader)
+}
+
+fn own_value(store: &ParamStore, id: NodeId) -> Own {
+    if let Some(t) = store.with_str(id, |t| t.to_string()) {
+        return Own::Text(t);
+    }
+    let raw = store.get_raw(id);
+    match store.desc(id) {
+        Some(d) if is_float(d) => Own::Float(f32::from_bits(raw)),
+        _ => Own::Raw(raw),
+    }
+}
+
+/// The value a console value token stands for, in the node's active encoding (`None`: not decodable).
+fn token_value(store: &ParamStore, id: NodeId, t: &Token<'_>) -> Option<Own> {
+    use wing_model::{ParamType, Value as W};
+    let d = store.desc(id)?;
+    let raw = match *t {
+        Token::Str(b) => {
+            let text = String::from_utf8_lossy(b);
+            match d.ty {
+                ParamType::Str => return Some(Own::Text(text.into_owned())),
+                ParamType::Enum | ParamType::FEnum => {
+                    d.enum_index(&text).or_else(|| d.parse_text(&text).ok())?
+                }
+                _ => d.parse_text(&text).ok()?,
+            }
+        }
+        _ if d.ty == ParamType::Str => return None,
+        Token::Float(v) => d.encode(W::Float(v)).ok()?,
+        Token::RawFloat(p) => d.from_norm(p).ok()?,
+        _ => d.encode(W::Int(t.as_int()?)).ok()?,
+    };
+    Some(if is_float(d) {
+        Own::Float(f32::from_bits(raw))
+    } else {
+        Own::Raw(raw)
+    })
+}
+
+/// What the reader does with a console value for a node.
+#[derive(Debug)]
+enum Fate {
+    /// No own write in flight: apply it. `answer`: it answers a get of ours (else it is a change event: someone
+    /// else set the node, even if the value is what the mirror holds).
+    Apply { answer: bool },
+    /// Produced before our in-flight write, and it is ours (an adjusted echo) or a get's answer: drop it.
+    Drop,
+    /// Produced before our in-flight write and not ours: someone else's write that ours overwrote.
+    Overridden(Own),
+}
+
+/// Decide the [`Fate`] of console value `v` for `id`, with `des` answers received so far.
+fn fate(
+    pending: &mut HashMap<NodeId, Vec<(u64, Own)>>,
+    gets: &mut HashMap<NodeId, u64>,
+    des: u64,
+    id: NodeId,
+    v: Option<Own>,
+) -> Fate {
+    let answer = match gets.get(&id) {
+        Some(&t) if des < t => true,
+        Some(_) => {
+            gets.remove(&id);
+            false
+        }
+        None => false,
+    };
+    let Some(list) = pending.get_mut(&id) else {
+        return Fate::Apply { answer };
+    };
+    list.retain(|(t, _)| des < *t);
+    if list.is_empty() {
+        pending.remove(&id);
+        return Fate::Apply { answer };
+    }
+    match v {
+        Some(v) if !answer && !list.iter().any(|(_, o)| o.same(&v)) => Fate::Overridden(v),
+        _ => Fate::Drop,
+    }
 }
 
 /// One native-protocol connection plus the mirror store.
@@ -179,6 +307,7 @@ impl NativeClient {
             des_cv: Condvar::new(),
             apply: Mutex::new(()),
             pending: Mutex::new(Default::default()),
+            gets: Mutex::new(Default::default()),
         });
         let mut w = Writer {
             stream,
@@ -208,9 +337,10 @@ impl NativeClient {
         let shared = self.shared.clone();
         let store = self.store.clone();
         let tx = lock(&self.tx).clone();
+        let syncing = self.syncing.clone();
         let handle = std::thread::Builder::new()
             .name("wing-native-rx".into())
-            .spawn(move || reader_loop(rd, store, shared, weak, tx))?;
+            .spawn(move || reader_loop(rd, store, shared, weak, tx, syncing))?;
         *lock(&self.reader) = Some(handle);
         Ok(())
     }
@@ -254,6 +384,7 @@ impl NativeClient {
             w.flush()?;
             *lock(&self.shared.des) = 0;
             lock(&self.shared.pending).clear();
+            lock(&self.shared.gets).clear();
             self.shared.alive.store(true, SeqCst);
         }
         self.spawn_reader(rd)?;
@@ -301,11 +432,18 @@ impl NativeClient {
     }
 
     fn write_with(&self, f: impl FnOnce(&mut NrpEncoder, &mut Vec<u8>) -> u64) -> io::Result<u64> {
+        let mut w = lock(&self.writer);
+        self.write_locked(&mut w, f)
+    }
+
+    fn write_locked(
+        &self,
+        w: &mut Writer,
+        f: impl FnOnce(&mut NrpEncoder, &mut Vec<u8>) -> u64,
+    ) -> io::Result<u64> {
         if !self.is_alive() {
             return Err(dead());
         }
-        let mut w = lock(&self.writer);
-        let w = &mut *w;
         let n = f(&mut w.enc, &mut w.buf);
         w.de_sent += n;
         let target = w.de_sent;
@@ -342,13 +480,19 @@ impl NativeClient {
         let s = Schema::get();
         let mut target = 0;
         for chunk in ids.chunks(256) {
-            target = self.write_with(|enc, buf| {
+            let mut w = lock(&self.writer);
+            let base = w.de_sent;
+            target = self.write_locked(&mut w, |enc, buf| {
                 for &id in chunk {
                     let _ = enc.control(&Token::NavHash(s.hash(id)), buf);
                     let _ = enc.control(&Token::DataRequest, buf);
                 }
                 chunk.len() as u64
             })?;
+            let mut gets = lock(&self.shared.gets);
+            for (i, &id) in chunk.iter().enumerate() {
+                gets.insert(id, base + i as u64 + 1);
+            }
         }
         if ids.is_empty() {
             return Ok(());
@@ -356,14 +500,23 @@ impl NativeClient {
         self.wait_des(target, timeout)
     }
 
-    /// Round trip with no data: everything the console sent before answering is in the mirror afterwards.
+    /// Round trips with no data: every change the console made before it processed this request (another client's
+    /// write included) is in the mirror afterwards.
+    ///
+    /// Two sequential round trips (M068): the console (wing-sim's server, and any coalescing fan-out) appends the
+    /// change events pending for this client *after* the answers to the request it just read, so one answer can
+    /// arrive before an event that predates it, and the caller would read the mirror a moment too early (the
+    /// `preamp_alias_follows_the_patch_and_the_source` flake). The second answer is sent after those events.
     pub fn barrier(&self, timeout: Duration) -> io::Result<()> {
-        let target = self.write_with(|enc, buf| {
-            let _ = enc.control(&Token::NavHash(0), buf);
-            let _ = enc.control(&Token::DataRequest, buf);
-            1
-        })?;
-        self.wait_des(target, timeout)
+        for _ in 0..2 {
+            let target = self.write_with(|enc, buf| {
+                let _ = enc.control(&Token::NavHash(0), buf);
+                let _ = enc.control(&Token::DataRequest, buf);
+                1
+            })?;
+            self.wait_des(target, timeout)?;
+        }
+        Ok(())
     }
 
     /// Full synchronisation: `DA DC` dump, then gets of every `$` live leaf below the top level. No change
@@ -403,7 +556,10 @@ impl NativeClient {
             let _ = enc.control(&Token::DataRequest, buf);
             1
         })?;
-        lock(&self.shared.pending).insert(id, target);
+        lock(&self.shared.pending)
+            .entry(id)
+            .or_default()
+            .push((target, own_value(&self.store, id)));
         Ok(())
     }
 
@@ -428,7 +584,10 @@ impl NativeClient {
         })?;
         let mut pending = lock(&self.shared.pending);
         for &id in ids {
-            pending.insert(id, target);
+            pending
+                .entry(id)
+                .or_default()
+                .push((target, own_value(&self.store, id)));
         }
         Ok(())
     }
@@ -523,6 +682,7 @@ fn reader_loop(
     shared: Arc<Shared>,
     client: std::sync::Weak<NativeClient>,
     tx: Sender<ClientMsg>,
+    syncing: Arc<AtomicBool>,
 ) {
     let mut dec = NrpDecoder::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -546,19 +706,41 @@ fn reader_loop(
                         t if t.is_value() => {
                             if let Some(id) = cursor {
                                 let _g = lock(&shared.apply);
-                                let stale = {
-                                    let mut pend = lock(&shared.pending);
-                                    match pend.get(&id) {
-                                        Some(&target) if *lock(&shared.des) < target => true,
-                                        Some(_) => {
-                                            pend.remove(&id);
-                                            false
+                                let des = *lock(&shared.des);
+                                let f = fate(
+                                    &mut lock(&shared.pending),
+                                    &mut lock(&shared.gets),
+                                    des,
+                                    id,
+                                    token_value(&store, id, &t),
+                                );
+                                match f {
+                                    Fate::Apply { answer } => {
+                                        let changed = apply_value(&store, id, &t, ORIGIN_REMOTE)
+                                            .unwrap_or(true);
+                                        // M068: a change event whose value the mirror already holds is still
+                                        // someone else's write (the console fans out the current value: an
+                                        // engineer move our write overwrote before it was sent shows our value)
+                                        if !changed && !answer && !syncing.load(Relaxed) {
+                                            let _ = tx.send(ClientMsg::Change(Change {
+                                                id: id.0,
+                                                desc: 0,
+                                                raw: store.get_raw(id),
+                                                origin: ORIGIN_REMOTE,
+                                            }));
                                         }
-                                        None => false,
                                     }
-                                };
-                                if !stale {
-                                    let _ = apply_value(&store, id, &t, ORIGIN_REMOTE);
+                                    Fate::Drop => {}
+                                    Fate::Overridden(v) => {
+                                        if let Some(raw) = v.raw() {
+                                            let _ = tx.send(ClientMsg::Overridden(Change {
+                                                id: id.0,
+                                                desc: 0,
+                                                raw,
+                                                origin: ORIGIN_REMOTE,
+                                            }));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -583,4 +765,112 @@ fn reader_loop(
     shared.alive.store(false, SeqCst);
     shared.des_cv.notify_all();
     let _ = tx.send(ClientMsg::Disconnected);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn fader() -> NodeId {
+        Schema::get().by_path("ch/1/fdr").expect("ch/1/fdr")
+    }
+
+    /// A console that answers every `DataRequest` with `DE`, and for the first one sends a pending change event of
+    /// `ch/1/fdr` 30 ms *after* the answer (as wing-sim's server does: queued events follow the answers in the same
+    /// write; the delay makes the race deterministic).
+    fn late_event_console(value: f32) -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut dec = NrpDecoder::new();
+            let mut enc = NrpEncoder::new();
+            let mut buf = [0u8; 4096];
+            let mut first = true;
+            loop {
+                let n = match c.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                dec.feed(&buf[..n]);
+                let mut reqs = 0;
+                while let Some(t) = dec.next_control() {
+                    if matches!(t, Ok(Token::DataRequest)) {
+                        reqs += 1;
+                    }
+                }
+                for _ in 0..reqs {
+                    let mut out = Vec::new();
+                    enc.select(CH_CONTROL, &mut out);
+                    let _ = enc.control(&Token::End, &mut out);
+                    c.write_all(&out).unwrap();
+                    if std::mem::take(&mut first) {
+                        std::thread::sleep(Duration::from_millis(30));
+                        let mut ev = Vec::new();
+                        let _ = enc.control(&Token::NavHash(Schema::get().hash(fader())), &mut ev);
+                        let _ = enc.control(&Token::Float(value), &mut ev);
+                        c.write_all(&ev).unwrap();
+                    }
+                }
+            }
+        });
+        addr
+    }
+
+    /// The `preamp_alias_follows_the_patch_and_the_source` flake (M068): a change the console made before it read
+    /// our barrier can arrive after the barrier's answer; `barrier` must still return with it in the mirror.
+    #[test]
+    fn barrier_covers_events_queued_behind_its_answer() {
+        let addr = late_event_console(-7.5);
+        let (c, _rx) = NativeClient::connect(addr, Duration::from_secs(2)).unwrap();
+        c.barrier(Duration::from_secs(2)).unwrap();
+        assert_eq!(c.store().get_f64(fader()), Some(-7.5));
+        c.close();
+    }
+
+    fn own(v: f32) -> Own {
+        Own::Float(v)
+    }
+
+    #[test]
+    fn fate_tells_overwritten_external_writes_from_echoes() {
+        let id = fader();
+        let mut pending = HashMap::new();
+        let mut gets = HashMap::new();
+        // no own write in flight: apply
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 0, id, Some(own(-3.0))),
+            Fate::Apply { answer: false }
+        ));
+        // writes at DE 5 (-10) and 6 (-9.5) in flight
+        pending.insert(id, vec![(5, own(-10.0)), (6, own(-9.5))]);
+        // an (adjusted) echo of one of them: dropped
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 4, id, Some(own(-9.5004))),
+            Fate::Drop
+        ));
+        // someone else's value that ours will overwrite: reported
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 4, id, Some(own(-1.0))),
+            Fate::Overridden(Own::Float(v)) if v == -1.0
+        ));
+        // after DE 5 only the second write is in flight: the first write's value is now someone else's (coalesced)
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 5, id, Some(own(-10.0))),
+            Fate::Overridden(_)
+        ));
+        // a get's answer that predates the write: dropped, never reported
+        gets.insert(id, 6);
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 5, id, Some(own(-1.0))),
+            Fate::Drop
+        ));
+        // everything answered: apply again; the get is no longer open
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 6, id, Some(own(-1.0))),
+            Fate::Apply { answer: false }
+        ));
+        assert!(pending.is_empty() && gets.is_empty());
+    }
 }

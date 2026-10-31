@@ -180,8 +180,12 @@ pub fn spec(m: &Mapped, d: &Desc) -> ParamSpec {
 
 /// Current generic value of `id` in `store`.
 pub fn read(store: &ParamStore, id: NodeId, m: &Mapped) -> Option<Value> {
+    read_raw(store, id, m, store.get_raw(id))
+}
+
+/// Generic value of `raw` interpreted with the active descriptor of `id` (strings: the stored text).
+pub fn read_raw(store: &ParamStore, id: NodeId, m: &Mapped, raw: u32) -> Option<Value> {
     let d = store.desc(id)?;
-    let raw = store.get_raw(id);
     Some(match d.ty {
         ParamType::Fader | ParamType::LinF | ParamType::LogF => {
             Value::Float(clean(f32::from_bits(raw)))

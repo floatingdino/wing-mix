@@ -275,3 +275,43 @@ run, so its description runs were not asserted):
 
 FakeX32 (`mix-x32 --test session`, main only, no solo, no meters): unchanged before/after: one fader move,
 distance 2.106 -> 0.182, converged (net 3 dB).
+
+## M068: PANIC and engineer-yield safety fixes, 2026-10-31
+
+`tools/e2e/run.sh wing` with `E2E_TAPS=multi,solo`, 3 songs in parallel processes, task/M068 `5686896`: **12/12 runs
+green**, every audit asserted. PANIC now runs at the end of *every* run (before: reference runs only) and the wing-sim
+snapshot diff after PANIC is asserted empty.
+
+| run | multichannel | main + solo |
+|---|---|---|
+| I Know That I Know §9, reference | 2.615 -> 1.122 (-57 %) 18 (5) | 2.615 -> 1.741 (-33 %) 21 (7) |
+| I Know That I Know §9, description | 1.331 -> 1.097 (-18 %) 7 (5) | 1.330 -> 0.990 (-26 %) 17 (9) |
+| Holy Forever §7, reference | 2.510 -> 0.908 (-64 %) 14 (6) | 2.510 -> 1.462 (-42 %) 28 (9) |
+| Holy Forever §7, description | 1.331 -> 0.922 (-31 %) 11 (3) | 1.327 -> 0.925 (-30 %) 27 (11) |
+| Show Me Your Face §4, reference | 2.251 -> 1.697 (-25 %) 21 (3) | 2.253 -> 2.036 (-10 %) 40 (10) |
+| Show Me Your Face §4, description | 2.272 -> 1.721 (-24 %) 18 (9) | 2.260 -> 1.883 (-17 %) 25 (9) |
+
+(main-bus distance start -> end, batches (kept); every run ends on `no_progress`.) Audits: PANIC 0 residual params
+and 0 differing wing-sim snapshot paths in **24/24** checks (12 generic, 12 console snapshot), incl. every main-EQ
+move; 0 forbidden writes (40-86 params changed per run, 3-10 on the main strip); engineer mid-ramp write yielded
+(`yielded` + `engineer_moved`) and left alone for the whole cool-down in all 6 reference runs; STOP, solo restore,
+feedback/ceiling drills as before.
+
+Findings of M067 and what they were:
+
+1. **"PANIC does not restore main-bus EQ"**: a harness artifact. Description runs had no drills, so no PANIC ran;
+   the "after PANIC" snapshot diff only filtered `ch/` paths there, so the *kept* main-EQ batch showed as residual.
+   Making PANIC run everywhere exposed three real PANIC bugs, all fixed (docs/safety.md): a session with a model
+   switch (the de-esser DS902 in the gate slot) made PANIC panic the actuator thread (`MixedModelChange` ->
+   `expect`); a switch back restored the old model's *defaults*, not the session's values (positional slots); and one
+   restore refused by a hold (a fader under a feedback-*suspect* hold) aborted the whole PANIC (32 params left).
+   Harness: slot params of a model the run switched (unknown after PANIC switched back) are counted as model
+   defaults, not as forbidden writes; the event log is rewritten after the PANIC.
+2. **Engineer write during a short ramp undetected**: mix-wing dropped console values for nodes with an own write in
+   flight, and the console's coalesced fan-out could carry our own value (unchanged mirror, no event). Fixed in
+   mix-wing (`ClientMsg::Overridden`, unsolicited unchanged values reported) and mix-actuator (drift check before
+   each step, engineer's value put back when an in-flight write overwrote it, undo/revert skip cooling params);
+   `wing_sim_engineer_write_mid_ramp_is_detected_100_trials`: 100/100.
+
+Generic regression: move -> PANIC -> compare for every param class the planner moves (`mix_actuator::testkit`), on
+SimSurface (`tests/panic_classes.rs`) and wing-sim (`wing_sim_panic_restores_*`).

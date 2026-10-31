@@ -81,6 +81,10 @@ impl RemitGate for LiveRolesGate {
         self.with(|g| g.check_restore(req, baseline))
     }
 
+    fn check_panic(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        self.with(|g| g.check_panic(req, baseline))
+    }
+
     fn check_recall(&self, req: &WriteRequest, baseline: &Value) -> Decision {
         self.with(|g| g.check_recall(req, baseline))
     }

@@ -49,9 +49,31 @@ struct Ramp {
     skipped: Vec<Refusal>,
     /// Tracks of finished earlier phases (journaled with the move).
     done: Vec<Track>,
+    /// Model switches this ramp wrote: the model param, the model it switched away from and the block's
+    /// model-dependent params as they were on that model (the switch loads the new model's defaults; undo/PANIC
+    /// write these back after switching back, M068).
+    switched: Vec<BlockState>,
+    /// Undo/PANIC: since when (s) some restore has been refused by a hold.
+    held_since: Option<f64>,
     /// Params of the block(s) a model switch in this batch governs: written only after the switch and the
     /// surface's `ParamsRemapped`, against the re-resolved specs.
     phase2: Option<Box<Phase2>>,
+}
+
+/// A block's model-dependent params on one model (captured right before we switched it away).
+#[derive(Clone)]
+struct BlockState {
+    model: ParamId,
+    on: Value,
+    params: Vec<ParamChange>,
+}
+
+/// Which remit/safety check a ramp's writes go through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum How {
+    Write,
+    Restore,
+    Panic,
 }
 
 struct Phase2 {
@@ -111,6 +133,8 @@ struct History {
     at: f64,
     label: String,
     changes: Vec<Change>,
+    /// Model switches of the move with the block state before them (see `Ramp::switched`).
+    blocks: Vec<BlockState>,
 }
 
 /// Human-like move scheduler (see the crate docs).
@@ -133,6 +157,8 @@ pub struct Actuator {
     /// (their move is theirs; the envelope/safety `baseline` is not re-based).
     restore_to: BTreeMap<ParamId, Value>,
     last_written: BTreeMap<ParamId, Value>,
+    /// Per model param: the block as it was on the session's model before our first switch of it (PANIC, M068).
+    block_baseline: BTreeMap<ParamId, BlockState>,
     cooldowns: BTreeMap<ParamId, f64>,
     history: Vec<History>,
     write_log: Vec<WriteRecord>,
@@ -148,6 +174,27 @@ pub struct Actuator {
     link_lost: bool,
     resync_needed: bool,
     deferred: Deferred,
+}
+
+/// Longest time (s) undo/PANIC wait for a hold to release a refused restore before leaving that param (M068).
+const RESTORE_HOLD_S: f64 = 10.0;
+
+/// How far back (s) a write of ours counts as possibly in flight when an engineer move is reported (M068).
+const REASSERT_WINDOW_S: f64 = 1.0;
+
+impl Ramp {
+    fn how(&self) -> How {
+        match self.kind {
+            RampKind::Move => How::Write,
+            RampKind::Undo => How::Restore,
+            RampKind::Panic => How::Panic,
+        }
+    }
+}
+
+/// Same model block: `p` is governed by the model selector `m` (of `class`).
+fn governed_by(p: &ParamId, m: &ParamId, class: ParamClass) -> bool {
+    p != m && p.head() == m.head() && (class == ParamClass::FxModel || p.block() == m.block())
 }
 
 fn permitted(d: &Decision, restoring: bool) -> bool {
@@ -187,6 +234,7 @@ impl Actuator {
             baseline: BTreeMap::new(),
             restore_to: BTreeMap::new(),
             last_written: BTreeMap::new(),
+            block_baseline: BTreeMap::new(),
             cooldowns: BTreeMap::new(),
             history: Vec::new(),
             write_log: Vec::new(),
@@ -324,9 +372,22 @@ impl Actuator {
                 });
             }
         }
+        let blocks: Vec<BlockState> = self.block_baseline.values().cloned().collect();
+        let (changes, conflicts) = self.with_block_states(changes, conflicts, &blocks);
         let speed = self.cfg.restore_speed;
-        let ramp = self.plan(id, "panic", &changes, RampKind::Panic, speed);
-        let mut ramp = ramp.expect("lenient plan never refuses");
+        let mut ramp = match self.plan(id, "panic", &changes, RampKind::Panic, speed) {
+            Ok(r) => r,
+            Err(reason) => {
+                // never leaves PANIC without a ramp: report and end stopped
+                self.emit(ActuatorEvent::Refused {
+                    id,
+                    label: "panic".into(),
+                    reason,
+                });
+                self.emit(ActuatorEvent::Stopped);
+                return;
+            }
+        };
         ramp.conflicts = conflicts;
         self.start_ramp(ramp);
     }
@@ -495,6 +556,7 @@ impl Actuator {
                 at: self.now,
                 label: label.to_string(),
                 changes: changes.clone(),
+                blocks: Vec::new(),
             });
             let cap = self.cfg.history_cap;
             if cap > 0 && self.history.len() > cap {
@@ -633,8 +695,6 @@ impl Actuator {
 
     /// The engineer (or another client) moved `param`: yield it for the cool-down.
     fn on_external(&mut self, param: ParamId, value: Value) {
-        let until = self.now + self.cfg.external_cooldown_s;
-        self.cooldowns.insert(param.clone(), until);
         let mut in_move = false;
         if let Some(r) = self.current_ramp_mut() {
             for tr in r.tracks.iter_mut().filter(|t| t.spec.id == param) {
@@ -644,17 +704,78 @@ impl Actuator {
                 in_move = true;
             }
         }
-        if self.baseline.contains_key(&param) {
+        self.yield_to_engineer(param, value, in_move);
+    }
+
+    /// Cool-down, PANIC re-base, journal and `Yielded` for an engineer move of `param` (the caller has already
+    /// yielded the running ramp's track). M068: if the console now holds our last write instead of the engineer's
+    /// value, one of our writes that was already in flight overwrote theirs (it landed between two ramp writes):
+    /// their value is put back once. Never when the reported value is one we wrote ourselves just now (the console
+    /// coalesces fan-out: an engineer move overwritten before it was sent out shows up with our value).
+    fn yield_to_engineer(&mut self, param: ParamId, value: Value, in_move: bool) {
+        let until = self.now + self.cfg.external_cooldown_s;
+        self.cooldowns.insert(param.clone(), until);
+        let touched = self.baseline.contains_key(&param);
+        if touched {
             // the engineer's value is where PANIC returns this param from now on
             self.restore_to.insert(param.clone(), value.clone());
         }
-        if in_move || self.baseline.contains_key(&param) {
-            self.journal.note_external(param.clone(), value.clone());
-            self.emit(ActuatorEvent::Yielded {
-                param,
-                value,
-                until_s: until,
-            });
+        if !(in_move || touched) {
+            return;
+        }
+        self.journal.note_external(param.clone(), value.clone());
+        self.emit(ActuatorEvent::Yielded {
+            param: param.clone(),
+            value: value.clone(),
+            until_s: until,
+        });
+        self.reassert_engineer(&param, &value);
+    }
+
+    /// See [`Self::yield_to_engineer`]: put the engineer's value back when our in-flight write overwrote it.
+    fn reassert_engineer(&mut self, param: &ParamId, value: &Value) {
+        if self.link_down {
+            return;
+        }
+        let Some(ours) = self.last_written.get(param).cloned() else {
+            return;
+        };
+        let tol = self.tolerance(param);
+        let Ok(cur) = self.surface.read(param) else {
+            return;
+        };
+        if !cur.approx_eq(&ours, tol) || cur.approx_eq(value, tol) {
+            return; // the console holds the engineer's (or a newer) value
+        }
+        let window = self.now - REASSERT_WINDOW_S;
+        let recent: Vec<&WriteRecord> = self
+            .write_log
+            .iter()
+            .rev()
+            .take_while(|w| w.at_s >= window)
+            .filter(|w| w.param == *param)
+            .collect();
+        let Some(id) = recent.first().map(|w| w.id) else {
+            return; // no write of ours was in flight: the console's value is not our overwrite
+        };
+        if recent.iter().any(|w| w.value.approx_eq(value, tol)) {
+            return; // our own value, coalesced into the console's fan-out
+        }
+        match self.surface.write(param, value.clone()) {
+            Ok(stored) => {
+                self.last_written.insert(param.clone(), stored.clone());
+                self.journal.note(format!(
+                    "{param}: engineer's {value:?} was overwritten by our in-flight write {ours:?}; put back"
+                ));
+                self.log_write(WriteRecord {
+                    at_s: self.now,
+                    id,
+                    param: param.clone(),
+                    value: stored,
+                });
+            }
+            Err(SurfaceError::Disconnected) => self.link_lost = true,
+            Err(_) => {}
         }
     }
 
@@ -852,7 +973,11 @@ impl Actuator {
         speed: f64,
     ) -> Result<Ramp, Refusal> {
         let lenient = kind != RampKind::Move;
-        let restoring = lenient;
+        let how = match kind {
+            RampKind::Move => How::Write,
+            RampKind::Undo => How::Restore,
+            RampKind::Panic => How::Panic,
+        };
         if changes.is_empty() && !lenient {
             return Err(Refusal::Empty);
         }
@@ -871,7 +996,7 @@ impl Actuator {
             }
         }
         // Never ramp across a model change: params of the block a model switch governs are written only after the
-        // switch and the surface's `ParamsRemapped` (second phase of the same move); undo/PANIC cannot split.
+        // switch and the surface's `ParamsRemapped` (second phase of the same ramp; undo/PANIC too, M068).
         let specs: Vec<_> = changes
             .iter()
             .filter_map(|c| self.surface.param_spec(&c.param).ok())
@@ -887,11 +1012,6 @@ impl Actuator {
             };
             for (i, c) in changes.iter().enumerate() {
                 if same_scope(&c.param) {
-                    if lenient {
-                        return Err(Refusal::MixedModelChange {
-                            param: c.param.clone(),
-                        });
-                    }
                     later.insert(i);
                 }
             }
@@ -915,7 +1035,7 @@ impl Actuator {
         let mut tracks = Vec::new();
         let mut skipped = Vec::new();
         for c in first {
-            match self.plan_track(c, restoring) {
+            match self.plan_track(c, how) {
                 Ok(Some(t)) => tracks.push(t),
                 Ok(None) => {}
                 Err(r) if lenient => skipped.push(r),
@@ -928,8 +1048,10 @@ impl Actuator {
                 phase2 = Some(p);
             } else {
                 for c in &p.changes {
-                    if let Some(t) = self.plan_track(c, restoring)? {
-                        tracks.push(t);
+                    match self.plan_track(c, how) {
+                        Ok(t) => tracks.extend(t),
+                        Err(r) if lenient => skipped.push(r),
+                        Err(r) => return Err(r),
                     }
                 }
             }
@@ -957,16 +1079,19 @@ impl Actuator {
             last_t: self.now,
             speed,
             paused: false,
-            restoring,
+            restoring: lenient,
             abort: None,
             conflicts: Vec::new(),
             skipped,
             done: Vec::new(),
+            switched: Vec::new(),
+            held_since: None,
             phase2,
         })
     }
 
-    fn plan_track(&self, c: &ParamChange, restoring: bool) -> Result<Option<Track>, Refusal> {
+    fn plan_track(&self, c: &ParamChange, how: How) -> Result<Option<Track>, Refusal> {
+        let restoring = how != How::Write;
         let surf = |e: SurfaceError| Refusal::Surface {
             param: c.param.clone(),
             error: e.to_string(),
@@ -987,12 +1112,11 @@ impl Actuator {
             to: Some(to.clone()),
         };
         let base = self.baseline.get(&c.param).unwrap_or(&from);
-        let d = if restoring {
-            self.gate.check_restore(&req, base)
-        } else {
-            self.gate.check_write(&req, base)
-        };
-        if !permitted(&d, restoring) {
+        let d = self.decide(how, &req, base);
+        // undo/PANIC: a safety refusal of a restore is a hold (temporary); plan the track, the per-write check holds
+        // it until the hold releases (or `RESTORE_HOLD_S`, then it is skipped and reported)
+        let held = restoring && d.reason == Reason::Safety;
+        if !permitted(&d, restoring) && !held {
             return Err(Refusal::Remit {
                 param: c.param.clone(),
                 verdict: d.class,
@@ -1005,6 +1129,14 @@ impl Actuator {
         Ok(Some(Track::new(spec, from, to, ramp, self.now)))
     }
 
+    fn decide(&self, how: How, req: &WriteRequest, base: &Value) -> Decision {
+        match how {
+            How::Write => self.gate.check_write(req, base),
+            How::Restore => self.gate.check_restore(req, base),
+            How::Panic => self.gate.check_panic(req, base),
+        }
+    }
+
     fn plan_undo(&mut self, id: MoveId) -> Result<Ramp, Refusal> {
         let Some(h) = self.history.pop() else {
             return Err(Refusal::NothingToUndo);
@@ -1014,6 +1146,13 @@ impl Actuator {
         for c in &h.changes {
             let tol = self.tolerance(&c.param);
             match self.surface.read(&c.param) {
+                // M068: a param the engineer moved during its cool-down is theirs, even if the console shows our
+                // value (a safety revert is not blocked by the cool-down the way a queued undo is)
+                Ok(cur) if self.cooling(&c.param) => conflicts.push(Conflict {
+                    param: c.param.clone(),
+                    expected: c.to.clone(),
+                    found: cur,
+                }),
                 Ok(cur) if cur.approx_eq(&c.to, tol) => {
                     changes.push(ParamChange::new(c.param.clone(), c.from.clone()))
                 }
@@ -1025,10 +1164,80 @@ impl Actuator {
                 Err(_) => {}
             }
         }
+        let (changes, conflicts) = self.with_block_states(changes, conflicts, &h.blocks);
         let speed = self.cfg.restore_speed;
         let mut r = self.plan(id, &h.label, &changes, RampKind::Undo, speed)?;
         r.conflicts = conflicts;
         Ok(r)
+    }
+
+    /// Undo/PANIC restore of a model switch (M068): the switch back loads the old model's defaults, and the ids of
+    /// the block's model-dependent params name the *new* model's slots now (positional re-mapping). So for every
+    /// model param restored to the model a [`BlockState`] was captured on, the block's model-dependent restores
+    /// and conflicts (values under the new model) are replaced by that state, written after the switch back.
+    fn with_block_states(
+        &self,
+        mut changes: Vec<ParamChange>,
+        mut conflicts: Vec<Conflict>,
+        blocks: &[BlockState],
+    ) -> (Vec<ParamChange>, Vec<Conflict>) {
+        for b in blocks {
+            let Ok(spec) = self.surface.param_spec(&b.model) else {
+                continue;
+            };
+            let back = changes
+                .iter()
+                .any(|c| c.param == b.model && c.to.approx_eq(&b.on, 1e-9));
+            if !back {
+                continue;
+            }
+            let dependent = |p: &ParamId| {
+                governed_by(p, &b.model, spec.class)
+                    && self
+                        .surface
+                        .param_spec(p)
+                        .map_or(true, |s| s.model_dependent)
+            };
+            changes.retain(|c| !dependent(&c.param));
+            conflicts.retain(|c| !dependent(&c.param));
+            changes.extend(b.params.iter().cloned());
+        }
+        (changes, conflicts)
+    }
+
+    /// The model-dependent params of the block `model` selects, as they are now (`restore` overrides values the
+    /// session already changed on this model with where PANIC would return them).
+    fn block_state(&self, model: &ParamId, class: ParamClass, for_panic: bool) -> BlockState {
+        let on = self.surface.read(model).unwrap_or(Value::Bool(false));
+        let mut params = Vec::new();
+        if let Some(strip) = model.strip() {
+            for spec in self.surface.params(&strip).unwrap_or_default() {
+                if spec.read_only || !spec.model_dependent || !governed_by(&spec.id, model, class) {
+                    continue;
+                }
+                let earlier = if for_panic {
+                    self.restore_to
+                        .get(&spec.id)
+                        .or_else(|| self.baseline.get(&spec.id))
+                        .cloned()
+                } else {
+                    None
+                };
+                let v = match earlier {
+                    Some(v) => v,
+                    None => match self.surface.read(&spec.id) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    },
+                };
+                params.push(ParamChange::new(spec.id, v));
+            }
+        }
+        BlockState {
+            model: model.clone(),
+            on,
+            params,
+        }
     }
 
     fn start_inspect(&mut self, id: MoveId, req: InspectRequest) -> Result<Inspect, Refusal> {
@@ -1187,6 +1396,29 @@ impl Actuator {
             r.paused = false;
             self.emit(ActuatorEvent::Resumed { id: r.id });
         }
+        // M068: the console no longer holds our last write of an active track: someone moved it and the change
+        // event has not reached us yet. Yield now instead of writing over it.
+        let drifted: Vec<(usize, Value)> = r
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, tr)| tr.wrote && tr.is_active())
+            .filter_map(|(i, tr)| {
+                let cur = self.surface.read(&tr.spec.id).ok()?;
+                (!cur.approx_eq(&tr.last_written, tr.spec.tolerance())).then_some((i, cur))
+            })
+            .collect();
+        if !drifted.is_empty() {
+            for (i, cur) in drifted {
+                r.tracks[i].yielded = true;
+                let param = r.tracks[i].spec.id.clone();
+                self.yield_to_engineer(param, cur, true);
+            }
+            if r.kind != RampKind::Panic {
+                r.last_t = t;
+                return Step::Running; // paused from the next tick (cool-down)
+            }
+        }
         r.elapsed += t - r.last_t;
         r.last_t = t;
         let p = if r.duration <= 0.0 {
@@ -1214,7 +1446,11 @@ impl Actuator {
         if self.tokens + 1e-9 < (pending.len() as f64).min(self.capacity()) {
             return Step::Running;
         }
-        // Remit re-check of every write, before any of this tick's writes go out.
+        // Remit re-check of every write, before any of this tick's writes go out. A move aborts in place. Undo/PANIC
+        // hold a refused param where it is (holds are temporary: mains ceiling, feedback suspect, stalled analysis)
+        // and restore the rest; after `RESTORE_HOLD_S` of refusals it is left and reported as skipped (M068: one
+        // fader under a feedback-suspect hold used to abort the whole PANIC).
+        let mut refused = Vec::new();
         for (i, w) in &pending {
             let tr = &r.tracks[*i];
             let req = WriteRequest {
@@ -1224,18 +1460,74 @@ impl Actuator {
                 to: Some(w.value.clone()),
             };
             let base = self.baseline.get(&tr.spec.id).unwrap_or(&tr.from);
-            let d = if r.restoring {
-                self.gate.check_restore(&req, base)
-            } else {
-                self.gate.check_write(&req, base)
-            };
+            let d = self.decide(r.how(), &req, base);
             if !permitted(&d, r.restoring) {
-                return Step::Aborted(AbortReason::Remit {
-                    param: tr.spec.id.clone(),
-                    verdict: d.class,
-                    reason: d.reason,
-                    detail: d.detail,
-                });
+                if !r.restoring {
+                    return Step::Aborted(AbortReason::Remit {
+                        param: tr.spec.id.clone(),
+                        verdict: d.class,
+                        reason: d.reason,
+                        detail: d.detail,
+                    });
+                }
+                refused.push((
+                    *i,
+                    Refusal::Remit {
+                        param: tr.spec.id.clone(),
+                        verdict: d.class,
+                        reason: d.reason,
+                        detail: d.detail,
+                        confirm_key: d.confirm_key,
+                    },
+                ));
+            }
+        }
+        if refused.is_empty() {
+            r.held_since = None;
+        } else {
+            let since = *r.held_since.get_or_insert(t);
+            if t - since >= RESTORE_HOLD_S {
+                for (i, why) in &refused {
+                    r.tracks[*i].yielded = true;
+                    r.skipped.push(why.clone());
+                }
+            }
+            let refused: Vec<usize> = refused.into_iter().map(|(i, _)| i).collect();
+            let pending: Vec<(usize, Pending)> = pending
+                .into_iter()
+                .filter(|(i, _)| !refused.contains(i))
+                .collect();
+            if pending.is_empty() {
+                return if r.phase2.is_none() && r.tracks.iter().all(|tr| !tr.is_active()) {
+                    Step::Done
+                } else {
+                    Step::Running
+                };
+            }
+            return self.write_pending(r, pending, p, t);
+        }
+        self.write_pending(r, pending, p, t)
+    }
+
+    /// Send this tick's writes of `r` (already checked).
+    fn write_pending(
+        &mut self,
+        r: &mut Ramp,
+        pending: Vec<(usize, Pending)>,
+        p: f64,
+        t: f64,
+    ) -> Step {
+        // M068: a model switch loads the new model's defaults: remember the block as it is first (undo/PANIC)
+        for (i, _) in &pending {
+            let tr = &r.tracks[*i];
+            if is_model_class(tr.spec.class) && !tr.wrote {
+                let (m, class) = (tr.spec.id.clone(), tr.spec.class);
+                let state = self.block_state(&m, class, false);
+                if !self.block_baseline.contains_key(&m) {
+                    let first = self.block_state(&m, class, true);
+                    self.block_baseline.insert(m.clone(), first);
+                }
+                r.switched.push(state);
             }
         }
         for (i, w) in pending {
@@ -1288,8 +1580,10 @@ impl Actuator {
         let p = r.phase2.take().expect("phase 2 pending");
         let mut tracks = Vec::new();
         for c in &p.changes {
-            match self.plan_track(c, false) {
+            match self.plan_track(c, r.how()) {
                 Ok(t) => tracks.extend(t),
+                // undo/PANIC: a param that cannot be restored is skipped and reported, the rest goes on
+                Err(e) if r.restoring => r.skipped.push(e),
                 Err(Refusal::Remit {
                     param,
                     verdict,
@@ -1359,6 +1653,7 @@ impl Actuator {
                         at: self.now,
                         label: r.label.clone(),
                         changes: changes.clone(),
+                        blocks: r.switched.clone(),
                     });
                     let cap = self.cfg.history_cap;
                     if cap > 0 && self.history.len() > cap {
@@ -1379,8 +1674,9 @@ impl Actuator {
                     self.history.clear();
                 }
                 let restored = r
-                    .tracks
+                    .done
                     .iter()
+                    .chain(r.tracks.iter())
                     .filter(|t| t.finished)
                     .map(|t| t.spec.id.clone())
                     .collect();

@@ -671,6 +671,21 @@ fn dispatch(
         for msg in batch {
             let ch = match msg {
                 ClientMsg::Change(ch) => ch,
+                ClientMsg::Overridden(ch) => {
+                    // M068: the engineer's write that our in-flight write overwrote on the console: theirs, not an
+                    // echo of ours (the mirror keeps our value, the console's final state)
+                    let id = ch.node();
+                    if let Some(m) = map::map_node(st, id) {
+                        if let Some(value) = convert::read_raw(st, id, &m, ch.raw) {
+                            events.push(SurfaceEvent::ParamChanged {
+                                param: m.id,
+                                value,
+                                origin: Origin::External,
+                            });
+                        }
+                    }
+                    continue;
+                }
                 ClientMsg::Disconnected => {
                     // a stale message from a connection that has since been replaced is not a disconnect
                     disc |= !c.is_alive();

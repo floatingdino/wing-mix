@@ -39,6 +39,12 @@ only the holds below apply, not the size limits).
 Holds block gain *increases* only (value goes up by more than the param tolerance): cuts, filters, moves toward the
 baseline and non-gain params continue. While a hold is active the operator can still cut.
 
+Undo/PANIC under a hold (M068): a restore the safety layer refuses (an increase under a hold; for undo also a
+discrete change on an audible strip) is *held* in place while the rest of the restore runs, and completes once the
+hold releases. After 10 s (`RESTORE_HOLD_S`) of refusals that param is left and reported in `Reverted.skipped`.
+Before M068 one refused write aborted the whole PANIC in place (e2e: a fader increase under a feedback-*suspect*
+hold of a monitor-coupled strip left 32 params unrestored), and a refusal at plan time dropped the param at once.
+
 ## Feedback-risk guard
 
 Input: third-octave frames from `Features` (main mix, or any tap via `feed_features`) or console RTA bands. Per
@@ -134,6 +140,59 @@ the boost limits is not re-based). So if the engineer takes a fader over and the
 returns it to the engineer's value, never to the pre-session one; a param the engineer left alone after the
 tool's last write is reported as a conflict and not touched, as before.
 
+## PANIC across model switches (M068)
+
+A model switch loads the new model's defaults, and the generic ids of a block's model-dependent params name the
+*active* model's slots (positional re-mapping). So before the actuator first writes a model param it captures the
+block's model-dependent params (`BlockState`): once per session for PANIC (with the session's own earlier values of
+that model's slots replaced by where PANIC returns them) and per move for undo. Undo/PANIC that switch a model back
+run in two phases like moves: the model first, then (after the surface's `ParamsRemapped`) the captured block state,
+replacing the restores/conflicts the new model's slots would have produced. Before M068 PANIC after a model switch
+hit `Err(MixedModelChange)` and the actuator thread panicked (daemon abort in release); undo of such a move was
+refused. PANIC goes through `RemitGate::check_panic`: as `check_restore`, except that the safety layer lets a
+discrete change (the switch back) through on an audible strip, as for a slot recall (the operator asked for the
+session start; a block left on another model cannot be restored at all). Undo and the automatic revert keep the
+"discrete only when inaudible" rule.
+
+Regression: `mix-actuator tests/panic_classes.rs` (SimSurface) and mix-wing `wing_sim_panic_restores_*`
+(wing-sim over the native protocol) run move -> PANIC -> compare-every-param-of-the-touched-strips for every param
+class the planner moves (`mix_actuator::testkit::class_cases`: faders incl. main, pan, width, trim/balance, mute,
+send level, filter, input EQ, **main-bus EQ**, dynamics, gate, EQ model, dynamics model).
+
+The e2e "PANIC does not restore main-bus EQ" finding (M067) was a harness artifact: description runs had no drills,
+hence no PANIC, and the "after PANIC" snapshot diff showed the *kept* main-EQ batch. Every e2e run now ends with
+PANIC and asserts an empty wing-sim snapshot diff.
+
+## Engineer writes that land among our ramp writes (M068)
+
+Over the native protocol an engineer's write can reach the console between two of our ramp writes. Three ways it
+used to vanish, all fixed:
+
+- **Overwritten in flight.** mix-wing ignored every console value for a node with an own write in flight (M019b:
+  such a value predates our write). It still is not applied to the mirror (the console ends on our value), but if it
+  is none of our in-flight values (a console's adjusted echo of ours is; float compare within 1e-3) it is reported as
+  `ClientMsg::Overridden` -> `ParamChanged { origin: External }` with the engineer's value. Answers to our own gets
+  are never reported.
+- **Coalesced into our value.** The console fans out the *current* value of a changed node; if our write landed
+  before the fan-out, the event carries our value, the mirror does not change and the store's hook stayed silent.
+  Every unsolicited console value (not an answer to a get, not during a sync) is now reported as an External change,
+  even when the mirror already holds it.
+- **Event not yet seen.** Before each ramp step the actuator compares the console (mirror) with its own last write
+  of every active track; a difference is an engineer move (yield) even before the change event arrives.
+
+On such a yield, if the console holds our last write rather than the engineer's value (our write overwrote theirs,
+and the reported value is not one we wrote in the last second), the actuator writes the engineer's value back once
+(journal note "put back"). Undo and the automatic safety revert leave params in their engineer cool-down alone
+(conflict), so a revert never undoes the engineer's fader. Regression: mix-wing
+`wing_sim_engineer_write_mid_ramp_is_detected_100_trials` (second native client, random offsets into a ~0.7 s ramp,
+real-time ticks: 100/100 yielded, engineer's value stands, undo inside the cool-down leaves it) with a 3-trial fast
+variant, and client unit tests for the in-flight decision.
+
+`NativeClient::barrier` is two sequential round trips: wing-sim's server queues pending change events *behind* the
+answer to the request it just read, so a single answer could arrive before an older event (the inproc
+`preamp_alias_follows_the_patch_and_the_source` flake on Linux CI; deterministic test
+`barrier_covers_events_queued_behind_its_answer`).
+
 ## Own config writes are not engineer moves (M063)
 
 The RTA claim/restore writes `cfg/rta/rtasrc|rtatap`, and the console mirrors them into the live `$src`/`$tap`
@@ -157,5 +216,4 @@ reverts the boost and stops the actuator; a held tone / note onset does not). Un
 ## Not covered (follow-ups)
 
 - Which tap an inspection measures (M021/M033). The feedback guard is only as good as the taps that are fed.
-- A model change followed by PANIC reports the old model's params as conflicts (M040 follow-up 3).
 - Thresholds are conservative defaults, not tuned on real rooms; tune against recordings (M060).

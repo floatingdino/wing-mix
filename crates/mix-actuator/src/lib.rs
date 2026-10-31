@@ -45,6 +45,7 @@ pub mod gate;
 pub mod ramp;
 pub mod runner;
 pub mod safety;
+pub mod testkit;
 
 pub use actuator::Actuator;
 pub use config::{ActuatorConfig, Rates};

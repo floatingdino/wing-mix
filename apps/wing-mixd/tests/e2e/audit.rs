@@ -63,6 +63,8 @@ pub struct RemitAudit {
     /// Conditional params whose confirmation key the operator (harness) gave.
     pub confirmed: usize,
     pub violations: Vec<String>,
+    /// Slot params of a model the run switched (the console's model defaults, not a tool write; M068).
+    pub model_defaults: usize,
     /// Changes by strip kind/role ("input foh: 12").
     pub by_role: BTreeMap<String, usize>,
 }
@@ -94,8 +96,17 @@ pub fn remit(
             .unwrap_or_default();
         *a.by_role.entry(format!("{kind} {role}")).or_default() += 1;
         let Ok(spec) = s.param_spec(p) else {
-            a.violations
-                .push(format!("{p}: unknown param ({from:?} -> {to:?})"));
+            // M068: a slot param of a model the run switched to (and PANIC switched away from again): the console
+            // loaded that model's defaults, the tool never wrote it; the model switch itself is audited
+            let switched = changes.iter().any(|(m, ..)| {
+                m.head() == p.head() && m.block() == p.block() && m.leaf() == "model"
+            });
+            if switched {
+                a.model_defaults += 1;
+            } else {
+                a.violations
+                    .push(format!("{p}: unknown param ({from:?} -> {to:?})"));
+            }
             continue;
         };
         let req = WriteRequest::new(p.clone(), spec.class).change(from.clone(), to.clone());

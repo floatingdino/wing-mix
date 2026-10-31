@@ -27,6 +27,14 @@ pub trait RemitGate: Send {
         self.check_write(req, baseline)
     }
 
+    /// As [`check_restore`](RemitGate::check_restore) for **PANIC** (M068): the operator asked for the session start
+    /// back. Defaults to `check_restore`; the safety layer also lets a discrete change (a model switch back) through
+    /// on an audible strip here, as for a slot recall, since a block left on the session's other model cannot be
+    /// returned to its session state at all.
+    fn check_panic(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        self.check_restore(req, baseline)
+    }
+
     /// As [`check_write`](RemitGate::check_write) for a **slot recall** snap (M064): a deliberate, non-ramped
     /// return to a state the engineer stored. Defaults to `check_write`; the safety layer keeps its holds, the
     /// fader ceiling, the per-session boost limit and the remit envelopes here, but not the per-move boost limit
