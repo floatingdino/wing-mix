@@ -33,6 +33,10 @@ let out: Vec<f32> = c.captured(1);                              // USB out lane 
 - Ports: an even pair `p, p+1` in 20000..48000 that is free for TCP and UDP; discovery and OSC move with it.
 - Temp state dir (`wingmix-test-<pid>-<n>`), `--no-autosave --no-hostio`; never the user's state dir.
 - Private shm name `/wmx-<pid>-<n>` (macOS limit 31 chars), never `/wingsim.audio.v1`; asserted in code.
+- Orphan safety (M071): the daemon runs as `sh -c` supervisor + `wing-sim` in its own process group; the supervisor's
+  watcher exits on stdin EOF, so SIGKILL/abort/timeout of the test process kills the daemon within ~1 s. `Drop` kills
+  the group. `mix_testsim::sweep_stale()` (once per test process, also callable) kills groups whose `parent.pid` in
+  `wingmix-test-*` is dead (verified against the command line: `WMTEST` + that dir), unlinks `shm.name`, removes the dir.
 - `Drop` kills the daemon, joins the driver thread, unlinks the shm and removes the state dir.
 - Tests are real-time paced (audio runs at wall-clock speed); keep them to a few seconds, `#[ignore = "slow: ..."]`
   beyond ~10 s with a shorter variant.

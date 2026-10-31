@@ -5,6 +5,8 @@
 //! - ports are chosen in 20000..48000 (even pair `p`, `p+1`), never 2222;
 //! - the state dir is a fresh temp dir; `--no-autosave`, `--no-hostio`;
 //! - the shm name is always private (`/wmx-<pid>-<n>`), never the default;
+//! - the daemon runs under a supervisor shell in its own process group and dies when the test process does (stdin
+//!   EOF), `Drop` kills the group, and [`sweep_stale`] reaps leftovers of killed test runs (M071);
 //! - `Drop` kills the daemon, stops the driver thread, unlinks the shm and removes the state dir.
 //!
 //! Tests skip (return `None`) when the wing-sim binary is missing: set `WING_SIM_BIN` or build it with
@@ -75,21 +77,49 @@ fn free_port(salt: u32) -> u16 {
     }
 }
 
+/// Supervisor script run as `sh -c SCRIPT sh <wing-sim> <args>`: the daemon runs in the background of a shell that
+/// is its own process-group leader, and a watcher exits (killing the daemon) when our stdin hits EOF, i.e. when
+/// the test process is gone for any reason (SIGKILL, abort, timeout). wing-sim has no stdin-EOF flag (M071).
+#[cfg(unix)]
+const SUPERVISOR: &str = r#""$@" </dev/null &
+c=$!
+{ cat >/dev/null; kill -KILL $c 2>/dev/null; } <&0 &
+wait $c
+st=$?
+exit $st"#;
+
+/// A spawned daemon plus the pipe whose closing (on drop, or when this process dies) makes the supervisor kill it.
+struct Spawned {
+    child: Child,
+    #[allow(dead_code)] // held for its Drop: closing the write end is the "parent died" signal
+    stdin: Option<std::process::ChildStdin>,
+}
+
 fn spawn_child(
     bin: &Path,
     port: u16,
     shm: &str,
     extra: &[&str],
     state_dir: &Path,
-) -> Option<Child> {
-    Command::new(bin)
-        .args(["--name", "WMTEST", "--port", &port.to_string()])
+) -> Option<Spawned> {
+    #[cfg(unix)]
+    let mut cmd = {
+        use std::os::unix::process::CommandExt;
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", SUPERVISOR, "sh"]).arg(bin);
+        c.process_group(0);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = Command::new(bin);
+    cmd.args(["--name", "WMTEST", "--port", &port.to_string()])
         .args(["--discovery-port", &port.to_string()])
         .args(["--osc-port", &(port + 1).to_string()])
         .args(["--no-hostio", "--shm-name", shm, "--no-autosave"])
         .args(extra)
         .arg("--state-dir")
         .arg(state_dir)
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(
             std::fs::OpenOptions::new()
@@ -98,9 +128,107 @@ fn spawn_child(
                 .open(state_dir.join("wing-sim.log"))
                 .map(Stdio::from)
                 .unwrap_or_else(|_| Stdio::null()),
-        )
-        .spawn()
-        .ok()
+        );
+    let mut child = cmd.spawn().ok()?;
+    // Recorded for the startup sweep: who to wait for, which group to kill, which shm to unlink.
+    let _ = std::fs::write(state_dir.join("parent.pid"), std::process::id().to_string());
+    let _ = std::fs::write(state_dir.join("group.pid"), child.id().to_string());
+    let _ = std::fs::write(state_dir.join("shm.name"), shm);
+    let stdin = child.stdin.take();
+    Some(Spawned { child, stdin })
+}
+
+/// SIGKILL the daemon's whole process group (supervisor shell, watcher, wing-sim) and reap the leader.
+fn kill_group(sp: &mut Spawned) {
+    #[cfg(unix)]
+    // SAFETY: plain kill(2) on the group we created with process_group(0).
+    unsafe {
+        libc::kill(-(sp.child.id() as i32), libc::SIGKILL);
+    }
+    let _ = sp.child.kill();
+    let _ = sp.child.wait();
+    sp.stdin = None;
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only probes.
+    unsafe {
+        libc::kill(pid, 0) == 0
+            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+}
+
+/// Kill stale `WMTEST` daemons left by test processes that died without running `Drop` (SIGKILL, timeout, abort),
+/// unlink their shm and remove their state dirs. Only dirs `wingmix-test-*` in the temp dir whose recorded parent
+/// pid is gone are touched, and only a process group whose leader's command line still names `WMTEST` and that
+/// state dir (pid-reuse guard). Never the user's own wing-sim. Returns the number of stale dirs cleaned.
+/// Runs once per test process from [`SimDaemon::start`]; callable directly.
+pub fn sweep_stale() -> usize {
+    #[cfg(not(unix))]
+    {
+        0
+    }
+    #[cfg(unix)]
+    {
+        let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
+            return 0;
+        };
+        let mut n = 0;
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with("wingmix-test-") {
+                continue;
+            }
+            let dir = e.path();
+            let rd_pid = |f: &str| {
+                std::fs::read_to_string(dir.join(f))
+                    .ok()
+                    .and_then(|t| t.trim().parse::<i32>().ok())
+            };
+            let parent = match rd_pid("parent.pid") {
+                Some(p) => p,
+                None => {
+                    // not yet written: a daemon is starting right now unless the dir is old
+                    let old = e
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|d| d > Duration::from_secs(120));
+                    if !old {
+                        continue;
+                    }
+                    0
+                }
+            };
+            if parent > 0 && pid_alive(parent) {
+                continue;
+            }
+            if let Some(g) = rd_pid("group.pid").filter(|&g| g > 1) {
+                let cmd = Command::new("ps")
+                    .args(["-o", "command=", "-p", &g.to_string()])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default();
+                if cmd.contains("WMTEST") && cmd.contains(name.as_str()) {
+                    // SAFETY: kill(2) on a group verified above to be ours.
+                    unsafe {
+                        libc::kill(-g, libc::SIGKILL);
+                    }
+                }
+            }
+            if let Ok(shm) = std::fs::read_to_string(dir.join("shm.name")) {
+                let shm = shm.trim();
+                if shm.starts_with("/wmx-") && shm != wing_shm::SHM_NAME {
+                    let _ = Segment::unlink(shm);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            n += 1;
+        }
+        n
+    }
 }
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -108,7 +236,7 @@ static SEQ: AtomicU32 = AtomicU32::new(0);
 /// A headless wing-sim on private ports with a private shm name and temp state dir. Without a driver attached to
 /// the shm name the daemon free-runs on its own clock (no input audio).
 pub struct SimDaemon {
-    child: Child,
+    sp: Spawned,
     bin: PathBuf,
     extra: Vec<String>,
     addr: SocketAddr,
@@ -146,10 +274,14 @@ impl SimDaemon {
         let port = free_port(n);
         assert!(port != 2222 && port != 2223);
         assert_ne!(shm, wing_shm::SHM_NAME, "never the default shm name");
-        let child = spawn_child(bin, port, &shm, extra, &state_dir)?;
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        SWEEP.call_once(|| {
+            sweep_stale();
+        });
+        let sp = spawn_child(bin, port, &shm, extra, &state_dir)?;
         let addr: SocketAddr = ([127, 0, 0, 1], port).into();
         let mut d = SimDaemon {
-            child,
+            sp,
             bin: bin.to_path_buf(),
             extra: extra.iter().map(|s| s.to_string()).collect(),
             addr,
@@ -167,11 +299,11 @@ impl SimDaemon {
                 // the port may belong to another test binary's daemon (probe-then-bind race): only ours counts,
                 // so make sure our child survived binding it
                 std::thread::sleep(Duration::from_millis(150));
-                if matches!(self.child.try_wait(), Ok(None)) {
+                if matches!(self.sp.child.try_wait(), Ok(None)) {
                     return true;
                 }
             }
-            if let Ok(Some(st)) = self.child.try_wait() {
+            if let Ok(Some(st)) = self.sp.child.try_wait() {
                 eprintln!("wing-sim exited ({st}):\n{}", self.log());
                 return false;
             }
@@ -186,8 +318,7 @@ impl SimDaemon {
 
     /// Kill the daemon process (connections drop; the ports are free again). Idempotent.
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        kill_group(&mut self.sp);
     }
 
     /// Kill (if running) and start a fresh daemon on the *same* ports, shm name and state dir: the console comes
@@ -199,7 +330,7 @@ impl SimDaemon {
         for _ in 0..20 {
             match spawn_child(&self.bin, port, &self.shm, &extra, &self.state_dir) {
                 Some(c) => {
-                    self.child = c;
+                    self.sp = c;
                     return self.wait_ready();
                 }
                 None => std::thread::sleep(Duration::from_millis(100)),
@@ -234,8 +365,7 @@ impl SimDaemon {
 
 impl Drop for SimDaemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        kill_group(&mut self.sp);
         let _ = std::fs::remove_dir_all(&self.state_dir);
         let _ = Segment::unlink(&self.shm);
     }
@@ -505,5 +635,132 @@ mod tests {
         drop(c);
         assert!(!dir.exists());
         assert!(Segment::open(&name, &OpenOptions::default()).is_err());
+    }
+
+    #[cfg(unix)]
+    fn group_alive(g: i32) -> bool {
+        // SAFETY: signal 0 only probes.
+        unsafe { libc::kill(-g, 0) == 0 }
+    }
+
+    /// Child half of `daemon_dies_with_killed_parent`: holds a console until killed. Only runs when the parent
+    /// test re-executes this binary with `MIX_TESTSIM_HOLD` set.
+    #[test]
+    #[ignore = "helper: re-executed by daemon_dies_with_killed_parent"]
+    fn helper_hold_console() {
+        let Ok(out) = std::env::var("MIX_TESTSIM_HOLD") else {
+            return;
+        };
+        let c = SimConsole::start(Feed::sine(1, 440.0, 0.5, 1.0), &[1]).expect("wing-sim");
+        let g = std::fs::read_to_string(c.daemon().state_dir().join("group.pid")).unwrap();
+        std::fs::write(&out, g).unwrap();
+        std::thread::sleep(Duration::from_secs(120));
+    }
+
+    /// M071: SIGKILL the test process (no Drop runs) and the daemon must go within 2 s.
+    #[cfg(unix)]
+    #[test]
+    fn daemon_dies_with_killed_parent() {
+        if wing_sim_bin().is_none() {
+            eprintln!("SKIPPED: no wing-sim binary");
+            return;
+        }
+        let out = std::env::temp_dir().join(format!("wmx-hold-{}", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::helper_hold_console",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MIX_TESTSIM_HOLD", &out)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let g: i32 = loop {
+            if let Some(g) = std::fs::read_to_string(&out)
+                .ok()
+                .and_then(|t| t.trim().parse().ok())
+            {
+                break g;
+            }
+            assert!(Instant::now() < deadline, "helper never started a console");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(group_alive(g));
+        child.kill().unwrap(); // SIGKILL
+        let _ = child.wait();
+        let t = Instant::now();
+        while group_alive(g) && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let alive = group_alive(g);
+        let _ = std::fs::remove_file(&out);
+        if alive {
+            // SAFETY: cleaning up our own test group.
+            unsafe { libc::kill(-g, libc::SIGKILL) };
+        }
+        assert!(!alive, "daemon outlived its killed parent by > 2 s");
+    }
+
+    /// M071: the startup sweep reaps a stale daemon group whose recorded parent is dead, unlinks its shm, and
+    /// leaves a live parent's dir alone.
+    #[cfg(unix)]
+    #[test]
+    fn sweep_reaps_stale_and_spares_live() {
+        let tmp = std::env::temp_dir();
+        let id = std::process::id();
+        let dead_parent = {
+            let mut c = Command::new("true").spawn().unwrap();
+            let p = c.id();
+            c.wait().unwrap();
+            p
+        };
+        let mk = |tag: &str, parent: u32| {
+            let dir = tmp.join(format!("wingmix-test-sweep{id}-{tag}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            // stand-in daemon: own group, command line names WMTEST and the state dir
+            use std::os::unix::process::CommandExt;
+            let mut c = Command::new("sh");
+            c.args(["-c", "sleep 300; true", "sh", "WMTEST"]).arg(&dir);
+            c.process_group(0)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = c.spawn().unwrap();
+            let shm = format!("/wmx-sw{}-{tag}", id % 100000);
+            let seg = Segment::open(
+                &shm,
+                &OpenOptions {
+                    create: true,
+                    sample_rate: SAMPLE_RATE,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            std::mem::forget(seg);
+            std::fs::write(dir.join("parent.pid"), parent.to_string()).unwrap();
+            std::fs::write(dir.join("group.pid"), child.id().to_string()).unwrap();
+            std::fs::write(dir.join("shm.name"), &shm).unwrap();
+            (dir, child, shm)
+        };
+        let (stale_dir, mut stale, stale_shm) = mk("stale", dead_parent);
+        let (live_dir, mut live, live_shm) = mk("live", id);
+        let stale_pid = stale.id() as i32;
+        assert!(group_alive(stale_pid));
+        sweep_stale(); // (the start-up sweep of a concurrent test may have beaten us to it: assert effects only)
+        let _ = stale.wait(); // reap the killed stand-in so the group is really gone
+        assert!(!group_alive(stale_pid));
+        assert!(!stale_dir.exists());
+        assert!(Segment::open(&stale_shm, &OpenOptions::default()).is_err());
+        assert!(live_dir.exists() && matches!(live.try_wait(), Ok(None)));
+        assert!(Segment::open(&live_shm, &OpenOptions::default()).is_ok());
+        let _ = live.kill();
+        let _ = live.wait();
+        let _ = Segment::unlink(&live_shm);
+        let _ = std::fs::remove_dir_all(&live_dir);
     }
 }
