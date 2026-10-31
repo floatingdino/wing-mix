@@ -147,3 +147,35 @@ fn live_context_setting_round_trips() {
     )
     .is_err());
 }
+
+/// M070: scrutiny + refinement mode: validated, in status, persisted, applied to a running session.
+#[test]
+fn scrutiny_setting_round_trips_and_persists() {
+    let d = Daemon::start("scrutiny");
+    let st = d.req(json!({"cmd": "status"}));
+    assert_eq!(st["tuning"]["scrutiny"], 1.0, "{st}");
+    assert_eq!(st["tuning"]["refine"], true);
+    d.autopilot();
+    let r = d.req(json!({"cmd": "set_scrutiny", "scale": 0.7, "refine": false}));
+    assert_eq!(r["scrutiny"], 0.7);
+    assert_eq!(r["refine"], false);
+    let st = d.req(json!({"cmd": "status"}));
+    assert_eq!(st["tuning"]["scrutiny"], 0.7);
+    assert_eq!(st["session"]["running"], true, "{st}");
+    for bad in [
+        r#"{"cmd":"set_scrutiny","scale":0.2}"#,
+        r#"{"cmd":"set_scrutiny","scale":2.0}"#,
+        r#"{"cmd":"start","scrutiny":3.0}"#,
+    ] {
+        assert!(
+            wing_mixd::server::request(&d.sock, bad, Duration::from_secs(5)).is_err(),
+            "{bad}"
+        );
+    }
+    let saved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(d.sock.parent().unwrap().join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["scrutiny"], 0.7);
+    assert_eq!(saved["refine"], false);
+}

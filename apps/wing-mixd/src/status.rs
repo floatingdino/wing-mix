@@ -88,13 +88,40 @@ pub struct DaemonStatus {
     /// Mix slots (M064): `{"count","active","comparing","live_confirmation_needed"}`.
     #[serde(default)]
     pub slots: Value,
+    /// M070: `{"scrutiny": 0.5..1.5, "refine": bool}` (null in documents from older daemons).
+    #[serde(default)]
+    pub tuning: Value,
 }
 
 /// Settings that survive a daemon restart (`<state-dir>/settings.json`; missing or unreadable = defaults).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub live_context: crate::protocol::LiveContext,
+    /// M070 scrutiny: tolerance scale 0.5 (strict) .. 1.5 (forgiving), default 1.
+    #[serde(default = "one")]
+    pub scrutiny: f64,
+    /// M070 refinement mode (default on).
+    #[serde(default = "yes")]
+    pub refine: bool,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            live_context: Default::default(),
+            scrutiny: 1.0,
+            refine: true,
+        }
+    }
 }
 
 impl Settings {
@@ -209,7 +236,17 @@ mod tests {
         assert_eq!(Settings::load(&dir), Settings::default());
         let set = Settings {
             live_context: crate::protocol::LiveContext::MatchRecord,
+            scrutiny: 0.7,
+            refine: false,
         };
+        // older settings files (live context only) load with the M070 defaults
+        std::fs::write(
+            dir.join(SETTINGS_FILE),
+            r#"{"live_context":"broadcast_video"}"#,
+        )
+        .unwrap();
+        let old = Settings::load(&dir);
+        assert_eq!((old.scrutiny, old.refine), (1.0, true));
         set.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), set);
         std::fs::remove_file(dir.join(SETTINGS_FILE)).unwrap();

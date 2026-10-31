@@ -18,7 +18,7 @@ temp dir). It is never the WingSimulator state dir.
 |---|---|
 | `status.json` | [`DaemonStatus`](#status) JSON, rewritten atomically (temp file + rename) once a second and once more with `"running": false` on exit. Readers check `pid` and `updated_unix` for liveness. |
 | `control.sock` | Unix stream socket (Windows: a loopback TCP address in the file). A stale socket is replaced at start; a live one makes the second daemon exit (`AddrInUse`). Removed on exit. Unix socket paths are limited to ~104 bytes, so keep `--state-dir` short. |
-| `settings.json` | Persisted daemon settings: `{"live_context":"live"}` (M055); loaded at start, rewritten when `set_live_context` changes it. |
+| `settings.json` | Persisted daemon settings: `{"live_context":"live","scrutiny":1.0,"refine":true}` (M055, M070); loaded at start, rewritten when `set_live_context` / `set_scrutiny` change it (missing keys = defaults). |
 | `roles.json` | User-confirmed strip roles per console + scene (`{"consoles":{"sim\|default":{"bus.5":"monitor"}}}`). |
 | `events.jsonl` | Every event line (below), appended; rotated to `events.1.jsonl` past 8 MB. The audit trail of moves. |
 | `slots/<console key>+<scene>.json` | Mix slots (M064), `{"version":1,"console_key","scene","slots":[...]}` (see [Mix slots](#mix-slots)); a file with a newer version is refused, never overwritten. |
@@ -62,7 +62,8 @@ nothing else happens.
 | `confirm_roles` | `roles` (`{"bus.5":"monitor","bus.6":null}`; roles: foh, monitor, comms, unrouted, foh_group, fx, aux_feed, unknown, main, matrix, dca, none; `null` clears the confirmation = back to detection), `scene` | `{"key","confirmed","cleared","previous","applies":"now"}`. One request is one **batch** (M065): validated as a whole (a bad id/role changes nothing), applied together. `previous` maps every strip of the batch to its former confirmation (`null` = none): sending it back as `roles` undoes the batch exactly. Applies immediately, also mid-session (see [Roles](#roles)); `applies` is always `now` (kept for compatibility, it used to be `next_session`). |
 | `set_mode` | `mode`: `observe` / `suggest` / `autopilot` | |
 | `set_live_context` | `context`: `live` (default; persisted in `settings.json` and restored at the next daemon start) / `broadcast_video` / `match_record` | `{"live_context","applied","target"}` (M037/M054). `mix_describe::apply_context` is applied to the loaded target (reference or description) on every load and on every change, always from the raw profile (switching is an exact revert); a running controller is rebuilt and re-plans. `applied` is `true` once a target is loaded (`false` before: the setting is stored and applied on the next load); `target` is the context summary below (null without a target). Announced as a `live_context_changed {live_context, applied}` daemon event on change. Effects are recorded in the target's `applied_deltas` as `context:<name>` (so problems list it in `terms`). |
-| `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `max_net_db`, `max_db_per_min`, `target_objective`, `inspect`, `feedback_guard`, `sweep`, `priors`, `meters` | `{"running":true,"mode"}`; needs a console, an input and a target |
+| `set_scrutiny` | `scale` (0.5 strict .. 1.5 forgiving; default 1) and/or `refine` (bool), both optional | `{"scrutiny","refine"}` (M070). `scale` multiplies every diagnosis tolerance (target intervals too) for problems and the continuous distance, so 0.5 asks for twice as close a match; `refine` turns refinement mode on/off (see below). Persisted in `settings.json`, shown as `status.tuning`; a running controller is rebuilt and re-plans. Announced as a `scrutiny_changed {scrutiny, refine}` daemon event. Out-of-range scales are an error. |
+| `start` | all optional: `mode`, `window_s`, `time_scale`, `max_batches`, `max_net_db`, `max_db_per_min`, `target_objective`, `inspect`, `feedback_guard`, `sweep`, `priors`, `meters`, `scrutiny`, `refine` (M070: this session only; default the persisted `set_scrutiny` values) | `{"running":true,"mode"}`; needs a console, an input and a target |
 | `stop` | | ends the loop: controller stops, actuator freezes (session kept: `undo`/`PANIC` still work; `start` resumes) |
 | `STOP` (`emergency_stop`) | | freezes every move now; the loop pauses until `resume` |
 | `PANIC` (`panic`) | | ramps every touched param back to its session baseline, then stays stopped; mode drops to `observe` |
@@ -139,15 +140,25 @@ exactly). `snapshot.session.strips` reports the coverage (`eligible`, `tapped`, 
 `unknown`, `sweeps`), `snapshot.session.sweeping` whether a sweep is running. Calling `start` again with different
 options or after a new target rebuilds the controller and keeps the actuator session (journal, baseline).
 
+**Refinement mode** (M070, on by default): when the plan from problems is empty (nothing exceeds tolerance) and the
+objective is above `target_objective`, the planner plans again from a diagnosis at 0.35 × the tolerances, with only
+fader and EQ moves of at most 1.5 dB, each scored on the normal objective and needing a predicted gain of at least
+0.01; the closed loop keeps a move only if the measured improvement holds (as for every batch). Such moves carry
+`refinement: true` in their summaries. A mix within `target_objective` gets no refinement; in suggest mode it is
+offered only what autopilot would still do there (predicted gain >= `converge_min_gain`).
+
 ## Events
 
 Each line is one JSON object: `source` (`control`, `actuator`, `daemon`), `type`, `at_s` (audio clock: seconds
 of main-tap audio analysed), `unix`, and the event's own fields.
 
 - `control`: `mix_engine::ControlEvent` — `mode_changed`, `measured {score, top_problems}`, `planned`,
-  `suggested {moves}`, `batch_started`, `inspected`, `batch_kept {before, after, predicted_gain}`,
+  `suggested {moves, near_misses?}` (M070: `near_misses` = up to 5 candidates the planner scored but held back,
+  `{label, strip, problem, predicted_gain, reason}`, best first; a move summary has `refinement: true` when
+  planned in refinement mode), `batch_started`, `inspected`, `batch_kept {before, after, predicted_gain}`,
   `batch_reverted`, `batch_inconclusive`, `batch_failed`, `param_frozen`, `confirmation_needed {key, summary}`,
-  `confirmed`, `section_changed`, `engineer_moved`, `holding {reason, objective}`, `resumed`, `paused`,
+  `confirmed`, `section_changed` (M070: at most one per 24 s), `engineer_moved` (M070: strip params only; console
+  configuration such as `system/cfg/solo/*` or the RTA source never counts), `holding {reason, objective}`, `resumed`, `paused`,
   `strip_measured {strip, due, priority, loudness_lufs, active}` (M062 solo sweep; `planned.reason`
   `strips_measured` when its result re-planned), `paced {until_s, rate_db, max_db_per_min}` (M067: the next batch
   waits for the change budget's rate window).
@@ -197,7 +208,8 @@ The current spectrum is the short-term (3 s) main analysis, refreshed every 0.5 
 `target {kind,label}`, `loading {what,stage,progress}`, `tools {uv,claude: {path|null, for}}` (M065: where the
 daemon found each external tool; at start it merges the login shell's PATH and `~/.local/bin`, `/opt/homebrew/bin`,
 `/usr/local/bin`, nvm node bins into its own, so an app-launched daemon finds them), `slots {count,active,comparing,
-live_confirmation_needed}` (M064), `mode`, `live_context`, `live_context_applied`, `session {running,stopped,holding,objective,distance,
+live_confirmation_needed}` (M064), `mode`, `live_context`, `live_context_applied`, `tuning {scrutiny, refine}` (M070),
+`session {running,stopped,holding,objective,distance,
 batches,pending,touched}`, `safety {status,trips,rta_feed}`, `subscribers`, `last_error`. Absent parts are `null`.
 
 ## Threads

@@ -60,6 +60,14 @@ pub enum Request {
     SetLiveContext {
         context: LiveContext,
     },
+    /// M070 scrutiny: scale every diagnosis tolerance by `scale` (0.5 strict .. 1.5 forgiving; default 1) and/or
+    /// switch refinement mode (small moves towards the target centre when nothing exceeds tolerance). Persisted.
+    SetScrutiny {
+        #[serde(default)]
+        scale: Option<f64>,
+        #[serde(default)]
+        refine: Option<bool>,
+    },
     /// Start (or restart after `stop`) the closed loop.
     Start(StartOptions),
     /// End the loop: the controller stops ticking and the actuator freezes; undo/PANIC still work.
@@ -356,6 +364,12 @@ pub struct StartOptions {
     /// M062: estimate strips nobody has measured (mix-level fallback; default true).
     #[serde(default)]
     pub priors: Option<bool>,
+    /// M070: scrutiny for this session (tolerance scale 0.5..1.5; default: the persisted `set_scrutiny` value).
+    #[serde(default)]
+    pub scrutiny: Option<f64>,
+    /// M070: refinement mode for this session (default: the persisted setting, on).
+    #[serde(default)]
+    pub refine: Option<bool>,
 }
 
 /// Reply line.
