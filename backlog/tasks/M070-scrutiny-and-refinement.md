@@ -2,10 +2,10 @@
 id: M070
 title: Analysis scrutiny + refinement mode (why the tool suggests nothing on a good mix)
 stage: S3
-status: todo
-owner: -
+status: in_progress
+owner: agent-M070
 depends: [M069]
-branch: -
+branch: task/M070
 model: opus
 ---
 
@@ -55,3 +55,13 @@ Work:
 
 ## Log
 - 2026-10-31 coordinator: created from the user's report + session analysis.
+- 2026-10-31 agent: started on task/M070 (main merged incl. M069). Findings from the user's events/scene (read-only
+  copy of state.snap): (2) the scene is PUBLIC.snap-like: inputs reach main 1 only through GRP sends to buses 5/6/7
+  (VOX, DRUMS FOH -> BAND BUS, BAND BUS -> main); `strips::eligible` required an active *direct* main send, so only
+  PREACH (input.26, main.1 on) was eligible -> 1 strip swept 51x. The e2e harness never saw it because
+  `mix_sim::real::flat_scene` assigns every channel to main 1 directly. (4) the cfg/solo + cfg/rta "engineer moves"
+  are refresh answers (solo_state() before each sweep, the RTA claim) the reader took for change events: the
+  `NativeClient::refresh` race M069 fixed (gets registered after the flush). Timing in the log confirms: pairs
+  (mode+mute, rtasrc+rtatap), uncorrelated with our solo writes. Section changes every 13-20 s (< window_s 20 s),
+  so measurement windows rarely complete. (1) LRA/PLR: Session window of ~20 s vs a whole-song target (section
+  null, 644 s).
