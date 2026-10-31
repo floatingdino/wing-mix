@@ -2,7 +2,7 @@
 id: M070
 title: Analysis scrutiny + refinement mode (why the tool suggests nothing on a good mix)
 stage: S3
-status: review
+status: done
 owner: agent-M070
 depends: [M069]
 branch: task/M070
@@ -110,3 +110,4 @@ Work:
   recent. (c) Under the ceiling hold, offer relative balance (cut the others) instead of the held raise. (d) the
   planner repeated `input.9 EQ high cut -3 dB at 10 kHz` three times in the user-scene run (each kept): check
   the high-cut gain label/step. (e) A feedback trip on music (100 Hz) at 14 s into the user-scene suggest phase.
+- 2026-10-31 coordinator: merged; make check + make app pass; CI green on branch. done (per-section criterion 3/4).
