@@ -260,7 +260,21 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("control.sock");
         drop(sock::bind(&path).unwrap()); // stale socket file: replaced
-        let server = ControlServer::spawn(&path, Arc::new(Echo(Mutex::new(Vec::new())))).unwrap();
+                                          // A sibling test's fork+exec can inherit the just-dropped listener fd (macOS sets close-on-exec after
+                                          // socket(), not atomically), so the stale socket looks live until that child has exec'd: retry briefly.
+        let t0 = std::time::Instant::now();
+        let server = loop {
+            match ControlServer::spawn(&path, Arc::new(Echo(Mutex::new(Vec::new())))) {
+                Ok(s) => break s,
+                Err(e)
+                    if e.kind() == io::ErrorKind::AddrInUse
+                        && t0.elapsed() < Duration::from_secs(10) =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
         assert_eq!(
             ControlServer::spawn(&path, Arc::new(Echo(Mutex::new(Vec::new()))))
                 .err()
