@@ -314,6 +314,7 @@ fn same_param_moves_keep_selection_order_across_phases() {
         cost: 1.0,
         benefit: 0.1,
         needs_confirmation: vec![],
+        refinement: false,
     };
     let kb = KnowledgeBase::embedded();
     let s = setup(kb);

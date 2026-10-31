@@ -289,6 +289,8 @@ pub struct Controller<'k> {
     silent_in_solo: std::collections::BTreeSet<StripId>,
     kept: u32,
     pending: Vec<Pending>,
+    /// M070: the last plan's near misses (published with suggestions).
+    near_misses: Vec<crate::plan::NearMiss>,
     inspections: Arc<Mutex<Vec<Inspection>>>,
     probe: Option<SoloProbe>,
     actuator_stopped: bool,
@@ -365,6 +367,7 @@ impl<'k> Controller<'k> {
             silent_in_solo: Default::default(),
             kept: 0,
             pending: Vec::new(),
+            near_misses: Vec::new(),
             inspections: Arc::new(Mutex::new(Vec::new())),
             probe: None,
             actuator_stopped: false,
@@ -1402,7 +1405,8 @@ impl<'k> Controller<'k> {
                             .map(Batch::summary)
                             .chain(self.pending.iter().map(|p| p.summary.clone()))
                             .collect();
-                        self.emit(ControlEvent::Suggested { moves });
+                        let near_misses = self.near_misses.clone();
+                        self.emit(ControlEvent::Suggested { moves, near_misses });
                     }
                 }
             }
@@ -1644,9 +1648,28 @@ impl<'k> Controller<'k> {
             },
         };
         self.cfg.plan.session_baseline = self.session_baseline.clone();
-        let Ok(p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
+        self.cfg.plan.refine = None;
+        let Ok(mut p) = plan_with(&input, self.kb, &self.cfg.plan, &*self.transfer) else {
             return false;
         };
+        // M070 refinement: nothing to fix, but the mix is not where the target is yet
+        if p.moves().next().is_none() && s.score.objective > self.cfg.target_objective {
+            if let Some(r) = self.cfg.refine {
+                let mut c = self.cfg.plan.clone();
+                c.refine = Some(r);
+                if let Ok(mut rp) = plan_with(&input, self.kb, &c, &*self.transfer) {
+                    if rp.moves().next().is_none() {
+                        // keep the better-informed near misses (problem candidates first)
+                        rp.near_misses.extend(p.near_misses.drain(..));
+                        rp.near_misses
+                            .sort_by(|a, b| b.predicted_gain.total_cmp(&a.predicted_gain));
+                        rp.near_misses.truncate(crate::plan::MAX_NEAR_MISSES);
+                    }
+                    p = rp;
+                }
+            }
+        }
+        self.near_misses = p.near_misses.clone();
         self.expected = s.score.objective;
         let mut inspect: Option<(StripId, f64)> = None;
         let mut asks: Vec<(String, Batch)> = Vec::new();

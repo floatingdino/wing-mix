@@ -401,7 +401,7 @@ fn suggest_mode_plans_but_writes_nothing() {
         .log
         .iter()
         .find_map(|(_, e)| match e {
-            ControlEvent::Suggested { moves } => Some(moves.clone()),
+            ControlEvent::Suggested { moves, .. } => Some(moves.clone()),
             _ => None,
         })
         .unwrap();

@@ -39,6 +39,7 @@ fn mv(param: &str, from: f64, to: f64, gain: f64) -> PlannedMove {
         cost: 0.0,
         benefit: gain,
         needs_confirmation: Vec::new(),
+        refinement: false,
     }
 }
 
@@ -253,7 +254,11 @@ fn events_serialise() {
         "{j}"
     );
     let s = MoveSummary::of(&mv("input.1/fader", 0.0, -3.0, 0.1), false);
-    let j = serde_json::to_string(&ControlEvent::Suggested { moves: vec![s] }).unwrap();
+    let j = serde_json::to_string(&ControlEvent::Suggested {
+        moves: vec![s],
+        near_misses: Vec::new(),
+    })
+    .unwrap();
     assert!(
         j.contains("suggested") && j.contains("input.1/fader"),
         "{j}"

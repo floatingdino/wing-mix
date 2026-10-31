@@ -106,7 +106,7 @@ fn solo_only_suggest_plans_from_priors_and_writes_nothing() {
     let ok = r.run_until(3.0 * SECONDS, |r| {
         r.log
             .iter()
-            .any(|(_, e)| matches!(e, ControlEvent::Suggested { moves } if !moves.is_empty()))
+            .any(|(_, e)| matches!(e, ControlEvent::Suggested { moves, .. } if !moves.is_empty()))
     });
     let cov = r.ctl.coverage().clone();
     assert!(ok, "no plan from main + solo only: {:?} {:?}", cov, r.log);
@@ -116,7 +116,7 @@ fn solo_only_suggest_plans_from_priors_and_writes_nothing() {
         .log
         .iter()
         .find_map(|(_, e)| match e {
-            ControlEvent::Suggested { moves } => Some(moves.clone()),
+            ControlEvent::Suggested { moves, .. } => Some(moves.clone()),
             _ => None,
         })
         .unwrap();

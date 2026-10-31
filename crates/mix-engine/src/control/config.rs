@@ -115,6 +115,10 @@ pub struct ControlConfig {
     /// A soloed strip quieter than this (LUFS) is not playing: its move is skipped.
     pub inspect_silent_lufs: f32,
     pub section: SectionConfig,
+    /// M070 refinement mode: when the plan from problems is empty and the objective is above `target_objective`,
+    /// plan small fader/EQ moves towards the target centre (`None`: off). Scrutiny is
+    /// `plan.diagnosis.tolerance_scale`.
+    pub refine: Option<crate::plan::RefineConfig>,
     /// M062: strips without a tap: solo sweeps, measured-strip book, priors.
     pub strips: StripConfig,
     pub plan: PlanConfig,
@@ -174,6 +178,7 @@ impl ControlConfig {
                 min_section_s: default_min_section_s(),
             },
             strips: StripConfig::default(),
+            refine: Some(crate::plan::RefineConfig::default()),
             plan,
         }
     }
