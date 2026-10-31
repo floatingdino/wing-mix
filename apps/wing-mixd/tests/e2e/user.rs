@@ -170,7 +170,8 @@ pub fn run(fx: &Fixture, snap: &Path, out: &Path) -> Option<UserRun> {
     }
 
     // daemon state dir with the user's cached reference/stem profiles (copies)
-    let dir = out.join("d");
+    // short: the control socket path must stay under ~104 bytes
+    let dir = std::env::temp_dir().join(format!("wmx-u{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let prof_dst = dir.join("s").join("profiles");
     std::fs::create_dir_all(&prof_dst).unwrap();
