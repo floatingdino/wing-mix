@@ -500,14 +500,23 @@ impl NativeClient {
         self.wait_des(target, timeout)
     }
 
-    /// Round trip with no data: everything the console sent before answering is in the mirror afterwards.
+    /// Round trips with no data: every change the console made before it processed this request (another client's
+    /// write included) is in the mirror afterwards.
+    ///
+    /// Two sequential round trips (M068): the console (wing-sim's server, and any coalescing fan-out) appends the
+    /// change events pending for this client *after* the answers to the request it just read, so one answer can
+    /// arrive before an event that predates it, and the caller would read the mirror a moment too early (the
+    /// `preamp_alias_follows_the_patch_and_the_source` flake). The second answer is sent after those events.
     pub fn barrier(&self, timeout: Duration) -> io::Result<()> {
-        let target = self.write_with(|enc, buf| {
-            let _ = enc.control(&Token::NavHash(0), buf);
-            let _ = enc.control(&Token::DataRequest, buf);
-            1
-        })?;
-        self.wait_des(target, timeout)
+        for _ in 0..2 {
+            let target = self.write_with(|enc, buf| {
+                let _ = enc.control(&Token::NavHash(0), buf);
+                let _ = enc.control(&Token::DataRequest, buf);
+                1
+            })?;
+            self.wait_des(target, timeout)?;
+        }
+        Ok(())
     }
 
     /// Full synchronisation: `DA DC` dump, then gets of every `$` live leaf below the top level. No change
@@ -756,4 +765,112 @@ fn reader_loop(
     shared.alive.store(false, SeqCst);
     shared.des_cv.notify_all();
     let _ = tx.send(ClientMsg::Disconnected);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn fader() -> NodeId {
+        Schema::get().by_path("ch/1/fdr").expect("ch/1/fdr")
+    }
+
+    /// A console that answers every `DataRequest` with `DE`, and for the first one sends a pending change event of
+    /// `ch/1/fdr` 30 ms *after* the answer (as wing-sim's server does: queued events follow the answers in the same
+    /// write; the delay makes the race deterministic).
+    fn late_event_console(value: f32) -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut dec = NrpDecoder::new();
+            let mut enc = NrpEncoder::new();
+            let mut buf = [0u8; 4096];
+            let mut first = true;
+            loop {
+                let n = match c.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                dec.feed(&buf[..n]);
+                let mut reqs = 0;
+                while let Some(t) = dec.next_control() {
+                    if matches!(t, Ok(Token::DataRequest)) {
+                        reqs += 1;
+                    }
+                }
+                for _ in 0..reqs {
+                    let mut out = Vec::new();
+                    enc.select(CH_CONTROL, &mut out);
+                    let _ = enc.control(&Token::End, &mut out);
+                    c.write_all(&out).unwrap();
+                    if std::mem::take(&mut first) {
+                        std::thread::sleep(Duration::from_millis(30));
+                        let mut ev = Vec::new();
+                        let _ = enc.control(&Token::NavHash(Schema::get().hash(fader())), &mut ev);
+                        let _ = enc.control(&Token::Float(value), &mut ev);
+                        c.write_all(&ev).unwrap();
+                    }
+                }
+            }
+        });
+        addr
+    }
+
+    /// The `preamp_alias_follows_the_patch_and_the_source` flake (M068): a change the console made before it read
+    /// our barrier can arrive after the barrier's answer; `barrier` must still return with it in the mirror.
+    #[test]
+    fn barrier_covers_events_queued_behind_its_answer() {
+        let addr = late_event_console(-7.5);
+        let (c, _rx) = NativeClient::connect(addr, Duration::from_secs(2)).unwrap();
+        c.barrier(Duration::from_secs(2)).unwrap();
+        assert_eq!(c.store().get_f64(fader()), Some(-7.5));
+        c.close();
+    }
+
+    fn own(v: f32) -> Own {
+        Own::Float(v)
+    }
+
+    #[test]
+    fn fate_tells_overwritten_external_writes_from_echoes() {
+        let id = fader();
+        let mut pending = HashMap::new();
+        let mut gets = HashMap::new();
+        // no own write in flight: apply
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 0, id, Some(own(-3.0))),
+            Fate::Apply { answer: false }
+        ));
+        // writes at DE 5 (-10) and 6 (-9.5) in flight
+        pending.insert(id, vec![(5, own(-10.0)), (6, own(-9.5))]);
+        // an (adjusted) echo of one of them: dropped
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 4, id, Some(own(-9.5004))),
+            Fate::Drop
+        ));
+        // someone else's value that ours will overwrite: reported
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 4, id, Some(own(-1.0))),
+            Fate::Overridden(Own::Float(v)) if v == -1.0
+        ));
+        // after DE 5 only the second write is in flight: the first write's value is now someone else's (coalesced)
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 5, id, Some(own(-10.0))),
+            Fate::Overridden(_)
+        ));
+        // a get's answer that predates the write: dropped, never reported
+        gets.insert(id, 6);
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 5, id, Some(own(-1.0))),
+            Fate::Drop
+        ));
+        // everything answered: apply again; the get is no longer open
+        assert!(matches!(
+            fate(&mut pending, &mut gets, 6, id, Some(own(-1.0))),
+            Fate::Apply { answer: false }
+        ));
+        assert!(pending.is_empty() && gets.is_empty());
+    }
 }
