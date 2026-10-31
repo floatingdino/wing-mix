@@ -603,3 +603,125 @@ fn wing_sim_rta_claim_is_not_an_engineer_move() {
         .collect();
     assert!(bad.is_empty(), "{bad:?}");
 }
+
+/// M068: an engineer's write from a second native client lands at a random offset into one of our short (< 1 s)
+/// fader ramps (real-time ticks, so it can arrive between, before or while our writes are in flight). Every trial:
+/// the actuator yields the fader (`Yielded`), never writes it again (apart from putting the engineer's value back
+/// when an in-flight ramp write overwrote it on the console), the console ends with the engineer's value (or, when
+/// the console's coalesced fan-out already carried our overwrite, the value the yield reported), and an undo of the
+/// move queued right after does not revert the fader inside the cool-down.
+fn engineer_mid_ramp_trials(d: &common::Daemon, trials: usize, seed: u64) {
+    use mix_actuator::{Actuator, ActuatorConfig, ActuatorEvent, Job, PolicyGate};
+    use mix_core::action::{Action, ParamChange};
+    use std::sync::Arc;
+    use std::time::Instant;
+    let s = Arc::new(d.connect());
+    let engineer = Arc::new(d.connect());
+    let mut rng = seed | 1;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut bad = Vec::new();
+    let (mut kept, mut put_back, mut coalesced) = (0, 0, 0);
+    for i in 0..trials {
+        let fader = ParamId::new(format!("input.{}/fader", 1 + i % 8));
+        s.write(&fader, Value::Float(-30.0)).unwrap();
+        sync2(&s, &engineer);
+        let cfg = ActuatorConfig {
+            external_cooldown_s: 30.0,
+            ..Default::default()
+        };
+        let dt = 1.0 / cfg.tick_hz;
+        let gate = PolicyGate::new(common::policy(), &*s).unwrap();
+        let mut a = Actuator::new(s.clone(), Box::new(gate), cfg);
+        let ev = a.subscribe();
+        // 4 dB at 6 dB/s: a ~0.7 s ramp
+        a.submit(Action::new("raise").with(ParamChange::new(fader.as_str(), -26.0)));
+        let t0 = Instant::now();
+        let mut k = 0u64;
+        let mut tick_until = |a: &mut Actuator, until: f64, stop: &dyn Fn(&Actuator) -> bool| {
+            while t0.elapsed().as_secs_f64() < until && !stop(a) {
+                k += 1;
+                let at = Duration::from_secs_f64(k as f64 * dt);
+                if let Some(w) = at.checked_sub(t0.elapsed()) {
+                    std::thread::sleep(w);
+                }
+                a.tick(t0.elapsed());
+            }
+        };
+        // the ramp has started (its first write is out): the engineer grabs the fader somewhere in it
+        tick_until(&mut a, 5.0, &|a| !a.write_log().is_empty());
+        let offset = next() * 0.65;
+        let mine = -10.0 - (i % 7) as f64;
+        let (e2, f2) = (engineer.clone(), fader.clone());
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs_f64(offset));
+            e2.write(&f2, Value::Float(mine)).unwrap();
+            e2.client().barrier(Duration::from_secs(10)).unwrap();
+        });
+        let start = t0.elapsed().as_secs_f64();
+        tick_until(&mut a, start + 1.2, &|_| false);
+        h.join().unwrap();
+        sync2(&s, &engineer);
+        tick_until(&mut a, start + 1.5, &|_| false);
+        // the move is done (or yielded); undo it right away: the engineer's fader must not be reverted
+        a.submit(Job::Undo);
+        tick_until(&mut a, start + 2.5, &|_| false);
+        sync2(&s, &engineer);
+        let evs: Vec<_> = ev.try_iter().collect();
+        let reported: Vec<Value> = evs
+            .iter()
+            .filter_map(|e| match e {
+                ActuatorEvent::Yielded { param, value, .. } if *param == fader => {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let fresh = engineer.refresh(std::slice::from_ref(&fader)).unwrap()[0].clone();
+        let near = |a: &Value, b: &Value| a.approx_eq(b, 0.05);
+        let theirs = near(&fresh, &Value::Float(mine));
+        let ok = !reported.is_empty()
+            && (theirs || reported.iter().any(|v| near(v, &fresh)))
+            && !near(&fresh, &Value::Float(-30.0));
+        if theirs && a.journal().entries().iter().any(|l| {
+            matches!(&l.entry, mix_surface::journal::Entry::Note { text } if text.contains("put back"))
+        }) {
+            put_back += 1;
+        } else if theirs {
+            kept += 1;
+        } else {
+            coalesced += 1;
+        }
+        if !ok {
+            bad.push(format!(
+                "trial {i} (engineer at +{offset:.3} s -> {mine}): yielded {reported:?}, console {fresh:?}"
+            ));
+        }
+    }
+    eprintln!(
+        "{trials} trials: engineer's value kept {kept}, put back after an in-flight overwrite {put_back}, \
+         overwritten before the console's fan-out (yielded at our value) {coalesced}"
+    );
+    assert!(bad.is_empty(), "{} of {trials} failed: {bad:#?}", bad.len());
+}
+
+#[test]
+fn wing_sim_engineer_write_mid_ramp_is_detected_sampled() {
+    let Some(d) = daemon_or_skip("wing_sim_engineer_write_mid_ramp_is_detected_sampled") else {
+        return;
+    };
+    engineer_mid_ramp_trials(&d, 3, 0x6d06_8a11);
+}
+
+#[test]
+#[ignore = "slow: run with make check-full"]
+fn wing_sim_engineer_write_mid_ramp_is_detected_100_trials() {
+    let Some(d) = daemon_or_skip("wing_sim_engineer_write_mid_ramp_is_detected_100_trials") else {
+        return;
+    };
+    engineer_mid_ramp_trials(&d, 100, 0x0068_2026);
+}

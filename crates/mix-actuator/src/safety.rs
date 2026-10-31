@@ -765,6 +765,7 @@ fn gain_kind(spec: &ParamSpec) -> Option<GainKind> {
 enum Check {
     Write,
     Restore,
+    Panic,
     Recall,
 }
 
@@ -829,14 +830,14 @@ impl SafetyGate {
         d: &Decision,
         mode: Check,
     ) -> Option<String> {
-        let restoring = mode == Check::Restore;
+        let restoring = matches!(mode, Check::Restore | Check::Panic);
         let spec = self.surface.param_spec(&req.param).ok()?;
         let from = req.from.as_ref()?;
         let to = req.to.as_ref()?;
         if d.discrete {
             // M064: a slot recall switches models/polarity on the engineer's request (the GUI warns it may click)
             return match mode {
-                Check::Recall => None,
+                Check::Recall | Check::Panic => None,
                 _ => self.refuse_discrete(&req.param),
             };
         }
@@ -985,6 +986,11 @@ impl RemitGate for SafetyGate {
     fn check_restore(&self, req: &WriteRequest, baseline: &Value) -> Decision {
         let d = self.inner.check_restore(req, baseline);
         self.tighten(req, baseline, d, Check::Restore)
+    }
+
+    fn check_panic(&self, req: &WriteRequest, baseline: &Value) -> Decision {
+        let d = self.inner.check_panic(req, baseline);
+        self.tighten(req, baseline, d, Check::Panic)
     }
 
     fn check_recall(&self, req: &WriteRequest, baseline: &Value) -> Decision {

@@ -235,6 +235,13 @@ fn check(r: &RunResult) {
             r.name, r.drills.panic_residual
         );
     }
+    // M068: the console itself (wing-sim snapshot, every path) is back at the session start after PANIC
+    assert!(
+        r.snap_residual.is_empty(),
+        "{}: wing-sim snapshot differs after PANIC: {:?}",
+        r.name,
+        r.snap_residual
+    );
     assert!(
         r.ramps.over.is_empty(),
         "{}: ramp steps over the limit {:?}",

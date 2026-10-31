@@ -11,6 +11,7 @@
 //! request completion; keepalive `DF D1` within 10 s. Store changes are reported through the mirror's hook as
 //! [`ClientMsg::Change`] with origin [`ORIGIN_REMOTE`] (from the console) or [`ORIGIN_LOCAL`] (own writes).
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering::*};
@@ -40,6 +41,11 @@ pub enum ClientMsg {
     Change(Change),
     /// The connection closed.
     Disconnected,
+    /// M068: a console value for a node with an own write in flight that is not one of our own in-flight values:
+    /// another client (the engineer) set it before the console processed our write, which then overwrote it. The
+    /// mirror keeps our value (the console's final state); `raw` is the overwritten value (interpret it with the
+    /// node's active descriptor). Reported so the engineer's move is never mistaken for our own echo.
+    Overridden(Change),
 }
 
 struct Writer {
@@ -71,9 +77,131 @@ struct Shared {
     /// Held while an own write is applied to the mirror and sent, and while the reader applies console values:
     /// the value `send_value` reads back is the one just written, never a console event that slipped in between.
     apply: Mutex<()>,
-    /// Nodes with an own write in flight -> the `DE` count at which the console has processed it. Console values
-    /// for such a node that arrive before then were produced before our write and would roll the mirror back.
-    pending: Mutex<std::collections::HashMap<NodeId, u64>>,
+    /// Nodes with own writes in flight -> `(DE count at which the console has processed the write, the raw value
+    /// we sent)`, oldest first. Console values for such a node that arrive before the last of them were produced
+    /// before our last write and would roll the mirror back: they are not applied. If such a value is none of our
+    /// in-flight values it is someone else's write that ours overwrote: reported as [`ClientMsg::Overridden`].
+    pending: Mutex<HashMap<NodeId, Vec<(u64, Own)>>>,
+    /// Nodes with a get in flight -> `DE` count of its answer (a get's answer predates a write sent after it).
+    gets: Mutex<HashMap<NodeId, u64>>,
+}
+
+/// An own value in flight, as the console will store it.
+#[derive(Debug, Clone)]
+enum Own {
+    Raw(u32),
+    /// Float params (raw = the f32's bits): compared with a tiny tolerance (a console that rounds a value we sent
+    /// slightly differently than our mirror does must not look like someone else's write).
+    Float(f32),
+    Text(String),
+}
+
+impl Own {
+    fn same(&self, o: &Own) -> bool {
+        match (self, o) {
+            (Own::Raw(a), Own::Raw(b)) => a == b,
+            (Own::Float(a), Own::Float(b)) => {
+                let (a, b) = (*a as f64, *b as f64);
+                (a - b).abs() <= 1e-3 + 1e-4 * a.abs().max(b.abs())
+            }
+            (Own::Text(a), Own::Text(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Raw encoding (`None` for text).
+    fn raw(&self) -> Option<u32> {
+        match self {
+            Own::Raw(r) => Some(*r),
+            Own::Float(f) => Some(f.to_bits()),
+            Own::Text(_) => None,
+        }
+    }
+}
+
+fn is_float(d: &wing_model::Desc) -> bool {
+    use wing_model::ParamType as T;
+    matches!(d.ty, T::LinF | T::LogF | T::Fader)
+}
+
+fn own_value(store: &ParamStore, id: NodeId) -> Own {
+    if let Some(t) = store.with_str(id, |t| t.to_string()) {
+        return Own::Text(t);
+    }
+    let raw = store.get_raw(id);
+    match store.desc(id) {
+        Some(d) if is_float(d) => Own::Float(f32::from_bits(raw)),
+        _ => Own::Raw(raw),
+    }
+}
+
+/// The value a console value token stands for, in the node's active encoding (`None`: not decodable).
+fn token_value(store: &ParamStore, id: NodeId, t: &Token<'_>) -> Option<Own> {
+    use wing_model::{ParamType, Value as W};
+    let d = store.desc(id)?;
+    let raw = match *t {
+        Token::Str(b) => {
+            let text = String::from_utf8_lossy(b);
+            match d.ty {
+                ParamType::Str => return Some(Own::Text(text.into_owned())),
+                ParamType::Enum | ParamType::FEnum => d
+                    .enum_index(&text)
+                    .or_else(|| d.parse_text(&text).ok())?,
+                _ => d.parse_text(&text).ok()?,
+            }
+        }
+        _ if d.ty == ParamType::Str => return None,
+        Token::Float(v) => d.encode(W::Float(v)).ok()?,
+        Token::RawFloat(p) => d.from_norm(p).ok()?,
+        _ => d.encode(W::Int(t.as_int()?)).ok()?,
+    };
+    Some(if is_float(d) {
+        Own::Float(f32::from_bits(raw))
+    } else {
+        Own::Raw(raw)
+    })
+}
+
+/// What the reader does with a console value for a node.
+#[derive(Debug)]
+enum Fate {
+    /// No own write in flight: apply it. `answer`: it answers a get of ours (else it is a change event: someone
+    /// else set the node, even if the value is what the mirror holds).
+    Apply { answer: bool },
+    /// Produced before our in-flight write, and it is ours (an adjusted echo) or a get's answer: drop it.
+    Drop,
+    /// Produced before our in-flight write and not ours: someone else's write that ours overwrote.
+    Overridden(Own),
+}
+
+/// Decide the [`Fate`] of console value `v` for `id`, with `des` answers received so far.
+fn fate(
+    pending: &mut HashMap<NodeId, Vec<(u64, Own)>>,
+    gets: &mut HashMap<NodeId, u64>,
+    des: u64,
+    id: NodeId,
+    v: Option<Own>,
+) -> Fate {
+    let answer = match gets.get(&id) {
+        Some(&t) if des < t => true,
+        Some(_) => {
+            gets.remove(&id);
+            false
+        }
+        None => false,
+    };
+    let Some(list) = pending.get_mut(&id) else {
+        return Fate::Apply { answer };
+    };
+    list.retain(|(t, _)| des < *t);
+    if list.is_empty() {
+        pending.remove(&id);
+        return Fate::Apply { answer };
+    }
+    match v {
+        Some(v) if !answer && !list.iter().any(|(_, o)| o.same(&v)) => Fate::Overridden(v),
+        _ => Fate::Drop,
+    }
 }
 
 /// One native-protocol connection plus the mirror store.
@@ -179,6 +307,7 @@ impl NativeClient {
             des_cv: Condvar::new(),
             apply: Mutex::new(()),
             pending: Mutex::new(Default::default()),
+            gets: Mutex::new(Default::default()),
         });
         let mut w = Writer {
             stream,
@@ -208,9 +337,10 @@ impl NativeClient {
         let shared = self.shared.clone();
         let store = self.store.clone();
         let tx = lock(&self.tx).clone();
+        let syncing = self.syncing.clone();
         let handle = std::thread::Builder::new()
             .name("wing-native-rx".into())
-            .spawn(move || reader_loop(rd, store, shared, weak, tx))?;
+            .spawn(move || reader_loop(rd, store, shared, weak, tx, syncing))?;
         *lock(&self.reader) = Some(handle);
         Ok(())
     }
@@ -254,6 +384,7 @@ impl NativeClient {
             w.flush()?;
             *lock(&self.shared.des) = 0;
             lock(&self.shared.pending).clear();
+            lock(&self.shared.gets).clear();
             self.shared.alive.store(true, SeqCst);
         }
         self.spawn_reader(rd)?;
@@ -301,11 +432,18 @@ impl NativeClient {
     }
 
     fn write_with(&self, f: impl FnOnce(&mut NrpEncoder, &mut Vec<u8>) -> u64) -> io::Result<u64> {
+        let mut w = lock(&self.writer);
+        self.write_locked(&mut w, f)
+    }
+
+    fn write_locked(
+        &self,
+        w: &mut Writer,
+        f: impl FnOnce(&mut NrpEncoder, &mut Vec<u8>) -> u64,
+    ) -> io::Result<u64> {
         if !self.is_alive() {
             return Err(dead());
         }
-        let mut w = lock(&self.writer);
-        let w = &mut *w;
         let n = f(&mut w.enc, &mut w.buf);
         w.de_sent += n;
         let target = w.de_sent;
@@ -342,13 +480,19 @@ impl NativeClient {
         let s = Schema::get();
         let mut target = 0;
         for chunk in ids.chunks(256) {
-            target = self.write_with(|enc, buf| {
+            let mut w = lock(&self.writer);
+            let base = w.de_sent;
+            target = self.write_locked(&mut w, |enc, buf| {
                 for &id in chunk {
                     let _ = enc.control(&Token::NavHash(s.hash(id)), buf);
                     let _ = enc.control(&Token::DataRequest, buf);
                 }
                 chunk.len() as u64
             })?;
+            let mut gets = lock(&self.shared.gets);
+            for (i, &id) in chunk.iter().enumerate() {
+                gets.insert(id, base + i as u64 + 1);
+            }
         }
         if ids.is_empty() {
             return Ok(());
@@ -403,7 +547,10 @@ impl NativeClient {
             let _ = enc.control(&Token::DataRequest, buf);
             1
         })?;
-        lock(&self.shared.pending).insert(id, target);
+        lock(&self.shared.pending)
+            .entry(id)
+            .or_default()
+            .push((target, own_value(&self.store, id)));
         Ok(())
     }
 
@@ -428,7 +575,10 @@ impl NativeClient {
         })?;
         let mut pending = lock(&self.shared.pending);
         for &id in ids {
-            pending.insert(id, target);
+            pending
+                .entry(id)
+                .or_default()
+                .push((target, own_value(&self.store, id)));
         }
         Ok(())
     }
@@ -523,6 +673,7 @@ fn reader_loop(
     shared: Arc<Shared>,
     client: std::sync::Weak<NativeClient>,
     tx: Sender<ClientMsg>,
+    syncing: Arc<AtomicBool>,
 ) {
     let mut dec = NrpDecoder::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -546,19 +697,41 @@ fn reader_loop(
                         t if t.is_value() => {
                             if let Some(id) = cursor {
                                 let _g = lock(&shared.apply);
-                                let stale = {
-                                    let mut pend = lock(&shared.pending);
-                                    match pend.get(&id) {
-                                        Some(&target) if *lock(&shared.des) < target => true,
-                                        Some(_) => {
-                                            pend.remove(&id);
-                                            false
+                                let des = *lock(&shared.des);
+                                let f = fate(
+                                    &mut lock(&shared.pending),
+                                    &mut lock(&shared.gets),
+                                    des,
+                                    id,
+                                    token_value(&store, id, &t),
+                                );
+                                match f {
+                                    Fate::Apply { answer } => {
+                                        let changed = apply_value(&store, id, &t, ORIGIN_REMOTE)
+                                            .unwrap_or(true);
+                                        // M068: a change event whose value the mirror already holds is still
+                                        // someone else's write (the console fans out the current value: an
+                                        // engineer move our write overwrote before it was sent shows our value)
+                                        if !changed && !answer && !syncing.load(Relaxed) {
+                                            let _ = tx.send(ClientMsg::Change(Change {
+                                                id: id.0,
+                                                desc: 0,
+                                                raw: store.get_raw(id),
+                                                origin: ORIGIN_REMOTE,
+                                            }));
                                         }
-                                        None => false,
                                     }
-                                };
-                                if !stale {
-                                    let _ = apply_value(&store, id, &t, ORIGIN_REMOTE);
+                                    Fate::Drop => {}
+                                    Fate::Overridden(v) => {
+                                        if let Some(raw) = v.raw() {
+                                            let _ = tx.send(ClientMsg::Overridden(Change {
+                                                id: id.0,
+                                                desc: 0,
+                                                raw,
+                                                origin: ORIGIN_REMOTE,
+                                            }));
+                                        }
+                                    }
                                 }
                             }
                         }

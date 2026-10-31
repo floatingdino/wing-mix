@@ -684,9 +684,10 @@ pub fn run(
         .map(|a| a.iter().map(|t| t["trip"].to_string()).collect())
         .unwrap_or_default();
 
-    // PANIC: every touched param back at its session baseline.
+    // PANIC: every touched param back at its session baseline. Run in every run (M068: description runs had no
+    // PANIC, so their "after PANIC" snapshot diff listed the kept main-EQ moves as residuals).
     let t_panic = Instant::now();
-    if o.drills {
+    {
         let seen = d.seen();
         d.req(json!({"cmd": "PANIC"}));
         d.expect_event(seen, Duration::from_secs(60), "panic revert", |e| {
@@ -803,7 +804,6 @@ pub fn run(
         r.snap_residual = audit::snap_diff(&a, &b)
             .into_iter()
             .filter(|(p, ..)| !own_paths.contains(p))
-            .filter(|(p, ..)| o.drills || !p.starts_with("ch/"))
             .map(|(p, a, b)| format!("{p}: {a} -> {b}"))
             .collect();
     }
