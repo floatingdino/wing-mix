@@ -200,6 +200,62 @@ fn solo_only_autopilot_sweeps_strips_and_restores_solo_exactly() {
     }
 }
 
+/// M070 finding 5: with only the main + solo bus, the reference's stem targets are compared per stem (tonal
+/// balance too) once the strips are measured in solo; estimates feed at most the stem level checks (meters). Suggest mode
+/// with sweeps allowed (`sweep_in_suggest`), so no move changes the mix meanwhile.
+#[test]
+fn solo_measurements_feed_per_stem_diagnosis() {
+    use mix_engine::diagnosis::Subject;
+    let fx = fixture();
+    let mut cfg = config(Mode::Suggest);
+    cfg.strips.sweep_in_suggest = true;
+    cfg.strips.max_per_min = 60;
+    cfg.strips.min_gap_s = 0.3;
+    cfg.strips.dwell_s = 1.2;
+    let mut r = rig(&fx.pair.degraded, Vec::new(), cfg);
+    let stem_problems = |r: &Rig| -> Vec<String> {
+        r.ctl
+            .diagnosis()
+            .map(|d| {
+                d.problems
+                    .iter()
+                    .filter(|p| matches!(p.scope.subject, Subject::Stem { .. }))
+                    .map(|p| p.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    r.run_until(1.5 * SECONDS, |r| r.ctl.diagnosis().is_some());
+    assert!(
+        r.ctl.coverage().solo_measured == 0,
+        "{:?}",
+        r.ctl.coverage()
+    );
+    // before: estimates only (M067 meters give levels, so stem *level* checks may run); no stem tonal check
+    let tonal = |v: &[String]| v.iter().filter(|id| id.contains("band_dev")).count();
+    let before = stem_problems(&r);
+    assert_eq!(tonal(&before), 0, "{before:?}");
+    let ok = r.run_until(12.0 * SECONDS, |r| {
+        r.ctl.coverage().solo_measured >= 8 && tonal(&stem_problems(r)) > 0
+    });
+    let got = stem_problems(&r);
+    assert!(ok, "{:?} {got:?}", r.ctl.coverage());
+    eprintln!("stem problems from solo measurements: {got:?}");
+    // the stems named are made of measured strips only
+    let d = r.ctl.diagnosis().unwrap();
+    for p in &d.problems {
+        if let Subject::Stem { strips, .. } = &p.scope.subject {
+            assert!(!strips.is_empty(), "{}", p.id);
+        }
+    }
+    // suggest + sweeps: solo only, still no mix write
+    assert!(r
+        .actuator
+        .write_log()
+        .iter()
+        .all(|w| w.param.as_str().starts_with("system/") || w.param.as_str().contains("solo")));
+}
+
 /// Distance reduction with main + solo only vs every strip tapped, same scene and budget (report).
 #[test]
 #[ignore = "slow: run with make check-full"]
