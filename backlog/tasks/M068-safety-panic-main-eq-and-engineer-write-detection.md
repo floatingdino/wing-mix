@@ -2,7 +2,7 @@
 id: M068
 title: SAFETY: PANIC misses main-bus EQ on WING path; engineer write during short ramp undetected
 stage: S4
-status: review
+status: done
 owner: agent-M068
 depends: [M067]
 branch: task/M068
@@ -75,3 +75,4 @@ Re-run the e2e audit suite (`tools/e2e/run.sh wing`, multichannel and solo) and 
   param (reported `skipped`): GUI should surface it; (c) the WING itself: confirm on hardware that the console fans
   out the current value (coalescing) and echoes adjusted sets before the answer (HUMAN-ACTIONS item 6); (d)
   `make check-full` not re-run as a whole (release suite ~); the M068 slow tests were run individually.
+- 2026-10-31 coordinator: merged; make check + make app pass; CI green on branch. done. Follow-ups: GUI skipped-PANIC params, real-WING echo timing (HUMAN-ACTIONS #6).
