@@ -703,6 +703,20 @@ pub fn run(
             .map(|(p, a, b)| format!("{p}: {a:?} -> {b:?}"))
             .collect();
         dr.panic_restored = Some(dr.panic_residual.is_empty());
+        // M068: the event log again, now with the PANIC (E2E_EVENTS_DIR)
+        if let Ok(dir) = std::env::var("E2E_EVENTS_DIR") {
+            let body: String = d
+                .events()
+                .iter()
+                .filter(|e| e.v["type"] != "progress")
+                .map(|e| format!("{}\n", e.v))
+                .collect();
+            let file = o.name.replace([' ', '[', ']', '+', ','], "_");
+            let _ = std::fs::write(
+                std::path::Path::new(&dir).join(format!("{file}.jsonl")),
+                body,
+            );
+        }
     }
     d.req(json!({"cmd": "stop"}));
     let _ = d.try_req(json!({"cmd": "disconnect_console"}));

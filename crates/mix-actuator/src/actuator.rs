@@ -53,6 +53,8 @@ struct Ramp {
     /// model-dependent params as they were on that model (the switch loads the new model's defaults; undo/PANIC
     /// write these back after switching back, M068).
     switched: Vec<BlockState>,
+    /// Undo/PANIC: since when (s) some restore has been refused by a hold.
+    held_since: Option<f64>,
     /// Params of the block(s) a model switch in this batch governs: written only after the switch and the
     /// surface's `ParamsRemapped`, against the re-resolved specs.
     phase2: Option<Box<Phase2>>,
@@ -173,6 +175,9 @@ pub struct Actuator {
     resync_needed: bool,
     deferred: Deferred,
 }
+
+/// Longest time (s) undo/PANIC wait for a hold to release a refused restore before leaving that param (M068).
+const RESTORE_HOLD_S: f64 = 10.0;
 
 /// How far back (s) a write of ours counts as possibly in flight when an engineer move is reported (M068).
 const REASSERT_WINDOW_S: f64 = 1.0;
@@ -1080,6 +1085,7 @@ impl Actuator {
             skipped,
             done: Vec::new(),
             switched: Vec::new(),
+            held_since: None,
             phase2,
         })
     }
@@ -1107,7 +1113,10 @@ impl Actuator {
         };
         let base = self.baseline.get(&c.param).unwrap_or(&from);
         let d = self.decide(how, &req, base);
-        if !permitted(&d, restoring) {
+        // undo/PANIC: a safety refusal of a restore is a hold (temporary); plan the track, the per-write check holds
+        // it until the hold releases (or `RESTORE_HOLD_S`, then it is skipped and reported)
+        let held = restoring && d.reason == Reason::Safety;
+        if !permitted(&d, restoring) && !held {
             return Err(Refusal::Remit {
                 param: c.param.clone(),
                 verdict: d.class,
@@ -1437,7 +1446,11 @@ impl Actuator {
         if self.tokens + 1e-9 < (pending.len() as f64).min(self.capacity()) {
             return Step::Running;
         }
-        // Remit re-check of every write, before any of this tick's writes go out.
+        // Remit re-check of every write, before any of this tick's writes go out. A move aborts in place. Undo/PANIC
+        // hold a refused param where it is (holds are temporary: mains ceiling, feedback suspect, stalled analysis)
+        // and restore the rest; after `RESTORE_HOLD_S` of refusals it is left and reported as skipped (M068: one
+        // fader under a feedback-suspect hold used to abort the whole PANIC).
+        let mut refused = Vec::new();
         for (i, w) in &pending {
             let tr = &r.tracks[*i];
             let req = WriteRequest {
@@ -1449,14 +1462,61 @@ impl Actuator {
             let base = self.baseline.get(&tr.spec.id).unwrap_or(&tr.from);
             let d = self.decide(r.how(), &req, base);
             if !permitted(&d, r.restoring) {
-                return Step::Aborted(AbortReason::Remit {
-                    param: tr.spec.id.clone(),
-                    verdict: d.class,
-                    reason: d.reason,
-                    detail: d.detail,
-                });
+                if !r.restoring {
+                    return Step::Aborted(AbortReason::Remit {
+                        param: tr.spec.id.clone(),
+                        verdict: d.class,
+                        reason: d.reason,
+                        detail: d.detail,
+                    });
+                }
+                refused.push((
+                    *i,
+                    Refusal::Remit {
+                        param: tr.spec.id.clone(),
+                        verdict: d.class,
+                        reason: d.reason,
+                        detail: d.detail,
+                        confirm_key: d.confirm_key,
+                    },
+                ));
             }
         }
+        if refused.is_empty() {
+            r.held_since = None;
+        } else {
+            let since = *r.held_since.get_or_insert(t);
+            if t - since >= RESTORE_HOLD_S {
+                for (i, why) in &refused {
+                    r.tracks[*i].yielded = true;
+                    r.skipped.push(why.clone());
+                }
+            }
+            let refused: Vec<usize> = refused.into_iter().map(|(i, _)| i).collect();
+            let pending: Vec<(usize, Pending)> = pending
+                .into_iter()
+                .filter(|(i, _)| !refused.contains(i))
+                .collect();
+            if pending.is_empty() {
+                return if r.phase2.is_none() && r.tracks.iter().all(|tr| !tr.is_active()) {
+                    Step::Done
+                } else {
+                    Step::Running
+                };
+            }
+            return self.write_pending(r, pending, p, t);
+        }
+        self.write_pending(r, pending, p, t)
+    }
+
+    /// Send this tick's writes of `r` (already checked).
+    fn write_pending(
+        &mut self,
+        r: &mut Ramp,
+        pending: Vec<(usize, Pending)>,
+        p: f64,
+        t: f64,
+    ) -> Step {
         // M068: a model switch loads the new model's defaults: remember the block as it is first (undo/PANIC)
         for (i, _) in &pending {
             let tr = &r.tracks[*i];

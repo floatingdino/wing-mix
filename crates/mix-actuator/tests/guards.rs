@@ -651,3 +651,60 @@ fn no_feedback_verdict_on_the_stub_of_history_after_resume() {
     let t = feed_music(&m, 0.0, 12.0, 6.0, 20.0).expect("trips");
     assert!(t < 3.0, "{t}");
 }
+
+/// M068 (e2e: a fader under a feedback-suspect hold aborted the whole PANIC in place): a hold holds only the
+/// refused restores; everything else is restored at once, the held ones once the hold releases.
+#[test]
+fn panic_restores_around_a_hold_and_finishes_when_it_releases() {
+    let (mut r, m) = safe_rig(quiet());
+    let (b2, b4) = (r.readf("input.2/fader"), r.readf("input.4/fader"));
+    r.a.submit(mv("cut", "input.2/fader", b2 - 3.0));
+    r.a.submit(mv("raise", "input.4/fader", b4 + 2.0));
+    r.run_idle(20.0);
+    m.feed_mains(&features(-5.0, -4.0, -3.0));
+    assert!(m.status().ceiling_hold);
+    let id = r.a.panic();
+    r.run_for(3.0);
+    assert!((r.readf("input.4/fader") - b4).abs() < 1e-6, "the cut ran");
+    assert!(
+        (r.readf("input.2/fader") - (b2 - 3.0)).abs() < 1e-6,
+        "the boost is held"
+    );
+    assert!(!r
+        .events()
+        .any(|e| matches!(e, ActuatorEvent::Aborted { id: i, .. } if *i == id)));
+    m.feed_mains(&features(-14.0, -14.0, -20.0));
+    r.run_idle(10.0);
+    assert!(
+        (r.readf("input.2/fader") - b2).abs() < 1e-6,
+        "{:?} {} {:#?}",
+        m.status(),
+        r.readf("input.2/fader"),
+        r.log
+            .iter()
+            .filter(|(_, e)| !matches!(e, ActuatorEvent::Progress { .. }))
+            .collect::<Vec<_>>()
+    );
+    assert!(r.events().any(|e| matches!(e, ActuatorEvent::Reverted { id: i, skipped, .. } if *i == id && skipped.is_empty())));
+}
+
+#[test]
+fn panic_leaves_a_restore_still_held_after_the_wait_and_reports_it() {
+    let (mut r, m) = safe_rig(quiet());
+    let (b2, b4) = (r.readf("input.2/fader"), r.readf("input.4/fader"));
+    r.a.submit(mv("cut", "input.2/fader", b2 - 3.0));
+    r.a.submit(mv("raise", "input.4/fader", b4 + 2.0));
+    r.run_idle(20.0);
+    m.feed_mains(&features(-5.0, -4.0, -3.0));
+    let id = r.a.panic();
+    for _ in 0..15 {
+        m.feed_mains(&features(-5.0, -4.0, -3.0));
+        r.run_for(1.0);
+    }
+    assert!((r.readf("input.4/fader") - b4).abs() < 1e-6);
+    assert!((r.readf("input.2/fader") - (b2 - 3.0)).abs() < 1e-6);
+    assert!(r.events().any(|e| matches!(e, ActuatorEvent::Reverted { id: i, skipped, .. }
+        if *i == id && matches!(skipped.as_slice(), [Refusal::Remit { param, .. }] if param.as_str() == "input.2/fader"))),
+        "{:#?}", r.log);
+    assert!(r.a.is_idle() && r.a.is_stopped());
+}
