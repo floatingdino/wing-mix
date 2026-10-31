@@ -819,6 +819,7 @@ fn estimated_strips_get_fader_moves_for_a_level_intent() {
             name: t.name.clone(),
             source: t.source.clone(),
             fader_db: state.settings(&t.strip).fader_db.unwrap_or(0.0),
+            gain_to_main_db: 0.0,
         })
         .collect();
     s.taps = crate::control::strips::priors(&s.main, &[], &eligible, kb, 0.1, None);

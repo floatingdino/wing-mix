@@ -875,6 +875,10 @@ impl<'k> Controller<'k> {
         let mut solo = self.book.taps_for(&ids, state, &raw.main, &*self.transfer);
         for t in &mut solo {
             t.dyn_gr_db = meters.strips.get(&t.strip).and_then(|m| m.dyn_gr_db);
+            // M070: a solo capture is the strip's post-fader signal; buses on its way to the main add their gain
+            if let Some(e) = missing.iter().find(|e| e.strip == t.strip) {
+                t.gain_to_main_db = e.gain_to_main_db as f32;
+            }
         }
         let have: std::collections::BTreeSet<StripId> =
             solo.iter().map(|t| t.strip.clone()).collect();
